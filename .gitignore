@@ -1,0 +1,16 @@
+# Rust build output
+/target/
+
+# Compiled objects
+*.o
+
+# Ignore hidden files and directories by default
+.*
+
+# Keep repository configuration
+!.gitignore
+!.github/
+!.github/**
+
+# Scratch
+/scratch/

@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "bootstrap/rust"
+]
+
+resolver = "3"
