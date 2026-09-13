@@ -1,0 +1,14 @@
+enum First
+{
+    value
+}
+
+enum Second
+{
+    value
+}
+
+public void main()
+{
+    First item = Second.value;
+}

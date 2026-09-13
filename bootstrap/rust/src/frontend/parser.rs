@@ -197,7 +197,19 @@ impl Parser {
             _ => return Err(Diagnostic::error("expected a known type", token.span)),
         };
         let mut end = token.span;
-        if self.consume(&TokenKind::LeftBracket) {
+        while self.consume(&TokenKind::LeftBracket) {
+            if self.at(&TokenKind::RightBracket) {
+                let close = self.advance().clone();
+                if ty != Type::String {
+                    return Err(Diagnostic::error(
+                        "only the bootstrap command-line argument type `string[]` may omit an array length",
+                        start.join(close.span),
+                    ));
+                }
+                ty = Type::CliArgs;
+                end = close.span;
+                continue;
+            }
             let length_token = self.advance().clone();
             let length = match length_token.kind {
                 TokenKind::Integer(text) => text.parse::<usize>().map_err(|_| {
@@ -617,11 +629,43 @@ impl Parser {
                 };
             } else if self.consume(&TokenKind::Dot) {
                 let name = self.expect_identifier("expected field or variant after `.`")?;
+                if self.consume(&TokenKind::LeftParen) {
+                    let mut arguments = Vec::new();
+                    if !self.at(&TokenKind::RightParen) {
+                        loop {
+                            arguments.push(self.parse_expression()?);
+                            if !self.consume(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    let close =
+                        self.expect(TokenKind::RightParen, "expected `)` after method arguments")?;
+                    expression = Expression {
+                        span: expression.span.join(close.span),
+                        kind: ExpressionKind::MethodCall {
+                            receiver: Box::new(expression),
+                            method: name,
+                            arguments,
+                        },
+                    };
+                } else {
+                    expression = Expression {
+                        span: expression.span.join(name.span),
+                        kind: ExpressionKind::Member {
+                            base: Box::new(expression),
+                            name,
+                        },
+                    };
+                }
+            } else if self.consume(&TokenKind::LeftBracket) {
+                let index = self.parse_expression()?;
+                let close = self.expect(TokenKind::RightBracket, "expected `]` after index")?;
                 expression = Expression {
-                    span: expression.span.join(name.span),
-                    kind: ExpressionKind::Member {
+                    span: expression.span.join(close.span),
+                    kind: ExpressionKind::Index {
                         base: Box::new(expression),
-                        name,
+                        index: Box::new(index),
                     },
                 };
             } else {
@@ -883,5 +927,175 @@ mod tests {
             variable.initializer.kind,
             ExpressionKind::Member { .. }
         ));
+    }
+
+    #[test]
+    fn parses_fixed_array_type_and_literal() {
+        let module = parse_source("private void f() { bool[2] flags = [true, false]; }");
+        let StatementKind::Variable(variable) = &module.functions[0].body.statements[0].kind else {
+            panic!("expected array declaration");
+        };
+        assert_eq!(
+            variable.ty.kind,
+            Type::Array {
+                element: Box::new(Type::Bool),
+                length: 2
+            }
+        );
+        assert!(matches!(
+            variable.initializer.kind,
+            ExpressionKind::Collection(_)
+        ));
+    }
+
+    #[test]
+    fn parses_index_expression() {
+        let module = parse_source("private int f() { int[1] values = [1]; return values[0]; }");
+        let StatementKind::Return(Some(value)) = &module.functions[0].body.statements[1].kind
+        else {
+            panic!("expected return");
+        };
+        assert!(matches!(value.kind, ExpressionKind::Index { .. }));
+    }
+
+    #[test]
+    fn parses_indexed_assignment() {
+        let module = parse_source("private void f() { int[1] values = [1]; values[0] = 2; }");
+        let StatementKind::Assignment(assignment) = &module.functions[0].body.statements[1].kind
+        else {
+            panic!("expected assignment");
+        };
+        assert!(matches!(
+            assignment.target.kind,
+            ExpressionKind::Index { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_list_type_and_literal() {
+        let module = parse_source("private void f() { list int values = [1, 2]; }");
+        let StatementKind::Variable(variable) = &module.functions[0].body.statements[0].kind else {
+            panic!("expected list declaration");
+        };
+        assert_eq!(variable.ty.kind, Type::List(Box::new(Type::Int)));
+        assert!(matches!(
+            variable.initializer.kind,
+            ExpressionKind::Collection(_)
+        ));
+    }
+
+    #[test]
+    fn parses_struct_list_and_copy_expression() {
+        let module = parse_source(
+            "struct Token { int line; } private void f() { list Token tokens = []; Token a = Token { line: 1 }; Token b = a; }",
+        );
+        let StatementKind::Variable(list) = &module.functions[0].body.statements[0].kind else {
+            panic!("expected list declaration");
+        };
+        assert!(
+            matches!(list.ty.kind, Type::List(ref element) if matches!(**element, Type::Named(_)))
+        );
+        let StatementKind::Variable(copy) = &module.functions[0].body.statements[2].kind else {
+            panic!("expected copied struct declaration");
+        };
+        assert!(matches!(
+            copy.initializer.kind,
+            ExpressionKind::Identifier(_)
+        ));
+    }
+
+    #[test]
+    fn parses_list_push_and_pop() {
+        let module = parse_source(
+            "private void f() { list int values = []; values.push(1); int x = values.pop(); }",
+        );
+        assert!(matches!(
+            module.functions[0].body.statements[1].kind,
+            StatementKind::Expression(Expression {
+                kind: ExpressionKind::MethodCall { .. },
+                ..
+            })
+        ));
+        let StatementKind::Variable(variable) = &module.functions[0].body.statements[2].kind else {
+            panic!("expected variable");
+        };
+        assert!(matches!(
+            variable.initializer.kind,
+            ExpressionKind::MethodCall { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_collection_and_string_length_properties() {
+        let module = parse_source(
+            "private void f() { list int values = []; int a = values.length; string text = \"hi\"; int b = text.length; }",
+        );
+        for statement in [
+            &module.functions[0].body.statements[1],
+            &module.functions[0].body.statements[3],
+        ] {
+            let StatementKind::Variable(variable) = &statement.kind else {
+                panic!("expected variable");
+            };
+            assert!(matches!(
+                variable.initializer.kind,
+                ExpressionKind::Member { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn parses_string_concatenation() {
+        let module = parse_source("private void f() { string text = \"a\" + \"b\"; }");
+        let StatementKind::Variable(variable) = &module.functions[0].body.statements[0].kind else {
+            panic!("expected variable");
+        };
+        assert!(matches!(
+            variable.initializer.kind,
+            ExpressionKind::Binary {
+                operator: BinaryOperator::Add,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_string_byte_and_read_file_intrinsics() {
+        let module = parse_source(
+            "private int f(string path) { string source = readFile(path); return source.byte(0); }",
+        );
+        let StatementKind::Variable(variable) = &module.functions[0].body.statements[0].kind else {
+            panic!("expected variable");
+        };
+        assert!(matches!(
+            variable.initializer.kind,
+            ExpressionKind::Call { .. }
+        ));
+        let StatementKind::Return(Some(value)) = &module.functions[0].body.statements[1].kind
+        else {
+            panic!("expected return");
+        };
+        assert!(matches!(value.kind, ExpressionKind::MethodCall { .. }));
+    }
+
+    #[test]
+    fn parses_string_slice_method_call() {
+        let module = parse_source(
+            "private string f(string source, int a, int b) { return source.slice(a, b); }",
+        );
+        let StatementKind::Return(Some(value)) = &module.functions[0].body.statements[0].kind
+        else {
+            panic!("expected return");
+        };
+        assert!(matches!(
+            value.kind,
+            ExpressionKind::MethodCall { ref arguments, .. } if arguments.len() == 2
+        ));
+    }
+
+    #[test]
+    fn parses_bootstrap_main_argument_type() {
+        let module = parse_source("public void main(string[] args) { int count = args.length; }");
+        assert_eq!(module.functions[0].parameters[0].ty.kind, Type::CliArgs);
     }
 }

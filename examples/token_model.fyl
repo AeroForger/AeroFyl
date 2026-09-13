@@ -1,0 +1,25 @@
+enum tokenKind
+{
+    identifier,
+    integer,
+    eof
+}
+
+struct Token
+{
+    tokenKind kind;
+    string lexeme;
+    int line;
+    int column;
+}
+
+public void main()
+{
+    Token token = Token {
+        kind: tokenKind.identifier,
+        lexeme: "name",
+        line: 1,
+        column: 1
+    };
+    int width = token.lexeme.length;
+}

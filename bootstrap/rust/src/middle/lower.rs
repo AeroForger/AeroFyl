@@ -3,6 +3,7 @@ use crate::frontend::source::Span;
 use crate::frontend::types::Type;
 use crate::middle::hir::*;
 use crate::middle::ir::*;
+use std::collections::HashMap;
 
 /// Lowers checked HIR to a simple non-SSA control-flow graph.
 pub fn lower(module: &HirModule) -> IrModule {
@@ -53,6 +54,7 @@ struct FunctionLowerer {
     next_value: u32,
     locals: Vec<IrLocal>,
     loops: Vec<LoopTargets>,
+    local_types: HashMap<crate::frontend::resolution::SymbolId, Type>,
 }
 
 impl FunctionLowerer {
@@ -68,6 +70,11 @@ impl FunctionLowerer {
             next_value: 0,
             locals: Vec::new(),
             loops: Vec::new(),
+            local_types: function
+                .parameters
+                .iter()
+                .map(|parameter| (parameter.symbol, parameter.ty.clone()))
+                .collect(),
         };
         lowerer.block(&function.body);
         if !lowerer.is_terminated() {
@@ -109,6 +116,7 @@ impl FunctionLowerer {
                 initializer,
                 span,
             } => {
+                self.local_types.insert(*symbol, ty.clone());
                 self.locals.push(IrLocal {
                     symbol: *symbol,
                     ty: ty.clone(),
@@ -125,6 +133,37 @@ impl FunctionLowerer {
                             local: *symbol,
                             struct_id: *struct_id,
                             fields,
+                        },
+                        *span,
+                    );
+                } else if let HirExpressionKind::ArrayLiteral(values) = &initializer.kind {
+                    let Type::Array { element, length } = ty else {
+                        unreachable!("array literal has array type")
+                    };
+                    let values = values.iter().map(|value| self.expression(value)).collect();
+                    self.emit(
+                        None,
+                        None,
+                        IrInstructionKind::ArrayInit {
+                            local: *symbol,
+                            element_type: (**element).clone(),
+                            length: *length,
+                            values,
+                        },
+                        *span,
+                    );
+                } else if let HirExpressionKind::ListLiteral(values) = &initializer.kind {
+                    let Type::List(element) = ty else {
+                        unreachable!("list literal has list type")
+                    };
+                    let values = values.iter().map(|value| self.expression(value)).collect();
+                    self.emit(
+                        None,
+                        None,
+                        IrInstructionKind::ListInit {
+                            local: *symbol,
+                            element_type: (**element).clone(),
+                            values,
                         },
                         *span,
                     );
@@ -176,6 +215,33 @@ impl FunctionLowerer {
                     },
                     *span,
                 );
+            }
+            HirStatement::IndexedAssignment {
+                local,
+                collection_type,
+                index,
+                value,
+                span,
+            } => {
+                let index = self.expression(index);
+                let value = self.expression(value);
+                let kind = match collection_type {
+                    Type::Array { element, length } => IrInstructionKind::ArrayStore {
+                        local: *local,
+                        element_type: (**element).clone(),
+                        length: *length,
+                        index,
+                        value,
+                    },
+                    Type::List(element) => IrInstructionKind::ListStore {
+                        local: *local,
+                        element_type: (**element).clone(),
+                        index,
+                        value,
+                    },
+                    _ => unreachable!("indexed assignment has collection type"),
+                };
+                self.emit(None, None, kind, *span);
             }
             HirStatement::Return { value, .. } => {
                 let value = value.as_ref().map(|value| self.expression(value));
@@ -317,6 +383,9 @@ impl FunctionLowerer {
                 let values = values.iter().map(|value| self.expression(value)).collect();
                 IrInstructionKind::Aggregate(values)
             }
+            HirExpressionKind::ArrayLiteral(_) | HirExpressionKind::ListLiteral(_) => {
+                unreachable!("collection literals lower with their local declarations")
+            }
             HirExpressionKind::StructLiteral { struct_id, fields } => {
                 IrInstructionKind::StructValue {
                     struct_id: *struct_id,
@@ -324,6 +393,12 @@ impl FunctionLowerer {
                         .iter()
                         .map(|(field, value)| (*field, self.expression(value)))
                         .collect(),
+                }
+            }
+            HirExpressionKind::StructCopy { struct_id, source } => {
+                IrInstructionKind::AggregateCopy {
+                    struct_id: *struct_id,
+                    source: self.expression(source),
                 }
             }
             HirExpressionKind::FieldLoad {
@@ -339,6 +414,94 @@ impl FunctionLowerer {
                 enum_id: *enum_id,
                 variant: *variant,
             },
+            HirExpressionKind::ArrayLoad { local, index } => {
+                let Type::Array { element, length } = self.local_type(*local) else {
+                    unreachable!("array load local has array type")
+                };
+                IrInstructionKind::ArrayLoad {
+                    local: *local,
+                    element_type: *element,
+                    length,
+                    index: self.expression(index),
+                }
+            }
+            HirExpressionKind::ArrayLength { length } => IrInstructionKind::ArrayLength(*length),
+            HirExpressionKind::ListLoad { local, index } => {
+                let Type::List(element) = self.local_type(*local) else {
+                    unreachable!("list load local has list type")
+                };
+                IrInstructionKind::ListLoad {
+                    local: *local,
+                    element_type: *element,
+                    index: self.expression(index),
+                }
+            }
+            HirExpressionKind::ListLength { local } => {
+                let Type::List(element) = self.local_type(*local) else {
+                    unreachable!("list length local has list type")
+                };
+                IrInstructionKind::ListLength {
+                    local: *local,
+                    element_type: *element,
+                }
+            }
+            HirExpressionKind::CliArgLoad { local, index } => IrInstructionKind::CliArgLoad {
+                local: *local,
+                index: self.expression(index),
+            },
+            HirExpressionKind::CliArgsLength { local } => {
+                IrInstructionKind::CliArgsLength { local: *local }
+            }
+            HirExpressionKind::ListPush { local, value } => {
+                let Type::List(element) = self.local_type(*local) else {
+                    unreachable!("list push local has list type")
+                };
+                IrInstructionKind::ListPush {
+                    local: *local,
+                    element_type: *element,
+                    value: self.expression(value),
+                }
+            }
+            HirExpressionKind::ListPop { local } => {
+                let Type::List(element) = self.local_type(*local) else {
+                    unreachable!("list pop local has list type")
+                };
+                IrInstructionKind::ListPop {
+                    local: *local,
+                    element_type: *element,
+                }
+            }
+            HirExpressionKind::StringLiteral(value) => {
+                IrInstructionKind::StringConstant(value.clone())
+            }
+            HirExpressionKind::StringLength { value } => {
+                IrInstructionKind::StringLength(self.expression(value))
+            }
+            HirExpressionKind::StringByte { value, index } => IrInstructionKind::StringByte {
+                value: self.expression(value),
+                index: self.expression(index),
+            },
+            HirExpressionKind::StringSlice { value, start, end } => {
+                IrInstructionKind::StringSlice {
+                    value: self.expression(value),
+                    start: self.expression(start),
+                    end: self.expression(end),
+                }
+            }
+            HirExpressionKind::ReadFile { path } => {
+                IrInstructionKind::ReadFile(self.expression(path))
+            }
+            HirExpressionKind::StringConcat { left, right } => IrInstructionKind::StringConcat {
+                left: self.expression(left),
+                right: self.expression(right),
+            },
+            HirExpressionKind::StringEqual { equal, left, right } => {
+                IrInstructionKind::StringEqual {
+                    equal: *equal,
+                    left: self.expression(left),
+                    right: self.expression(right),
+                }
+            }
         };
         self.emit_value(kind, expression.ty.clone(), expression.span)
     }
@@ -436,6 +599,13 @@ impl FunctionLowerer {
         value
     }
 
+    fn local_type(&self, local: crate::frontend::resolution::SymbolId) -> Type {
+        self.local_types
+            .get(&local)
+            .cloned()
+            .expect("semantic analysis typed every local")
+    }
+
     fn emit(
         &mut self,
         result: Option<ValueId>,
@@ -526,6 +696,167 @@ mod tests {
                 .blocks
                 .flatten_instructions()
                 .any(|instruction| { matches!(instruction.kind, IrInstructionKind::Copy(_)) })
+        );
+    }
+
+    #[test]
+    fn lowers_array_list_and_string_operations_to_explicit_ir() {
+        let ir = lower_source(
+            "private void f() { int[2] a = [1, 2]; a[0] = a[1]; int al = a.length; list int xs = [3]; xs.push(4); int p = xs.pop(); xs[0] = p; int ll = xs.length; string s = \"a\" + \"b\"; bool same = s == \"ab\"; int sl = s.length; }",
+        );
+        let instructions: Vec<_> = ir.functions[0]
+            .blocks
+            .flatten_instructions()
+            .map(|instruction| &instruction.kind)
+            .collect();
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ArrayInit { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ArrayLoad { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ArrayStore { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ArrayLength(2)))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ListInit { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ListPush { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ListPop { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ListStore { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ListLength { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::StringConstant(_)))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::StringConcat { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::StringEqual { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::StringLength(_)))
+        );
+    }
+
+    #[test]
+    fn lowers_source_ingestion_to_explicit_ir() {
+        let ir = lower_source(
+            "private int scan(string path) { string source = readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+        );
+        let instructions: Vec<_> = ir
+            .functions
+            .iter()
+            .flat_map(|function| function.blocks.flatten_instructions())
+            .map(|instruction| &instruction.kind)
+            .collect();
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::ReadFile(_)))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::StringByte { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::CliArgsLength { .. }))
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::CliArgLoad { .. }))
+        );
+        assert_eq!(ir.functions[1].parameters[0].ty, Type::CliArgs);
+    }
+
+    #[test]
+    fn lowers_struct_copies_struct_lists_and_string_slices_explicitly() {
+        let ir = lower_source(
+            "struct Token { string text; int line; } private void f() { Token a = Token { text: \"hello\", line: 1 }; Token b = a; list Token values = []; values.push(b); values[0] = b; Token first = values[0]; Token last = values.pop(); string piece = first.text.slice(0, 1); }",
+        );
+        let instructions: Vec<_> = ir.functions[0]
+            .blocks
+            .flatten_instructions()
+            .map(|instruction| &instruction.kind)
+            .collect();
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::AggregateCopy { .. }))
+        );
+        assert!(instructions.iter().any(|kind| matches!(
+            kind,
+            IrInstructionKind::ListPush {
+                element_type: Type::Struct(_),
+                ..
+            }
+        )));
+        assert!(instructions.iter().any(|kind| matches!(
+            kind,
+            IrInstructionKind::ListLoad {
+                element_type: Type::Struct(_),
+                ..
+            }
+        )));
+        assert!(instructions.iter().any(|kind| matches!(
+            kind,
+            IrInstructionKind::ListStore {
+                element_type: Type::Struct(_),
+                ..
+            }
+        )));
+        assert!(instructions.iter().any(|kind| matches!(
+            kind,
+            IrInstructionKind::ListPop {
+                element_type: Type::Struct(_),
+                ..
+            }
+        )));
+        assert!(
+            instructions
+                .iter()
+                .any(|kind| matches!(kind, IrInstructionKind::StringSlice { .. }))
         );
     }
 

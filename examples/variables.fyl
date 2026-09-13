@@ -1,0 +1,7 @@
+public void main()
+{
+    int first = 20;
+    int second = 22;
+    int answer = first + second;
+    answer = answer - 1;
+}

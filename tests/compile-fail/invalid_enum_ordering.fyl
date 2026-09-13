@@ -1,0 +1,10 @@
+enum State
+{
+    first,
+    second
+}
+
+public void main()
+{
+    bool ordered = State.first < State.second;
+}

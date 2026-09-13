@@ -1,0 +1,15 @@
+# Summary
+
+- [Introduction](introduction.md)
+- [Getting Started](getting-started.md)
+- [Syntax](syntax.md)
+- [Types](types.md)
+- [Functions](functions.md)
+- [Control Flow](control-flow.md)
+- [Structs](structs.md)
+- [Enums](enums.md)
+- [Arrays](arrays.md)
+- [Lists](lists.md)
+- [Strings](strings.md)
+- [Bootstrap Compiler](bootstrap.md)
+- [Current Limitations](limitations.md)

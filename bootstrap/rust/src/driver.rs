@@ -147,8 +147,13 @@ pub fn compile(
             let code = crate::backend::x86_64::emitter::emit_module(&machine)
                 .map_err(CompileError::Emit)?;
             Some(
-                crate::backend::x86_64::elf::write_executable(&code.bytes, code.entry_offset)
-                    .map_err(CompileError::Elf)?,
+                crate::backend::x86_64::elf::write_executable(
+                    &code.bytes,
+                    code.entry_offset,
+                    &code.read_only_data,
+                    code.data_offset,
+                )
+                .map_err(CompileError::Elf)?,
             )
         }
     };
@@ -192,6 +197,9 @@ pub fn compile_file_to_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    static NATIVE_EXECUTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn check_pipeline_reaches_ir() {
@@ -246,6 +254,9 @@ mod tests {
         use std::process::Command;
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        let _execution = NATIVE_EXECUTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let directory = std::env::temp_dir().join(format!(
@@ -275,6 +286,9 @@ mod tests {
         use crate::backend::x86_64::instruction::Instruction;
         use crate::backend::x86_64::register::Register;
 
+        let _execution = NATIVE_EXECUTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let output = compile(source, "control-flow.fyl", CompileOptions::check()).unwrap();
         let helper = output
@@ -299,8 +313,13 @@ mod tests {
             Instruction::Syscall,
         ];
         let code = crate::backend::x86_64::emitter::emit_module(&machine).unwrap();
-        let elf =
-            crate::backend::x86_64::elf::write_executable(&code.bytes, code.entry_offset).unwrap();
+        let elf = crate::backend::x86_64::elf::write_executable(
+            &code.bytes,
+            code.entry_offset,
+            &code.read_only_data,
+            code.data_offset,
+        )
+        .unwrap();
         let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -313,6 +332,29 @@ mod tests {
         fs::write(&path, elf).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         let status = Command::new(&path).status().unwrap();
+        fs::remove_file(path).unwrap();
+        status.code().unwrap()
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn run_main_with_arguments(source: &str, arguments: &[&str]) -> i32 {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _execution = NATIVE_EXECUTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let output = compile(source, "arguments.fyl", CompileOptions::elf()).unwrap();
+        let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "aerofyl-arguments-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::write(&path, output.artifact.unwrap()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let status = Command::new(&path).args(arguments).status().unwrap();
         fs::remove_file(path).unwrap();
         status.code().unwrap()
     }
@@ -364,5 +406,234 @@ mod tests {
     fn executes_struct_with_enum_acceptance_program() {
         let source = "enum TokenKind { identifier, integer, eof } struct Token { TokenKind kind; int line; } public int test() { Token token = Token { kind: TokenKind.identifier, line: 1 }; if (token.kind == TokenKind.identifier) { token.line = 42; } return token.line; } public void main() { int result = test(); }";
         assert_eq!(run_helper_as_exit_status(source, "test"), 42);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_independent_whole_struct_copies() {
+        let source = "struct Point { int x; int y; } public int test() { Point a = Point { x: 10, y: 20 }; Point b = a; b.x = 50; return a.x + b.x; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 60);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_independent_whole_struct_assignment() {
+        let source = "struct Point { int x; } public int test() { Point a = Point { x: 10 }; Point b = Point { x: 1 }; b = a; b.x = 50; return a.x + b.x; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 60);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_list_of_structs_acceptance_program() {
+        let source = "enum tokenKind { identifier, integer, eof } struct Token { tokenKind kind; int line; } public int test() { list Token tokens = []; Token a = Token { kind: tokenKind.identifier, line: 10 }; Token b = Token { kind: tokenKind.integer, line: 20 }; tokens.push(a); tokens.push(b); Token first = tokens[0]; Token last = tokens.pop(); return first.line + last.line + tokens.length; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 31);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_token_struct_with_sliced_string() {
+        let source = "enum tokenKind { identifier, integer, eof } struct Token { tokenKind kind; string lexeme; int line; } public int test() { string source = \"hello 123\"; list Token tokens = []; Token token = Token { kind: tokenKind.identifier, lexeme: source.slice(0, 5), line: 1 }; tokens.push(token); Token first = tokens[0]; if (first.lexeme == \"hello\") { return first.lexeme.length; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 5);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_byte_oriented_string_slices() {
+        let source = "public int test() { string source = \"Aerofyl\"; string a = source.slice(0, 4); string b = source.slice(4, 7); string empty = source.slice(3, 3); string full = source.slice(0, source.length); string utf8 = \"é\".slice(0, 2); string byte = utf8.slice(0, 1); if (a == \"Aero\" && b == \"fyl\" && empty == \"\" && full == source && utf8 == \"é\" && byte.length == 1 && byte.byte(0) == 195) { return a.length + b.length; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 7);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn struct_list_growth_and_indexed_store_preserve_complete_values() {
+        let source = "struct Pair { int x; string name; int y; } public int test() { list Pair values = []; Pair item = Pair { x: 1, name: \"kept\", y: 2 }; values.push(item); values.push(item); values.push(item); values.push(item); values.push(item); Pair replacement = Pair { x: 10, name: \"new\", y: 20 }; values[0] = replacement; Pair loaded = values[0]; loaded.x = 99; Pair stored = values[0]; Pair last = values.pop(); if (stored.name == \"new\" && last.name == \"kept\") { return stored.x + stored.y + last.x + last.y + values.length; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 37);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_fixed_array_acceptance_program() {
+        let source = "public int test() { int[4] values = [10, 20, 30, 40]; values[1] = 25; return values[1] + values.length; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 29);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_list_acceptance_program() {
+        let source = "public int test() { list int values = [1, 2, 3]; values.push(4); values[0] = 10; int last = values.pop(); return values[0] + last + values.length; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 17);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_scalar_collection_element_types() {
+        let source = "enum State { idle, ready } public int test() { bool[2] flags = [false, true]; flags[0] = flags[1]; list State states = [State.idle]; states.push(State.ready); State last = states.pop(); char[1] chars = ['x']; list char letters = [chars[0]]; letters.push('y'); char final = letters.pop(); if (flags[0] && last == State.ready) { return chars.length + states.length + letters.length; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 3);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_string_equality_acceptance_program() {
+        let source = "public int test() { string a = \"aero\"; string b = \"aero\"; if (a == b && a != \"other\") { return 1; } return 0; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 1);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_string_concat_acceptance_program() {
+        let source = "public int test() { string a = \"Aero\"; string b = \"fyl\"; string c = a + b; if (c == \"Aerofyl\") { return c.length; } return 0; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 7);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn array_bounds_failure_exits_with_status_70() {
+        let source =
+            "public int test() { int[1] values = [1]; return values[1]; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 70);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn negative_array_index_exits_with_status_70() {
+        let source =
+            "public int test() { int[1] values = [1]; return values[-1]; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 70);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn list_bounds_failure_exits_with_status_70() {
+        let source =
+            "public int test() { list int values = [1]; return values[1]; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 70);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn empty_list_pop_exits_with_status_70() {
+        let source = "public int test() { list int values = []; return values.pop(); } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 70);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn list_growth_preserves_elements() {
+        let source = "public int test() { list int values = [1, 2, 3, 4]; values.push(5); return values[0] + values[4] + values.length; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 11);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_ascii_string_byte_access() {
+        let source = "public int test() { string text = \"Aerofyl\"; return text.byte(0); } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 65);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn string_byte_access_uses_raw_utf8_bytes() {
+        let source = "public int first() { string text = \"é\"; return text.byte(0); } public int second() { string text = \"é\"; return text.byte(1); } public int length() { string text = \"é\"; return text.length; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "first"), 195);
+        assert_eq!(run_helper_as_exit_status(source, "second"), 169);
+        assert_eq!(run_helper_as_exit_status(source, "length"), 2);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn string_byte_bounds_fail_with_status_70() {
+        let negative = "public int test() { string text = \"a\"; return text.byte(-1); } public void main() {}";
+        let at_length = "public int test() { string text = \"a\"; return text.byte(text.length); } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(negative, "test"), 70);
+        assert_eq!(run_helper_as_exit_status(at_length, "test"), 70);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn string_slice_bounds_fail_with_status_70() {
+        let negative = "public int test() { string text = \"abc\"; return text.slice(-1, 2).length; } public void main() {}";
+        let reversed = "public int test() { string text = \"abc\"; return text.slice(3, 2).length; } public void main() {}";
+        let too_high = "public int test() { string text = \"abc\"; return text.slice(0, text.length + 1).length; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(negative, "test"), 70);
+        assert_eq!(run_helper_as_exit_status(reversed, "test"), 70);
+        assert_eq!(run_helper_as_exit_status(too_high, "test"), 70);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn main_observes_zero_one_and_multiple_user_arguments() {
+        let zero = "public void main(string[] args) { int[1] trap = [0]; if (args.length != 0) { int fail = trap[1]; } }";
+        let one = "public void main(string[] args) { int[1] trap = [0]; if (args.length != 1 || args[0].byte(0) != 111) { int fail = trap[1]; } }";
+        let three = "public void main(string[] args) { int[1] trap = [0]; if (args.length != 3 || args[0].byte(0) != 111) { int fail = trap[1]; } }";
+        assert_eq!(run_main_with_arguments(zero, &[]), 0);
+        assert_eq!(run_main_with_arguments(one, &["one"]), 0);
+        assert_eq!(run_main_with_arguments(three, &["one", "two", "three"]), 0);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn reads_files_and_handles_empty_and_multiple_reads() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory =
+            std::env::temp_dir().join(format!("aerofyl-read-file-test-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let fixture = directory.join("fixture.txt");
+        let empty = directory.join("empty.txt");
+        fs::write(&fixture, b"abc").unwrap();
+        fs::write(&empty, b"").unwrap();
+        fs::set_permissions(&fixture, fs::Permissions::from_mode(0o444)).unwrap();
+        let success = format!(
+            "public int test() {{ string source = readFile(\"{}\"); return source.byte(0) + source.length; }} public void main() {{}}",
+            fixture.display()
+        );
+        let empty_source = format!(
+            "public int test() {{ string source = readFile(\"{}\"); return source.length; }} public void main() {{}}",
+            empty.display()
+        );
+        let multiple = format!(
+            "public int test() {{ string a = readFile(\"{}\"); string b = readFile(\"{}\"); return a.length + b.length; }} public void main() {{}}",
+            fixture.display(),
+            fixture.display()
+        );
+        assert_eq!(run_helper_as_exit_status(&success, "test"), 100);
+        assert_eq!(run_helper_as_exit_status(&empty_source, "test"), 0);
+        assert_eq!(run_helper_as_exit_status(&multiple, "test"), 6);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn missing_file_fails_with_status_70() {
+        let path =
+            std::env::temp_dir().join(format!("aerofyl-definitely-missing-{}", std::process::id()));
+        let source = format!(
+            "public int test() {{ string source = readFile(\"{}\"); return source.length; }} public void main() {{}}",
+            path.display()
+        );
+        assert_eq!(run_helper_as_exit_status(&source, "test"), 70);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn main_reads_source_path_from_command_line() {
+        let fixture = std::env::temp_dir().join(format!(
+            "aerofyl-source-argument-{}.fyl",
+            std::process::id()
+        ));
+        fs::write(&fixture, b"abc").unwrap();
+        let source = "public void main(string[] args) { int[1] trap = [0]; string source = readFile(args[0]); if (args.length != 1 || source.length != 3 || source.byte(0) != 97) { int fail = trap[1]; } }";
+        assert_eq!(
+            run_main_with_arguments(source, &[fixture.to_str().unwrap()]),
+            0
+        );
+        fs::remove_file(fixture).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_compiler_representative_byte_scan() {
+        let source = "enum tokenKind { character, eof } struct token { tokenKind kind; int value; } public int test() { string source = \"abc\"; list int bytes = []; int i = 0; while (i < source.length) { bytes.push(source.byte(i)); i = i + 1; } return bytes.length; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 3);
     }
 }

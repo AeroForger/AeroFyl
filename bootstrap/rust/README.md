@@ -57,16 +57,22 @@ the backend is called.
 - tuple return types containing types only
 - initialized local declarations
 - `return` statements and semicolon-terminated call expressions
-- identifier, decimal integer, decimal float, string, character, call, and
-  bracketed collection expressions
+- identifier, decimal integer, decimal float, string, character, call, indexed,
+  member, method-call, and bracketed collection expressions
 - signed 64-bit integer literals, unary negation, and precedence-aware `+`, `-`,
   `*`, and `/`
 - `true` and `false`, unary `!`, short-circuit `&&` and `||`
 - integer `==`, `!=`, `<`, `<=`, `>`, and `>=`; Boolean `==` and `!=`
 - `if`/`else`, `while`, `break`, `continue`, and exact-type variable assignment
 - fixed-layout structs with complete named-field construction, field access,
-  and field assignment
+  field assignment, and exact-type value copying
 - payload-free enums, qualified variants, and enum `==`/`!=`
+- fixed-array and list literals, indexed loads/stores, and `.length`
+- list `.push(value)` and `.pop()`, including lists of supported structs
+- UTF-8 string `.length`, content `==`/`!=`, and concatenation with `+`
+- UTF-8 byte access with `string.byte(int)`, byte-range copying with
+  `string.slice(start, end)`, and whole-file `readFile(string)`
+- executable entry points `public void main()` and `public void main(string[] args)`
 
 ## Bootstrap structs and enums
 
@@ -89,13 +95,20 @@ point.x = point.x + 1;
 
 Every field must appear exactly once in a literal and field types match exactly.
 The bootstrap layout preserves declaration order, aligns the struct to eight
-bytes, and gives each supported scalar or enum field one eight-byte slot. Field
-zero has byte offset zero, field one offset eight, and so on. This is an internal
-bootstrap layout, not a permanent Aerofyl ABI. Structs are stack-local: nested
-struct fields, whole-struct copies, struct parameters, struct returns, and
-passing structs by value are unsupported and produce structured diagnostics or
-backend errors. There is no heap allocation, field visibility, methods,
-inheritance, interfaces, generics, or default/omitted fields.
+bytes, and gives each supported `int`, `bool`, `char`, enum, or `string` field
+one eight-byte slot. Field zero has byte offset zero, field one offset eight,
+and so on. Locals hold pointers to process-lifetime heap records using this one
+reusable layout. This is an internal bootstrap representation, not a permanent
+Aerofyl ABI.
+
+Whole-struct initialization and assignment require the exact same struct type
+and copy every field slot into a fresh record. Mutating the destination therefore
+does not mutate the source. A copied string field shares its pointer to immutable
+string storage; the bytes do not need to be duplicated for each struct copy.
+Nested struct, list, array, float, dynamic, or other aggregate fields remain
+unsupported, as do struct parameters and returns. There are no references,
+aliases, field visibility, user-defined methods, inheritance, interfaces,
+generics, or default/omitted fields.
 
 Enums are payload-free and use qualified values:
 
@@ -117,17 +130,94 @@ bootstrap behavior and is not promised as a stable external ABI. Enum payloads,
 explicit discriminants, unqualified variants, methods, tagged unions, and enum
 ordering comparisons are unsupported. Enums can be stored in struct fields.
 
-Executable lowering currently supports scalar integer, Boolean, and enum values,
-stack-local structs with scalar/enum fields, integer arithmetic, and calls.
-Struct parameters and returns are not supported. An executable must have
-exactly one `public void main()` with no parameters. Linux startup calls it and
-then exits with status zero through the x86-64 `exit` syscall.
+Executable lowering currently supports integer, Boolean, character, enum,
+string, fixed-array, and list values, supported struct values, integer
+arithmetic, and calls. Struct and fixed-array parameters and
+returns are not supported. An executable must have exactly one
+`public void main()` or `public void main(string[] args)`. Linux startup calls it
+and then exits with status zero through the x86-64 `exit` syscall.
 
 For this milestone, `int` is a signed 64-bit value. The reserved primitive
 representations are IEEE-754 binary64 for `float` and a `u32` Unicode scalar
-value for `char`; executable lowering for those two types is intentionally not
+value for `char`; floating-point executable lowering is intentionally not
 present. Boolean values are canonical `0` (false) or `1` (true) in registers and
 occupy one eight-byte bootstrap stack slot, matching the simple IR value layout.
+
+## Bootstrap arrays, lists, and strings
+
+Fixed arrays are stack-local contiguous eight-byte slots. Their length is part
+of the type and must exactly match the literal. Index expressions must have type
+`int`; both indexed reads and writes perform signed runtime bounds checks, so a
+negative index or an index greater than or equal to the length terminates the
+process with bootstrap failure status 70. `.length` is the compile-time array
+length. Whole-array copies and fixed-array function ABI values are unsupported.
+
+Lists are heap-backed and represented internally by a pointer to a header
+containing eight-byte length, capacity, and element stride fields, followed by
+contiguous element storage. Scalar and enum strides are eight bytes; a struct's
+stride is its complete fixed layout size. A literal starts with capacity of at
+least four. `.push(value)` grows full storage by doubling it through Linux
+`mremap`, which preserves the header and every byte of every element. Aggregate
+push, pop, indexed load, and indexed store copy all field slots. In particular,
+mutating a struct loaded from a list does not mutate the stored element; an
+explicit indexed assignment is required to write it back. Indexed access uses
+the current length; out-of-bounds access and popping an empty list terminate
+with status 70. Storage is valid for the life of the process and is
+intentionally not reclaimed. There is no whole-list cloning operation.
+
+Strings are immutable UTF-8 byte sequences represented by a heap pointer to an
+eight-byte byte length followed by the bytes. `.length` therefore reports bytes,
+not Unicode scalar values or grapheme clusters. Equality and inequality compare
+contents rather than pointers. `+` allocates a new concatenated string; operands
+are unchanged. String indexing is rejected. Deduplicated string literals live
+in an eight-byte-aligned, read-only ELF load segment, separate from executable
+code; code reaches them with RIP-relative addresses.
+
+`string.slice(start, end)` allocates an independent length-prefixed string and
+copies the selected bytes. `start` is inclusive, `end` is exclusive, and both
+are `int` UTF-8 byte offsets satisfying
+`0 <= start <= end <= source.length`. Invalid bounds terminate with status 70;
+indexes are never clamped. Empty and full slices are valid, and equality with an
+empty literal works. Boundaries need not align to Unicode scalar values, so a
+slice may contain arbitrary bytes rather than valid UTF-8. This operation is
+byte-oriented intentionally for compiler source processing; it does not provide
+character or grapheme slicing.
+
+Array elements remain restricted to `int`, `bool`, `char`, or a payload-free
+enum. Lists additionally accept structs whose fields all satisfy the bootstrap
+layout restrictions above. Lists of lists, lists of arrays, and lists of
+unsupported structs remain rejected. Collection literals require an expected
+array/list type; standalone inference remains intentionally unspecified. The
+dependency-free runtime obtains storage directly with Linux `mmap`; it uses no libc, assembler,
+linker, or external compiler.
+
+## Bootstrap source ingestion
+
+`string.byte(index)` returns the unsigned integer value `0..255` at a UTF-8 byte
+offset. The index must be `int`. Negative indexes and indexes greater than or
+equal to `.length` terminate the process with status 70. This does not enable
+`text[index]`: ordinary string indexing and Unicode character/grapheme indexing
+remain unsupported. For example, `"é"` has length 2 and byte values 195 and 169.
+
+`readFile(path)` accepts exactly one string and reads the complete regular file
+as raw bytes into the existing length-prefixed string representation. The Linux
+runtime creates a temporary NUL-terminated path, calls `openat`, obtains the
+length with `lseek`, reads until that length or EOF, and calls `close`. File data
+is allocated with the shared `mmap` allocator and lives until process exit.
+Open, seek, read, close, and allocation failures terminate with status 70. There
+are no file objects, writing, directory APIs, filesystem iteration, stdin, or
+environment-variable APIs.
+
+The `string[]` spelling is a bootstrap-only, read-only command-line argument
+type. It is valid solely as the one parameter of `public void main`; ordinary
+string arrays, local `string[]` declarations, mutation, and whole-value copies
+remain unsupported. Startup reads Linux `argc`/`argv`, excludes native
+`argv[0]`, copies each user argument into an Aerofyl length-prefixed string, and
+materializes a generalized list-compatible
+`{length, capacity, stride, string pointers...}` block.
+Consequently `args.length` is the number of user arguments and `args[0]` is
+native `argv[1]`. These process-lifetime allocations are a temporary bootstrap
+ABI, not Aerofyl's final command-line or collection representation.
 
 The deliberately simple backend gives every parameter, local, and IR temporary
 an eight-byte stack slot. It uses fixed caller-saved registers for operations,
@@ -163,10 +253,10 @@ The following decisions are intentionally not made by the bootstrap:
 - comment syntax
 - alternate integer spellings and Aerofyl-level overflow/trap semantics
 - floating-point code generation and runtime representation
-- string/character escapes and runtime representation
+- string/character escapes
 - `use` and `using` grammar, module lookup, and imported-name behavior
 - tuple value syntax
-- standalone collection inference and collection representation
+- standalone collection inference and the eventual stable collection ABI
 - implicit conversions, coercions, promotion, `dynamic` behavior, and other
   type-system relationships
 - builtin signatures and behavior for `print` and `input`
@@ -177,6 +267,12 @@ The following decisions are intentionally not made by the bootstrap:
 Unsupported constructs retain their frontend/IR interfaces but executable
 lowering returns structured diagnostics or backend errors. Assignment is a
 statement targeting an existing variable; compound assignments are unsupported.
+
+Check a source file without emitting an executable:
+
+```text
+cargo run -p aerofyl-bootstrap -- <source.fyl>
+```
 
 The bootstrap-only executable command is:
 

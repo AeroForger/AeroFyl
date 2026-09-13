@@ -1,0 +1,5 @@
+public void main()
+{
+    string value = "abc";
+    string part = value.slice(true, 2);
+}

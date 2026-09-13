@@ -17,13 +17,51 @@ pub enum Instruction {
         destination: Register,
         value: u64,
     },
+    LoadDataAddress {
+        destination: Register,
+        offset: usize,
+    },
     Load64 {
+        destination: Register,
+        base: Register,
+        displacement: i32,
+    },
+    Load8 {
         destination: Register,
         base: Register,
         displacement: i32,
     },
     Store64 {
         base: Register,
+        displacement: i32,
+        source: Register,
+    },
+    Store8 {
+        base: Register,
+        displacement: i32,
+        source: Register,
+    },
+    IndexedLoad64 {
+        destination: Register,
+        base: Register,
+        index: Register,
+        displacement: i32,
+    },
+    IndexedLoad8 {
+        destination: Register,
+        base: Register,
+        index: Register,
+        displacement: i32,
+    },
+    IndexedStore64 {
+        base: Register,
+        index: Register,
+        displacement: i32,
+        source: Register,
+    },
+    IndexedStore8 {
+        base: Register,
+        index: Register,
         displacement: i32,
         source: Register,
     },
@@ -53,8 +91,13 @@ pub enum Instruction {
     Call(SymbolId),
     Jump(BlockId),
     JumpIfZero(BlockId),
+    JumpIf {
+        condition: Condition,
+        target: BlockId,
+    },
     Return,
     Syscall,
+    ExitFailure,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,4 +122,5 @@ pub struct MachineModule {
     pub startup: Vec<Instruction>,
     pub entry_function: SymbolId,
     pub functions: Vec<MachineFunction>,
+    pub read_only_data: Vec<u8>,
 }

@@ -101,6 +101,10 @@ pub enum IrInstructionKind {
         struct_id: TypeId,
         fields: Vec<(u32, ValueId)>,
     },
+    AggregateCopy {
+        struct_id: TypeId,
+        source: ValueId,
+    },
     FieldLoad {
         local: SymbolId,
         struct_id: TypeId,
@@ -116,6 +120,83 @@ pub enum IrInstructionKind {
         enum_id: TypeId,
         variant: u32,
     },
+    ArrayInit {
+        local: SymbolId,
+        element_type: Type,
+        length: usize,
+        values: Vec<ValueId>,
+    },
+    ArrayLoad {
+        local: SymbolId,
+        element_type: Type,
+        length: usize,
+        index: ValueId,
+    },
+    ArrayStore {
+        local: SymbolId,
+        element_type: Type,
+        length: usize,
+        index: ValueId,
+        value: ValueId,
+    },
+    ArrayLength(usize),
+    ListInit {
+        local: SymbolId,
+        element_type: Type,
+        values: Vec<ValueId>,
+    },
+    ListLoad {
+        local: SymbolId,
+        element_type: Type,
+        index: ValueId,
+    },
+    ListStore {
+        local: SymbolId,
+        element_type: Type,
+        index: ValueId,
+        value: ValueId,
+    },
+    ListPush {
+        local: SymbolId,
+        element_type: Type,
+        value: ValueId,
+    },
+    ListPop {
+        local: SymbolId,
+        element_type: Type,
+    },
+    ListLength {
+        local: SymbolId,
+        element_type: Type,
+    },
+    CliArgLoad {
+        local: SymbolId,
+        index: ValueId,
+    },
+    CliArgsLength {
+        local: SymbolId,
+    },
+    StringConstant(String),
+    StringConcat {
+        left: ValueId,
+        right: ValueId,
+    },
+    StringEqual {
+        equal: bool,
+        left: ValueId,
+        right: ValueId,
+    },
+    StringLength(ValueId),
+    StringByte {
+        value: ValueId,
+        index: ValueId,
+    },
+    StringSlice {
+        value: ValueId,
+        start: ValueId,
+        end: ValueId,
+    },
+    ReadFile(ValueId),
     Copy(ValueId),
     Call {
         function: SymbolId,

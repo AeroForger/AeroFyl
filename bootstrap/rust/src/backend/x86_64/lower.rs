@@ -11,6 +11,7 @@ use crate::middle::verify::VerifiedIrModule;
 
 use super::instruction::{Condition, Instruction, MachineFunction, MachineModule};
 use super::register::Register;
+use super::runtime;
 use super::startup;
 
 const ARGUMENT_REGISTERS: [Register; 6] = [
@@ -107,9 +108,14 @@ pub fn lower(module: &VerifiedIrModule<'_>) -> Result<MachineModule, BackendErro
         .iter()
         .find(|function| function.name == "main")
         .ok_or(BackendError::MissingMain)?;
-    if main.visibility != Visibility::Public
-        || main.return_type != Type::Void
-        || !main.parameters.is_empty()
+    let valid_parameters = matches!(
+        main.parameters.as_slice(),
+        [] | [crate::middle::ir::IrLocal {
+            ty: Type::CliArgs,
+            ..
+        }]
+    );
+    if main.visibility != Visibility::Public || main.return_type != Type::Void || !valid_parameters
     {
         return Err(BackendError::InvalidMain);
     }
@@ -137,22 +143,57 @@ pub fn lower(module: &VerifiedIrModule<'_>) -> Result<MachineModule, BackendErro
     }
 
     let structs: HashMap<_, _> = module.structs.iter().map(|item| (item.id, item)).collect();
-    let functions = module
+    let (string_offsets, read_only_data) = collect_string_data(module);
+    let mut functions = module
         .functions
         .iter()
-        .map(|function| lower_function(function, &structs))
+        .map(|function| lower_function(function, &structs, &string_offsets))
         .collect::<Result<Vec<_>, _>>()?;
+    functions.extend(runtime::functions());
     Ok(MachineModule {
-        startup: startup::generate(main.symbol),
+        startup: startup::generate(main.symbol, !main.parameters.is_empty()),
         entry_function: main.symbol,
         functions,
+        read_only_data,
     })
+}
+
+fn collect_string_data(module: &crate::middle::ir::IrModule) -> (HashMap<String, usize>, Vec<u8>) {
+    let mut offsets = HashMap::new();
+    let mut data = Vec::new();
+    for value in module
+        .functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match &instruction.kind {
+            IrInstructionKind::StringConstant(value) => Some(value),
+            _ => None,
+        })
+    {
+        if offsets.contains_key(value) {
+            continue;
+        }
+        while data.len() % 8 != 0 {
+            data.push(0);
+        }
+        offsets.insert(value.clone(), data.len());
+        data.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        data.extend_from_slice(value.as_bytes());
+    }
+    (offsets, data)
 }
 
 fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
     if !matches!(
         function.return_type,
-        Type::Int | Type::Bool | Type::Enum(_) | Type::Void
+        Type::Int
+            | Type::Bool
+            | Type::Char
+            | Type::String
+            | Type::Enum(_)
+            | Type::List(_)
+            | Type::Void
     ) {
         return Err(BackendError::UnsupportedType {
             function: function.name.clone(),
@@ -160,7 +201,16 @@ fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
         });
     }
     for parameter in &function.parameters {
-        if !matches!(parameter.ty, Type::Int | Type::Bool | Type::Enum(_)) {
+        if !matches!(
+            parameter.ty,
+            Type::Int
+                | Type::Bool
+                | Type::Char
+                | Type::String
+                | Type::CliArgs
+                | Type::Enum(_)
+                | Type::List(_)
+        ) {
             return Err(BackendError::UnsupportedType {
                 function: function.name.clone(),
                 ty: parameter.ty.clone(),
@@ -170,7 +220,15 @@ fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
     for local in &function.locals {
         if !matches!(
             local.ty,
-            Type::Int | Type::Bool | Type::Enum(_) | Type::Struct(_)
+            Type::Int
+                | Type::Bool
+                | Type::Char
+                | Type::String
+                | Type::Enum(_)
+                | Type::Struct(_)
+                | Type::Array { .. }
+                | Type::List(_)
+                | Type::CliArgs
         ) {
             return Err(BackendError::UnsupportedType {
                 function: function.name.clone(),
@@ -190,8 +248,9 @@ struct Slots {
 fn lower_function(
     function: &IrFunction,
     structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
+    string_offsets: &HashMap<String, usize>,
 ) -> Result<MachineFunction, BackendError> {
-    let slots = build_slots(function, structs)?;
+    let slots = build_slots(function)?;
     let mut instructions = vec![
         Instruction::Push(Register::Rbp),
         Instruction::MoveRegister {
@@ -230,7 +289,14 @@ fn lower_function(
     for block in &function.blocks {
         instructions.push(Instruction::Label(block.id));
         for instruction in &block.instructions {
-            lower_instruction(function, instruction, &slots, structs, &mut instructions)?;
+            lower_instruction(
+                function,
+                instruction,
+                &slots,
+                structs,
+                string_offsets,
+                &mut instructions,
+            )?;
         }
         lower_terminator(
             block
@@ -248,17 +314,14 @@ fn lower_function(
     })
 }
 
-fn build_slots(
-    function: &IrFunction,
-    structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
-) -> Result<Slots, BackendError> {
+fn build_slots(function: &IrFunction) -> Result<Slots, BackendError> {
     let mut locals = HashMap::new();
     let mut values = HashMap::new();
     let mut count = 0usize;
     for local in function.parameters.iter().chain(&function.locals) {
         if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(local.symbol) {
             let width = match local.ty {
-                Type::Struct(id) => structs.get(&id).map_or(1, |item| item.fields.len()),
+                Type::Array { length, .. } => length,
                 _ => 1,
             };
             count += width;
@@ -313,6 +376,7 @@ fn lower_instruction(
     instruction: &IrInstruction,
     slots: &Slots,
     structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
+    string_offsets: &HashMap<String, usize>,
     output: &mut Vec<Instruction>,
 ) -> Result<(), BackendError> {
     match &instruction.kind {
@@ -333,6 +397,13 @@ fn lower_instruction(
             });
             store_result(instruction, slots, output)?;
         }
+        IrInstructionKind::Constant(IrConstant::Char(value)) => {
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: u64::from(*value as u32),
+            });
+            store_result(instruction, slots, output)?;
+        }
         IrInstructionKind::Constant(_) => {
             return Err(BackendError::UnsupportedIr {
                 function: function.name.clone(),
@@ -340,12 +411,6 @@ fn lower_instruction(
             });
         }
         IrInstructionKind::LoadLocal(symbol) => {
-            if matches!(instruction.result_type, Some(Type::Struct(_))) {
-                return Err(BackendError::UnsupportedIr {
-                    function: function.name.clone(),
-                    feature: "whole-struct values",
-                });
-            }
             output.push(Instruction::Load64 {
                 destination: Register::Rax,
                 base: Register::Rbp,
@@ -354,17 +419,6 @@ fn lower_instruction(
             store_result(instruction, slots, output)?;
         }
         IrInstructionKind::BindLocal { local, value } => {
-            if function
-                .locals
-                .iter()
-                .chain(&function.parameters)
-                .any(|item| item.symbol == *local && matches!(item.ty, Type::Struct(_)))
-            {
-                return Err(BackendError::UnsupportedIr {
-                    function: function.name.clone(),
-                    feature: "whole-struct assignment",
-                });
-            }
             load_value(output, slots, *value, Register::Rax)?;
             output.push(Instruction::Store64 {
                 base: Register::Rbp,
@@ -377,24 +431,78 @@ fn lower_instruction(
             struct_id,
             fields,
         } => {
+            emit_struct_allocation(output, structs, *struct_id, function)?;
+            output.push(Instruction::MoveRegister {
+                destination: Register::R11,
+                source: Register::Rax,
+            });
             for (field, value) in fields {
                 load_value(output, slots, *value, Register::Rax)?;
                 output.push(Instruction::Store64 {
-                    base: Register::Rbp,
-                    displacement: local_field_slot(
-                        slots,
-                        *local,
-                        field_offset(structs, *struct_id, *field, function)?,
-                    )?,
+                    base: Register::R11,
+                    displacement: i32::try_from(field_offset(
+                        structs, *struct_id, *field, function,
+                    )?)
+                    .map_err(|_| BackendError::FrameTooLarge(function.name.clone()))?,
                     source: Register::Rax,
                 });
             }
-        }
-        IrInstructionKind::StructValue { .. } => {
-            return Err(BackendError::UnsupportedIr {
-                function: function.name.clone(),
-                feature: "non-local struct values",
+            output.push(Instruction::Store64 {
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+                source: Register::R11,
             });
+        }
+        IrInstructionKind::StructValue { struct_id, fields } => {
+            emit_struct_allocation(output, structs, *struct_id, function)?;
+            output.push(Instruction::MoveRegister {
+                destination: Register::R11,
+                source: Register::Rax,
+            });
+            for (field, value) in fields {
+                load_value(output, slots, *value, Register::Rax)?;
+                output.push(Instruction::Store64 {
+                    base: Register::R11,
+                    displacement: i32::try_from(field_offset(
+                        structs, *struct_id, *field, function,
+                    )?)
+                    .map_err(|_| BackendError::FrameTooLarge(function.name.clone()))?,
+                    source: Register::Rax,
+                });
+            }
+            output.push(Instruction::MoveRegister {
+                destination: Register::Rax,
+                source: Register::R11,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::AggregateCopy { struct_id, source } => {
+            load_value(output, slots, *source, Register::Rax)?;
+            store_result(instruction, slots, output)?;
+            emit_struct_allocation(output, structs, *struct_id, function)?;
+            output.push(Instruction::MoveRegister {
+                destination: Register::Rdx,
+                source: Register::Rax,
+            });
+            load_value(
+                output,
+                slots,
+                instruction
+                    .result
+                    .ok_or(BackendError::MissingInstructionResult)?,
+                Register::Rcx,
+            )?;
+            emit_copy_words(
+                output,
+                Register::Rcx,
+                Register::Rdx,
+                struct_word_count(structs, *struct_id, function)?,
+            )?;
+            output.push(Instruction::MoveRegister {
+                destination: Register::Rax,
+                source: Register::Rdx,
+            });
+            store_result(instruction, slots, output)?;
         }
         IrInstructionKind::FieldLoad {
             local,
@@ -404,11 +512,13 @@ fn lower_instruction(
             output.push(Instruction::Load64 {
                 destination: Register::Rax,
                 base: Register::Rbp,
-                displacement: local_field_slot(
-                    slots,
-                    *local,
-                    field_offset(structs, *struct_id, *field, function)?,
-                )?,
+                displacement: local_slot(slots, *local)?,
+            });
+            output.push(Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rax,
+                displacement: i32::try_from(field_offset(structs, *struct_id, *field, function)?)
+                    .map_err(|_| BackendError::FrameTooLarge(function.name.clone()))?,
             });
             store_result(instruction, slots, output)?;
         }
@@ -419,14 +529,16 @@ fn lower_instruction(
             value,
             ..
         } => {
+            output.push(Instruction::Load64 {
+                destination: Register::Rcx,
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+            });
             load_value(output, slots, *value, Register::Rax)?;
             output.push(Instruction::Store64 {
-                base: Register::Rbp,
-                displacement: local_field_slot(
-                    slots,
-                    *local,
-                    field_offset(structs, *struct_id, *field, function)?,
-                )?,
+                base: Register::Rcx,
+                displacement: i32::try_from(field_offset(structs, *struct_id, *field, function)?)
+                    .map_err(|_| BackendError::FrameTooLarge(function.name.clone()))?,
                 source: Register::Rax,
             });
         }
@@ -435,6 +547,394 @@ fn lower_instruction(
                 destination: Register::Rax,
                 value: u64::from(*variant),
             });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::ArrayInit { local, values, .. } => {
+            for (index, value) in values.iter().enumerate() {
+                load_value(output, slots, *value, Register::Rax)?;
+                output.push(Instruction::Store64 {
+                    base: Register::Rbp,
+                    displacement: local_field_slot(
+                        slots,
+                        *local,
+                        byte_offset(index, &function.name)?,
+                    )?,
+                    source: Register::Rax,
+                });
+            }
+        }
+        IrInstructionKind::ArrayLoad {
+            local,
+            length,
+            index,
+            ..
+        } => {
+            load_value(output, slots, *index, Register::Rdi)?;
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rsi,
+                value: usize_to_u64(*length, &function.name)?,
+            });
+            output.push(Instruction::Call(runtime::BOUNDS_CHECK));
+            output.push(Instruction::IndexedLoad64 {
+                destination: Register::Rax,
+                base: Register::Rbp,
+                index: Register::Rdi,
+                displacement: local_slot(slots, *local)?,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::ArrayStore {
+            local,
+            length,
+            index,
+            value,
+            ..
+        } => {
+            load_value(output, slots, *index, Register::Rdi)?;
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rsi,
+                value: usize_to_u64(*length, &function.name)?,
+            });
+            load_value(output, slots, *value, Register::Rdx)?;
+            output.push(Instruction::Call(runtime::BOUNDS_CHECK));
+            output.push(Instruction::IndexedStore64 {
+                base: Register::Rbp,
+                index: Register::Rdi,
+                displacement: local_slot(slots, *local)?,
+                source: Register::Rdx,
+            });
+        }
+        IrInstructionKind::ArrayLength(length) => {
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: usize_to_u64(*length, &function.name)?,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::ListInit {
+            local,
+            element_type,
+            values,
+        } => {
+            let capacity = values.len().max(4);
+            let stride = type_stride(element_type, structs, function)?;
+            let bytes = capacity
+                .checked_mul(stride)
+                .and_then(|bytes| bytes.checked_add(24))
+                .ok_or_else(|| BackendError::FrameTooLarge(function.name.clone()))?;
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rdi,
+                value: usize_to_u64(bytes, &function.name)?,
+            });
+            output.push(Instruction::Call(runtime::ALLOC));
+            output.push(Instruction::MoveRegister {
+                destination: Register::R11,
+                source: Register::Rax,
+            });
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: usize_to_u64(values.len(), &function.name)?,
+            });
+            output.push(Instruction::Store64 {
+                base: Register::R11,
+                displacement: 0,
+                source: Register::Rax,
+            });
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: usize_to_u64(capacity, &function.name)?,
+            });
+            output.push(Instruction::Store64 {
+                base: Register::R11,
+                displacement: 8,
+                source: Register::Rax,
+            });
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: usize_to_u64(stride, &function.name)?,
+            });
+            output.push(Instruction::Store64 {
+                base: Register::R11,
+                displacement: 16,
+                source: Register::Rax,
+            });
+            for (index, value) in values.iter().enumerate() {
+                let element_offset = index
+                    .checked_mul(stride)
+                    .and_then(|offset| offset.checked_add(24))
+                    .ok_or_else(|| BackendError::FrameTooLarge(function.name.clone()))?;
+                if let Type::Struct(struct_id) = element_type {
+                    load_value(output, slots, *value, Register::Rcx)?;
+                    for word in 0..struct_word_count(structs, *struct_id, function)? {
+                        let source_offset = i32::try_from(word * 8)
+                            .map_err(|_| BackendError::FrameTooLarge(function.name.clone()))?;
+                        let destination_offset = i32::try_from(element_offset + word * 8)
+                            .map_err(|_| BackendError::FrameTooLarge(function.name.clone()))?;
+                        output.push(Instruction::Load64 {
+                            destination: Register::Rax,
+                            base: Register::Rcx,
+                            displacement: source_offset,
+                        });
+                        output.push(Instruction::Store64 {
+                            base: Register::R11,
+                            displacement: destination_offset,
+                            source: Register::Rax,
+                        });
+                    }
+                } else {
+                    load_value(output, slots, *value, Register::Rax)?;
+                    output.push(Instruction::Store64 {
+                        base: Register::R11,
+                        displacement: i32::try_from(element_offset)
+                            .map_err(|_| BackendError::FrameTooLarge(function.name.clone()))?,
+                        source: Register::Rax,
+                    });
+                }
+            }
+            output.push(Instruction::Store64 {
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+                source: Register::R11,
+            });
+        }
+        IrInstructionKind::ListLoad {
+            local,
+            element_type,
+            index,
+        } => {
+            output.push(Instruction::Load64 {
+                destination: Register::Rdi,
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+            });
+            load_value(output, slots, *index, Register::Rsi)?;
+            if let Type::Struct(struct_id) = element_type {
+                output.push(Instruction::Call(runtime::LIST_ELEMENT));
+                store_result(instruction, slots, output)?;
+                emit_struct_allocation(output, structs, *struct_id, function)?;
+                output.push(Instruction::MoveRegister {
+                    destination: Register::Rdx,
+                    source: Register::Rax,
+                });
+                load_value(
+                    output,
+                    slots,
+                    instruction
+                        .result
+                        .ok_or(BackendError::MissingInstructionResult)?,
+                    Register::Rcx,
+                )?;
+                emit_copy_words(
+                    output,
+                    Register::Rcx,
+                    Register::Rdx,
+                    struct_word_count(structs, *struct_id, function)?,
+                )?;
+                output.push(Instruction::MoveRegister {
+                    destination: Register::Rax,
+                    source: Register::Rdx,
+                });
+                store_result(instruction, slots, output)?;
+            } else {
+                output.push(Instruction::Call(runtime::LIST_LOAD));
+                store_result(instruction, slots, output)?;
+            }
+        }
+        IrInstructionKind::ListStore {
+            local,
+            element_type,
+            index,
+            value,
+        } => {
+            output.push(Instruction::Load64 {
+                destination: Register::Rdi,
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+            });
+            load_value(output, slots, *index, Register::Rsi)?;
+            if let Type::Struct(struct_id) = element_type {
+                output.push(Instruction::Call(runtime::LIST_ELEMENT));
+                output.push(Instruction::MoveRegister {
+                    destination: Register::Rdx,
+                    source: Register::Rax,
+                });
+                load_value(output, slots, *value, Register::Rcx)?;
+                emit_copy_words(
+                    output,
+                    Register::Rcx,
+                    Register::Rdx,
+                    struct_word_count(structs, *struct_id, function)?,
+                )?;
+            } else {
+                load_value(output, slots, *value, Register::Rdx)?;
+                output.push(Instruction::Call(runtime::LIST_STORE));
+            }
+        }
+        IrInstructionKind::ListPush {
+            local,
+            element_type,
+            value,
+        } => {
+            output.push(Instruction::Load64 {
+                destination: Register::Rdi,
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+            });
+            output.push(Instruction::Call(runtime::LIST_PUSH));
+            output.push(Instruction::Store64 {
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+                source: Register::Rax,
+            });
+            if let Type::Struct(struct_id) = element_type {
+                load_value(output, slots, *value, Register::Rcx)?;
+                emit_copy_words(
+                    output,
+                    Register::Rcx,
+                    Register::Rdx,
+                    struct_word_count(structs, *struct_id, function)?,
+                )?;
+            } else {
+                load_value(output, slots, *value, Register::Rcx)?;
+                output.push(Instruction::Store64 {
+                    base: Register::Rdx,
+                    displacement: 0,
+                    source: Register::Rcx,
+                });
+            }
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: 0,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::ListPop {
+            local,
+            element_type,
+        } => {
+            output.push(Instruction::Load64 {
+                destination: Register::Rdi,
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+            });
+            if let Type::Struct(struct_id) = element_type {
+                output.push(Instruction::Call(runtime::LIST_POP_ELEMENT));
+                store_result(instruction, slots, output)?;
+                emit_struct_allocation(output, structs, *struct_id, function)?;
+                output.push(Instruction::MoveRegister {
+                    destination: Register::Rdx,
+                    source: Register::Rax,
+                });
+                load_value(
+                    output,
+                    slots,
+                    instruction
+                        .result
+                        .ok_or(BackendError::MissingInstructionResult)?,
+                    Register::Rcx,
+                )?;
+                emit_copy_words(
+                    output,
+                    Register::Rcx,
+                    Register::Rdx,
+                    struct_word_count(structs, *struct_id, function)?,
+                )?;
+                output.push(Instruction::MoveRegister {
+                    destination: Register::Rax,
+                    source: Register::Rdx,
+                });
+                store_result(instruction, slots, output)?;
+            } else {
+                output.push(Instruction::Call(runtime::LIST_POP));
+                store_result(instruction, slots, output)?;
+            }
+        }
+        IrInstructionKind::ListLength { local, .. } => {
+            output.push(Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+            });
+            output.push(Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rax,
+                displacement: 0,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::CliArgLoad { local, index } => {
+            output.push(Instruction::Load64 {
+                destination: Register::Rdi,
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+            });
+            load_value(output, slots, *index, Register::Rsi)?;
+            output.push(Instruction::Call(runtime::LIST_LOAD));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::CliArgsLength { local } => {
+            output.push(Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rbp,
+                displacement: local_slot(slots, *local)?,
+            });
+            output.push(Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rax,
+                displacement: 0,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::StringConstant(value) => {
+            output.push(Instruction::LoadDataAddress {
+                destination: Register::Rax,
+                offset: *string_offsets
+                    .get(value)
+                    .expect("collected every IR string constant"),
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::StringConcat { left, right } => {
+            load_value(output, slots, *left, Register::Rdi)?;
+            load_value(output, slots, *right, Register::Rsi)?;
+            output.push(Instruction::Call(runtime::STRING_CONCAT));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::StringEqual { equal, left, right } => {
+            load_value(output, slots, *left, Register::Rdi)?;
+            load_value(output, slots, *right, Register::Rsi)?;
+            output.push(Instruction::Call(runtime::STRING_EQUAL));
+            if !equal {
+                output.push(Instruction::Test(Register::Rax));
+                output.push(Instruction::MaterializeCondition(Condition::Equal));
+            }
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::StringLength(value) => {
+            load_value(output, slots, *value, Register::Rax)?;
+            output.push(Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rax,
+                displacement: 0,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::StringByte { value, index } => {
+            load_value(output, slots, *value, Register::Rdi)?;
+            load_value(output, slots, *index, Register::Rsi)?;
+            output.push(Instruction::Call(runtime::STRING_BYTE));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::StringSlice { value, start, end } => {
+            load_value(output, slots, *value, Register::Rdi)?;
+            load_value(output, slots, *start, Register::Rsi)?;
+            load_value(output, slots, *end, Register::Rdx)?;
+            output.push(Instruction::Call(runtime::STRING_SLICE));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::ReadFile(path) => {
+            load_value(output, slots, *path, Register::Rdi)?;
+            output.push(Instruction::Call(runtime::READ_FILE));
             store_result(instruction, slots, output)?;
         }
         IrInstructionKind::Copy(value) => {
@@ -637,6 +1137,88 @@ fn local_slot(slots: &Slots, symbol: SymbolId) -> Result<i32, BackendError> {
         .ok_or(BackendError::MissingLocalSlot(symbol))
 }
 
+fn byte_offset(index: usize, function: &str) -> Result<u32, BackendError> {
+    index
+        .checked_mul(8)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| BackendError::FrameTooLarge(function.to_owned()))
+}
+
+fn usize_to_u64(value: usize, function: &str) -> Result<u64, BackendError> {
+    u64::try_from(value).map_err(|_| BackendError::FrameTooLarge(function.to_owned()))
+}
+
+fn struct_word_count(
+    structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
+    struct_id: crate::frontend::types::TypeId,
+    function: &IrFunction,
+) -> Result<usize, BackendError> {
+    structs
+        .get(&struct_id)
+        .map(|definition| definition.fields.len().max(1))
+        .ok_or_else(|| BackendError::UnsupportedIr {
+            function: function.name.clone(),
+            feature: "invalid verified struct layout",
+        })
+}
+
+fn type_stride(
+    ty: &Type,
+    structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
+    function: &IrFunction,
+) -> Result<usize, BackendError> {
+    match ty {
+        Type::Struct(id) => struct_word_count(structs, *id, function)?
+            .checked_mul(8)
+            .ok_or_else(|| BackendError::FrameTooLarge(function.name.clone())),
+        _ => Ok(8),
+    }
+}
+
+fn emit_struct_allocation(
+    output: &mut Vec<Instruction>,
+    structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
+    struct_id: crate::frontend::types::TypeId,
+    function: &IrFunction,
+) -> Result<(), BackendError> {
+    let bytes = struct_word_count(structs, struct_id, function)?
+        .checked_mul(8)
+        .ok_or_else(|| BackendError::FrameTooLarge(function.name.clone()))?;
+    output.push(Instruction::MoveImmediate64 {
+        destination: Register::Rdi,
+        value: usize_to_u64(bytes, &function.name)?,
+    });
+    output.push(Instruction::Call(runtime::ALLOC));
+    Ok(())
+}
+
+fn emit_copy_words(
+    output: &mut Vec<Instruction>,
+    source: Register,
+    destination: Register,
+    words: usize,
+) -> Result<(), BackendError> {
+    for index in 0..words {
+        let displacement = i32::try_from(
+            index
+                .checked_mul(8)
+                .ok_or_else(|| BackendError::FrameTooLarge("aggregate copy".into()))?,
+        )
+        .map_err(|_| BackendError::FrameTooLarge("aggregate copy".into()))?;
+        output.push(Instruction::Load64 {
+            destination: Register::Rax,
+            base: source,
+            displacement,
+        });
+        output.push(Instruction::Store64 {
+            base: destination,
+            displacement,
+            source: Register::Rax,
+        });
+    }
+    Ok(())
+}
+
 fn field_offset(
     structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
     struct_id: crate::frontend::types::TypeId,
@@ -811,7 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn allocates_struct_fields_as_consecutive_stack_slots() {
+    fn allocates_structs_with_reusable_heap_layout() {
         let module = lower_source(
             "struct Pair { int first; int second; } public void main() { Pair pair = Pair { first: 1, second: 2 }; }",
         );
@@ -823,8 +1405,14 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(stores.contains(&-16));
-        assert!(stores.contains(&-8));
+        assert!(
+            module.functions[0]
+                .instructions
+                .iter()
+                .any(|item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::ALLOC))
+        );
+        assert!(stores.contains(&0));
+        assert!(stores.contains(&8));
     }
 
     #[test]
@@ -836,14 +1424,14 @@ mod tests {
         assert!(instructions.iter().any(|item| matches!(
             item,
             Instruction::Store64 {
-                displacement: -8,
+                displacement: 0,
                 ..
             }
         )));
         assert!(instructions.iter().any(|item| matches!(
             item,
             Instruction::Load64 {
-                displacement: -8,
+                displacement: 0,
                 ..
             }
         )));
@@ -881,6 +1469,88 @@ mod tests {
     }
 
     #[test]
+    fn lowers_collections_and_strings_through_runtime_helpers() {
+        let module = lower_source(
+            "public void main() { int[2] a = [1, 2]; a[0] = a[1]; list int xs = [3]; xs.push(a[0]); int p = xs.pop(); string s = \"a\" + \"b\"; bool same = s == \"ab\"; }",
+        );
+        let main = &module.functions[0].instructions;
+        assert!(
+            main.iter()
+                .any(|item| matches!(item, Instruction::IndexedLoad64 { .. }))
+        );
+        assert!(
+            main.iter()
+                .any(|item| matches!(item, Instruction::IndexedStore64 { .. }))
+        );
+        assert!(main.iter().any(
+            |item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::LIST_PUSH)
+        ));
+        assert!(
+            main.iter().any(
+                |item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::LIST_POP)
+            )
+        );
+        assert!(main.iter().any(
+            |item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::STRING_CONCAT)
+        ));
+        assert!(main.iter().any(
+            |item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::STRING_EQUAL)
+        ));
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|function| function.symbol == runtime::ALLOC)
+        );
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|function| function.symbol == runtime::BOUNDS_CHECK)
+        );
+        assert!(
+            main.iter()
+                .any(|item| matches!(item, Instruction::LoadDataAddress { .. }))
+        );
+        assert!(module.read_only_data.windows(2).any(|bytes| bytes == b"ab"));
+    }
+
+    #[test]
+    fn lowers_source_ingestion_through_central_runtime_helpers() {
+        let module = lower_source(
+            "private int scan() { string source = readFile(\"fixture\"); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+        );
+        let scan = &module.functions[0].instructions;
+        assert!(scan.iter().any(
+            |item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::READ_FILE)
+        ));
+        assert!(scan.iter().any(
+            |item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::STRING_BYTE)
+        ));
+        assert!(module.startup.iter().any(
+            |item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::MAIN_ARGS)
+        ));
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|function| function.symbol == runtime::READ_FILE)
+        );
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|function| function.symbol == runtime::STRING_BYTE)
+        );
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|function| function.symbol == runtime::MAIN_ARGS)
+        );
+    }
+
+    #[test]
     fn rejects_struct_function_abi() {
         let source = "struct Item { int value; } private void consume(Item item) {} public void main() { Item item = Item { value: 1 }; consume(item); }";
         let ast = parse(lex(FileId(0), source).unwrap()).unwrap();
@@ -897,18 +1567,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_whole_struct_copy() {
+    fn lowers_whole_struct_copy() {
         let source = "struct Item { int value; } public void main() { Item first = Item { value: 1 }; Item second = first; }";
         let ast = parse(lex(FileId(0), source).unwrap()).unwrap();
         let hir = analyze(&ast).unwrap();
         let ir = ir_lower::lower(&hir);
         let verified = crate::middle::verify::verify_module(&ir).unwrap();
-        assert!(matches!(
-            lower(&verified),
-            Err(BackendError::UnsupportedIr {
-                feature: "whole-struct values",
-                ..
-            })
-        ));
+        let module = lower(&verified).unwrap();
+        assert!(
+            module.functions[0]
+                .instructions
+                .iter()
+                .any(|item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::ALLOC))
+        );
     }
 }

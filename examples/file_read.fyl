@@ -1,0 +1,5 @@
+public void main(string[] args)
+{
+    string contents = readFile(args[0]);
+    int bytes = contents.length;
+}

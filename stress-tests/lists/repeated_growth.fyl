@@ -1,0 +1,11 @@
+public void main()
+{
+    list int values = [];
+    int index = 0;
+    while (index < 64)
+    {
+        values.push(index);
+        index = index + 1;
+    }
+    int last = values.pop();
+}

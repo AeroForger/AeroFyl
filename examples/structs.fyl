@@ -1,0 +1,14 @@
+struct Point
+{
+    int x;
+    int y;
+}
+
+public void main()
+{
+    Point point = Point {
+        x: 10,
+        y: 20
+    };
+    point.x = point.x + 1;
+}

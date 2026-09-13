@@ -1,0 +1,9 @@
+struct Pair
+{
+    int left;
+}
+
+public void main()
+{
+    Pair pair = Pair { right: 1 };
+}

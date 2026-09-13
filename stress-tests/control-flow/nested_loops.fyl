@@ -1,0 +1,15 @@
+public void main()
+{
+    int outer = 0;
+    int total = 0;
+    while (outer < 8)
+    {
+        int inner = 0;
+        while (inner < 8)
+        {
+            total = total + inner;
+            inner = inner + 1;
+        }
+        outer = outer + 1;
+    }
+}

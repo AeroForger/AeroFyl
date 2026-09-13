@@ -1,0 +1,16 @@
+public void main()
+{
+    int alpha01 = 1;
+    int alpha02 = 2;
+    int alpha03 = 3;
+    int alpha04 = 4;
+    int alpha05 = 5;
+    int alpha06 = 6;
+    int alpha07 = 7;
+    int alpha08 = 8;
+    int alpha09 = 9;
+    int alpha10 = 10;
+    int alpha11 = 11;
+    int alpha12 = 12;
+    int total = alpha01 + alpha02 + alpha03 + alpha04 + alpha05 + alpha06 + alpha07 + alpha08 + alpha09 + alpha10 + alpha11 + alpha12;
+}

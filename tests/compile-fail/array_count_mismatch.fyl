@@ -1,0 +1,4 @@
+public void main()
+{
+    int[2] values = [1];
+}

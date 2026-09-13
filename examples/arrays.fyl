@@ -1,0 +1,7 @@
+public void main()
+{
+    int[4] values = [10, 20, 30, 40];
+    values[1] = 25;
+    int count = values.length;
+    int selected = values[1];
+}

@@ -1,0 +1,17 @@
+public int calculate(int left, int right)
+{
+    int value = left * right + 2;
+    if (value >= 10)
+    {
+        return value;
+    }
+    else
+    {
+        return 10;
+    }
+}
+
+public void main()
+{
+    int result = calculate(4, 3);
+}

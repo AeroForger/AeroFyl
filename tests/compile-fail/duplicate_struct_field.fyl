@@ -1,0 +1,9 @@
+struct Pair
+{
+    int value;
+    int value;
+}
+
+public void main()
+{
+}

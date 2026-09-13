@@ -1,0 +1,11 @@
+public void main()
+{
+    string source = "abcdefghijklmnopqrstuvwxyz";
+    string a = source.slice(0, 5);
+    string b = source.slice(5, 10);
+    string c = source.slice(10, 15);
+    string d = source.slice(15, 20);
+    string e = source.slice(20, 26);
+    string joined = a + b + c + d + e;
+    int length = joined.length;
+}

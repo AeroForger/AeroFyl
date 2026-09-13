@@ -1,0 +1,9 @@
+public void main()
+{
+    string first = "Aero";
+    string second = "fyl";
+    string name = first + second;
+    int bytes = name.length;
+    int initial = name.byte(0);
+    string prefix = name.slice(0, 4);
+}

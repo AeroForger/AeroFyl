@@ -1,0 +1,5 @@
+public void main()
+{
+    int value = (((1 + 2) * (3 + 4)) - ((5 + 6) / 11)) + (((7 * 8) - 9) + 10);
+    bool condition = ((value > 0) && ((value < 100) || (value == 100))) != false;
+}

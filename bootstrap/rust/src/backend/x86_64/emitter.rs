@@ -46,11 +46,14 @@ impl std::error::Error for EmitError {}
 pub struct EmittedCode {
     pub bytes: Vec<u8>,
     pub entry_offset: usize,
+    pub read_only_data: Vec<u8>,
+    pub data_offset: usize,
 }
 
 enum FixupTarget {
     Function(SymbolId),
     Block { function: SymbolId, block: BlockId },
+    Data(usize),
 }
 
 struct RelativeFixup {
@@ -84,6 +87,7 @@ pub fn emit_module(module: &MachineModule) -> Result<EmittedCode, EmitError> {
         )?;
     }
 
+    let data_offset = align_up(bytes.len(), 0x1000);
     for fixup in fixups {
         let target = match fixup.target {
             FixupTarget::Function(symbol) => function_offsets
@@ -94,6 +98,9 @@ pub fn emit_module(module: &MachineModule) -> Result<EmittedCode, EmitError> {
                 .get(&(function, block))
                 .copied()
                 .ok_or(EmitError::UnknownBlockLabel { function, block })?,
+            FixupTarget::Data(offset) => data_offset
+                .checked_add(offset)
+                .ok_or(EmitError::RelativeTargetOutOfRange)?,
         };
         let end = fixup.displacement_offset + 4;
         let target = i64::try_from(target).map_err(|_| EmitError::RelativeTargetOutOfRange)?;
@@ -105,6 +112,8 @@ pub fn emit_module(module: &MachineModule) -> Result<EmittedCode, EmitError> {
     Ok(EmittedCode {
         bytes,
         entry_offset,
+        read_only_data: module.read_only_data.clone(),
+        data_offset,
     })
 }
 
@@ -139,16 +148,59 @@ fn encode_instructions(
                 bytes.push(0xb8 + (register & 7));
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
+            Instruction::LoadDataAddress {
+                destination,
+                offset,
+            } => {
+                let register = destination.encoding();
+                bytes.push(rex(true, register >= 8, false));
+                bytes.extend_from_slice(&[0x8d, 0x05 | ((register & 7) << 3)]);
+                record_fixup(bytes, fixups, FixupTarget::Data(offset));
+            }
             Instruction::Load64 {
                 destination,
                 base,
                 displacement,
             } => encode_memory(bytes, 0x8b, destination, base, displacement),
+            Instruction::Load8 {
+                destination,
+                base,
+                displacement,
+            } => encode_load8(bytes, destination, base, displacement),
             Instruction::Store64 {
                 base,
                 displacement,
                 source,
             } => encode_memory(bytes, 0x89, source, base, displacement),
+            Instruction::Store8 {
+                base,
+                displacement,
+                source,
+            } => encode_store8(bytes, base, displacement, source),
+            Instruction::IndexedLoad64 {
+                destination,
+                base,
+                index,
+                displacement,
+            } => encode_indexed_memory(bytes, 0x8b, destination, base, index, displacement),
+            Instruction::IndexedLoad8 {
+                destination,
+                base,
+                index,
+                displacement,
+            } => encode_indexed_load8(bytes, destination, base, index, displacement),
+            Instruction::IndexedStore64 {
+                base,
+                index,
+                displacement,
+                source,
+            } => encode_indexed_memory(bytes, 0x89, source, base, index, displacement),
+            Instruction::IndexedStore8 {
+                base,
+                index,
+                displacement,
+                source,
+            } => encode_indexed_store8(bytes, base, index, displacement, source),
             Instruction::Add {
                 destination,
                 source,
@@ -192,11 +244,26 @@ fn encode_instructions(
                 bytes.extend_from_slice(&[0x0f, 0x84]);
                 record_block_fixup(function, target, bytes, fixups)?;
             }
+            Instruction::JumpIf { condition, target } => {
+                bytes.extend_from_slice(&[0x0f, branch_condition_opcode(condition)]);
+                record_block_fixup(function, target, bytes, fixups)?;
+            }
             Instruction::Return => bytes.push(0xc3),
             Instruction::Syscall => bytes.extend_from_slice(&[0x0f, 0x05]),
+            Instruction::ExitFailure => {
+                bytes.extend_from_slice(&[0x48, 0xb8]);
+                bytes.extend_from_slice(&60_u64.to_le_bytes());
+                bytes.extend_from_slice(&[0x48, 0xbf]);
+                bytes.extend_from_slice(&70_u64.to_le_bytes());
+                bytes.extend_from_slice(&[0x0f, 0x05]);
+            }
         }
     }
     Ok(())
+}
+
+fn align_up(value: usize, alignment: usize) -> usize {
+    value.div_ceil(alignment) * alignment
 }
 
 fn record_block_fixup(
@@ -258,6 +325,84 @@ fn encode_memory(
     bytes.extend_from_slice(&displacement.to_le_bytes());
 }
 
+fn encode_load8(bytes: &mut Vec<u8>, destination: Register, base: Register, displacement: i32) {
+    let destination = destination.encoding();
+    let base = base.encoding();
+    bytes.push(rex(true, destination >= 8, base >= 8));
+    bytes.extend_from_slice(&[0x0f, 0xb6]);
+    bytes.push(0x80 | ((destination & 7) << 3) | (base & 7));
+    if base & 7 == 4 {
+        bytes.push(0x24);
+    }
+    bytes.extend_from_slice(&displacement.to_le_bytes());
+}
+
+fn encode_store8(bytes: &mut Vec<u8>, base: Register, displacement: i32, source: Register) {
+    let source = source.encoding();
+    let base = base.encoding();
+    bytes.push(rex(false, source >= 8, base >= 8));
+    bytes.push(0x88);
+    bytes.push(0x80 | ((source & 7) << 3) | (base & 7));
+    if base & 7 == 4 {
+        bytes.push(0x24);
+    }
+    bytes.extend_from_slice(&displacement.to_le_bytes());
+}
+
+fn encode_indexed_memory(
+    bytes: &mut Vec<u8>,
+    opcode: u8,
+    register: Register,
+    base: Register,
+    index: Register,
+    displacement: i32,
+) {
+    let register = register.encoding();
+    let base = base.encoding();
+    let index = index.encoding();
+    bytes.push(0x48 | ((register >= 8) as u8) << 2 | ((index >= 8) as u8) << 1 | (base >= 8) as u8);
+    bytes.push(opcode);
+    bytes.push(0x84 | ((register & 7) << 3));
+    bytes.push(0xc0 | ((index & 7) << 3) | (base & 7));
+    bytes.extend_from_slice(&displacement.to_le_bytes());
+}
+
+fn encode_indexed_load8(
+    bytes: &mut Vec<u8>,
+    destination: Register,
+    base: Register,
+    index: Register,
+    displacement: i32,
+) {
+    let destination = destination.encoding();
+    let base = base.encoding();
+    let index = index.encoding();
+    bytes.push(
+        0x48 | ((destination >= 8) as u8) << 2 | ((index >= 8) as u8) << 1 | (base >= 8) as u8,
+    );
+    bytes.extend_from_slice(&[0x0f, 0xb6]);
+    bytes.push(0x84 | ((destination & 7) << 3));
+    bytes.push(((index & 7) << 3) | (base & 7));
+    bytes.extend_from_slice(&displacement.to_le_bytes());
+}
+
+fn encode_indexed_store8(
+    bytes: &mut Vec<u8>,
+    base: Register,
+    index: Register,
+    displacement: i32,
+    source: Register,
+) {
+    let source = source.encoding();
+    let base = base.encoding();
+    let index = index.encoding();
+    bytes.push(0x40 | ((source >= 8) as u8) << 2 | ((index >= 8) as u8) << 1 | (base >= 8) as u8);
+    bytes.push(0x88);
+    bytes.push(0x84 | ((source & 7) << 3));
+    bytes.push(((index & 7) << 3) | (base & 7));
+    bytes.extend_from_slice(&displacement.to_le_bytes());
+}
+
 fn encode_group_register(bytes: &mut Vec<u8>, register: Register, group: u8) {
     let register = register.encoding();
     bytes.push(rex(true, false, register >= 8));
@@ -285,6 +430,10 @@ const fn condition_opcode(condition: Condition) -> u8 {
     }
 }
 
+const fn branch_condition_opcode(condition: Condition) -> u8 {
+    condition_opcode(condition) - 0x10
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +449,7 @@ mod tests {
                 name: "main".into(),
                 instructions,
             }],
+            read_only_data: Vec::new(),
         }
     }
 
@@ -355,6 +505,27 @@ mod tests {
         assert_eq!(
             i32::from_le_bytes(emitted.bytes[1..5].try_into().unwrap()),
             0
+        );
+    }
+
+    #[test]
+    fn resolves_rip_relative_read_only_data_address() {
+        let mut module = module(vec![
+            Instruction::LoadDataAddress {
+                destination: Register::Rax,
+                offset: 0,
+            },
+            Instruction::Return,
+        ]);
+        module.read_only_data = b"literal".to_vec();
+        let emitted = emit_module(&module).unwrap();
+        assert_eq!(emitted.read_only_data, b"literal");
+        assert_eq!(emitted.data_offset, 0x1000);
+        assert!(
+            emitted
+                .bytes
+                .windows(3)
+                .any(|bytes| bytes == [0x48, 0x8d, 0x05])
         );
     }
 }

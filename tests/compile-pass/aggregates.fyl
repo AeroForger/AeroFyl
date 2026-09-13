@@ -1,0 +1,22 @@
+enum Kind
+{
+    first,
+    second
+}
+
+struct Item
+{
+    Kind kind;
+    string name;
+    int value;
+}
+
+public void main()
+{
+    list Item items = [];
+    Item item = Item { kind: Kind.first, name: "one", value: 1 };
+    items.push(item);
+    Item loaded = items[0];
+    loaded.value = 2;
+    items[0] = loaded;
+}

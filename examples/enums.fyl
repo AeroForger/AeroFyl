@@ -1,0 +1,12 @@
+enum State
+{
+    idle,
+    running,
+    stopped
+}
+
+public void main()
+{
+    State state = State.running;
+    bool active = state != State.idle;
+}

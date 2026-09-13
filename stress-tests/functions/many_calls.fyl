@@ -1,0 +1,9 @@
+private int increment(int value)
+{
+    return value + 1;
+}
+
+public void main()
+{
+    int value = increment(increment(increment(increment(increment(increment(increment(increment(0))))))));
+}

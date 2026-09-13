@@ -53,9 +53,15 @@ pub fn validate_executable(module: &HirModule) -> Result<SymbolId, Vec<Diagnosti
             main.name_span,
         ));
     }
-    if !main.parameters.is_empty() {
+    if !matches!(
+        main.parameters.as_slice(),
+        [] | [HirParameter {
+            ty: Type::CliArgs,
+            ..
+        }]
+    ) {
         diagnostics.push(Diagnostic::error(
-            "executable entry function `main` must take no parameters",
+            "executable entry function `main` must take no parameters or one `string[]` parameter",
             main.name_span,
         ));
     }
@@ -104,6 +110,14 @@ impl Analyzer<'_> {
                             "nested struct fields are not supported by the bootstrap layout",
                             field.ty.span,
                         ));
+                    } else if !matches!(
+                        ty,
+                        Type::Int | Type::Bool | Type::Char | Type::String | Type::Enum(_)
+                    ) {
+                        self.diagnostics.push(Diagnostic::error(
+                            "bootstrap struct fields support only int, bool, char, string, and enum types",
+                            field.ty.span,
+                        ));
                     }
                     HirField {
                         name: field.name.text.clone(),
@@ -140,12 +154,34 @@ impl Analyzer<'_> {
             let symbol = self.declaration_id(function.name.span);
             let return_type =
                 self.resolve_type(&function.return_type.kind, function.return_type.span);
+            self.validate_collection_type(&return_type, function.return_type.span);
+            if return_type == Type::CliArgs {
+                self.diagnostics.push(Diagnostic::error(
+                    "`string[]` cannot be used as a return type",
+                    function.return_type.span,
+                ));
+            }
             let parameters = function
                 .parameters
                 .iter()
-                .map(|parameter| HirParameter {
-                    symbol: self.declaration_id(parameter.name.span),
-                    ty: self.resolve_type(&parameter.ty.kind, parameter.ty.span),
+                .enumerate()
+                .map(|(index, parameter)| {
+                    let ty = self.resolve_type(&parameter.ty.kind, parameter.ty.span);
+                    self.validate_collection_type(&ty, parameter.ty.span);
+                    if ty == Type::CliArgs
+                        && !(function.name.text == "main"
+                            && function.parameters.len() == 1
+                            && index == 0)
+                    {
+                        self.diagnostics.push(Diagnostic::error(
+                            "`string[]` is reserved for the sole parameter of executable `main`",
+                            parameter.ty.span,
+                        ));
+                    }
+                    HirParameter {
+                        symbol: self.declaration_id(parameter.name.span),
+                        ty,
+                    }
                 })
                 .collect();
             let body = self.analyze_block(&function.body, &return_type, 0);
@@ -189,7 +225,31 @@ impl Analyzer<'_> {
             let hir = match &statement.kind {
                 StatementKind::Variable(variable) => {
                     let ty = self.resolve_type(&variable.ty.kind, variable.ty.span);
+                    self.validate_collection_type(&ty, variable.ty.span);
+                    if ty == Type::CliArgs {
+                        self.diagnostics.push(Diagnostic::error(
+                            "`string[]` is reserved for the parameter of executable `main`",
+                            variable.ty.span,
+                        ));
+                    }
+                    if matches!(ty, Type::Array { .. })
+                        && !matches!(variable.initializer.kind, ExpressionKind::Collection(_))
+                    {
+                        self.diagnostics.push(Diagnostic::error(
+                            "whole-array values and copies are not supported",
+                            variable.initializer.span,
+                        ));
+                    }
+                    if matches!(ty, Type::List(_))
+                        && !matches!(variable.initializer.kind, ExpressionKind::Collection(_))
+                    {
+                        self.diagnostics.push(Diagnostic::error(
+                            "whole-list cloning is not supported",
+                            variable.initializer.span,
+                        ));
+                    }
                     let initializer = self.check_expression(&variable.initializer, Some(&ty));
+                    let initializer = self.struct_copy_if_symbol(initializer);
                     HirStatement::Variable {
                         symbol: self.declaration_id(variable.name.span),
                         ty,
@@ -287,7 +347,14 @@ impl Analyzer<'_> {
                         Type::Int
                     }
                     Literal::Float(_) => Type::Float,
-                    Literal::String(_) => Type::String,
+                    Literal::String(value) => {
+                        return self.finish_expression(
+                            expression,
+                            expected,
+                            HirExpressionKind::StringLiteral(value.clone()),
+                            Type::String,
+                        );
+                    }
                     Literal::Char(_) => Type::Char,
                     Literal::Bool(_) => Type::Bool,
                 };
@@ -350,18 +417,49 @@ impl Analyzer<'_> {
                         )
                     }
                     SymbolKind::Builtin => {
-                        // TODO(spec): builtin signatures, result types, and behavior are missing.
-                        let checked = arguments
-                            .iter()
-                            .map(|argument| self.check_expression(argument, None))
-                            .collect();
-                        (
-                            HirExpressionKind::Call {
-                                callee: id,
-                                arguments: checked,
-                            },
-                            Type::Dynamic,
-                        )
+                        if callee.text == "readFile" {
+                            if arguments.len() != 1 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`readFile` expects exactly one argument, found {}",
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let path = arguments
+                                .first()
+                                .map(|argument| {
+                                    self.check_expression(argument, Some(&Type::String))
+                                })
+                                .unwrap_or(HirExpression {
+                                    kind: HirExpressionKind::StringLiteral(String::new()),
+                                    ty: Type::Dynamic,
+                                    span: expression.span,
+                                });
+                            for argument in arguments.iter().skip(1) {
+                                self.check_expression(argument, None);
+                            }
+                            (
+                                HirExpressionKind::ReadFile {
+                                    path: Box::new(path),
+                                },
+                                Type::String,
+                            )
+                        } else {
+                            // TODO(spec): other builtin signatures and behavior are missing.
+                            let checked = arguments
+                                .iter()
+                                .map(|argument| self.check_expression(argument, None))
+                                .collect();
+                            (
+                                HirExpressionKind::Call {
+                                    callee: id,
+                                    arguments: checked,
+                                },
+                                Type::Dynamic,
+                            )
+                        }
                     }
                     _ => {
                         self.diagnostics.push(Diagnostic::error(
@@ -418,8 +516,33 @@ impl Analyzer<'_> {
                 right,
             } => {
                 let (left, right, result_type) = match operator {
-                    super::ast::BinaryOperator::Add
-                    | super::ast::BinaryOperator::Subtract
+                    super::ast::BinaryOperator::Add => {
+                        let left = self.check_expression(left, None);
+                        if left.ty == Type::String {
+                            let right = self.check_expression(right, Some(&Type::String));
+                            return self.finish_expression(
+                                expression,
+                                expected,
+                                HirExpressionKind::StringConcat {
+                                    left: Box::new(left),
+                                    right: Box::new(right),
+                                },
+                                Type::String,
+                            );
+                        }
+                        if left.ty != Type::Int {
+                            self.diagnostics.push(Diagnostic::error(
+                                "addition requires matching `int` operands or matching `string` operands",
+                                expression.span,
+                            ));
+                        }
+                        (
+                            left,
+                            self.check_expression(right, Some(&Type::Int)),
+                            Type::Int,
+                        )
+                    }
+                    super::ast::BinaryOperator::Subtract
                     | super::ast::BinaryOperator::Multiply
                     | super::ast::BinaryOperator::Divide => (
                         self.check_expression(left, Some(&Type::Int)),
@@ -449,6 +572,18 @@ impl Analyzer<'_> {
                     super::ast::BinaryOperator::Equal | super::ast::BinaryOperator::NotEqual => {
                         let left = self.check_expression(left, None);
                         let right = self.check_expression(right, None);
+                        if left.ty == Type::String && right.ty == Type::String {
+                            return self.finish_expression(
+                                expression,
+                                expected,
+                                HirExpressionKind::StringEqual {
+                                    equal: *operator == super::ast::BinaryOperator::Equal,
+                                    left: Box::new(left),
+                                    right: Box::new(right),
+                                },
+                                Type::Bool,
+                            );
+                        }
                         if left.ty != right.ty
                             || !matches!(left.ty, Type::Int | Type::Bool | Type::Enum(_))
                         {
@@ -501,11 +636,16 @@ impl Analyzer<'_> {
                         expression.span,
                     ));
                 }
-                let values = values
+                let values: Vec<_> = values
                     .iter()
                     .map(|value| self.check_expression(value, Some(&element_type)))
                     .collect();
-                (HirExpressionKind::Collection(values), actual_type)
+                let kind = match actual_type {
+                    Type::Array { .. } => HirExpressionKind::ArrayLiteral(values),
+                    Type::List(_) => HirExpressionKind::ListLiteral(values),
+                    _ => HirExpressionKind::Collection(values),
+                };
+                (kind, actual_type)
             }
             ExpressionKind::Tuple(values) => {
                 // This is reachable only for programmatically constructed ASTs; parser syntax is pending.
@@ -534,8 +674,38 @@ impl Analyzer<'_> {
             ExpressionKind::Member { base, name } => {
                 self.check_member_expression(base, name, expression.span)
             }
+            ExpressionKind::Index { base, index } => {
+                self.check_index_expression(base, index, expression.span)
+            }
+            ExpressionKind::MethodCall {
+                receiver,
+                method,
+                arguments,
+            } => self.check_method_call(receiver, method, arguments, expression.span),
         };
 
+        if let Some(expected) = expected
+            && !expected.is_compatible_with(&actual)
+        {
+            self.diagnostics.push(Diagnostic::error(
+                format!("type mismatch: expected `{expected}`, found `{actual}`"),
+                expression.span,
+            ));
+        }
+        HirExpression {
+            kind,
+            ty: actual,
+            span: expression.span,
+        }
+    }
+
+    fn finish_expression(
+        &mut self,
+        expression: &Expression,
+        expected: Option<&Type>,
+        kind: HirExpressionKind,
+        actual: Type,
+    ) -> HirExpression {
         if let Some(expected) = expected
             && !expected.is_compatible_with(&actual)
         {
@@ -573,9 +743,63 @@ impl Analyzer<'_> {
                         Type::Dynamic
                     }
                 };
+                if matches!(target_type, Type::Array { .. }) {
+                    self.diagnostics.push(Diagnostic::error(
+                        "whole-array assignment is not supported",
+                        target.span,
+                    ));
+                }
+                if matches!(target_type, Type::List(_)) {
+                    self.diagnostics.push(Diagnostic::error(
+                        "whole-list assignment/cloning is not supported",
+                        target.span,
+                    ));
+                }
                 HirStatement::Assignment {
                     symbol,
-                    value: self.check_expression(value, Some(&target_type)),
+                    value: {
+                        let value = self.check_expression(value, Some(&target_type));
+                        self.struct_copy_if_symbol(value)
+                    },
+                    span,
+                }
+            }
+            ExpressionKind::Index { base, index } => {
+                let index = self.check_expression(index, Some(&Type::Int));
+                let Some((local, collection_type)) =
+                    self.local_expression_type(base, "indexed access")
+                else {
+                    return HirStatement::Expression(self.check_expression(value, None));
+                };
+                let element_type = match &collection_type {
+                    Type::Array { element, .. } | Type::List(element) => (**element).clone(),
+                    Type::String => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "string indexing is not supported; string length is a UTF-8 byte count",
+                            target.span,
+                        ));
+                        Type::Dynamic
+                    }
+                    Type::CliArgs => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "command-line arguments are read-only",
+                            target.span,
+                        ));
+                        Type::String
+                    }
+                    _ => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "indexed assignment requires an array or list",
+                            target.span,
+                        ));
+                        Type::Dynamic
+                    }
+                };
+                HirStatement::IndexedAssignment {
+                    local,
+                    collection_type,
+                    index,
+                    value: self.check_expression(value, Some(&element_type)),
                     span,
                 }
             }
@@ -767,6 +991,35 @@ impl Analyzer<'_> {
         }
 
         let checked_base = self.check_expression(base, None);
+        if name.text == "length" {
+            match &checked_base.ty {
+                Type::Array { length, .. } => {
+                    return (
+                        HirExpressionKind::ArrayLength { length: *length },
+                        Type::Int,
+                    );
+                }
+                Type::List(_) => {
+                    if let HirExpressionKind::Symbol(local) = checked_base.kind {
+                        return (HirExpressionKind::ListLength { local }, Type::Int);
+                    }
+                }
+                Type::String => {
+                    return (
+                        HirExpressionKind::StringLength {
+                            value: Box::new(checked_base),
+                        },
+                        Type::Int,
+                    );
+                }
+                Type::CliArgs => {
+                    if let HirExpressionKind::Symbol(local) = checked_base.kind {
+                        return (HirExpressionKind::CliArgsLength { local }, Type::Int);
+                    }
+                }
+                _ => {}
+            }
+        }
         let Type::Struct(struct_id) = checked_base.ty else {
             self.diagnostics.push(Diagnostic::error(
                 "field access requires a struct value",
@@ -819,6 +1072,233 @@ impl Analyzer<'_> {
         )
     }
 
+    fn check_index_expression(
+        &mut self,
+        base: &Expression,
+        index: &Expression,
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        let index = self.check_expression(index, Some(&Type::Int));
+        let Some((local, ty)) = self.local_expression_type(base, "indexed access") else {
+            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+        };
+        match ty {
+            Type::Array { element, .. } => (
+                HirExpressionKind::ArrayLoad {
+                    local,
+                    index: Box::new(index),
+                },
+                *element,
+            ),
+            Type::List(element) => (
+                HirExpressionKind::ListLoad {
+                    local,
+                    index: Box::new(index),
+                },
+                *element,
+            ),
+            Type::CliArgs => (
+                HirExpressionKind::CliArgLoad {
+                    local,
+                    index: Box::new(index),
+                },
+                Type::String,
+            ),
+            Type::String => {
+                self.diagnostics.push(Diagnostic::error(
+                    "string indexing is not supported; use `.length` for UTF-8 byte length",
+                    span,
+                ));
+                (HirExpressionKind::Collection(Vec::new()), Type::Dynamic)
+            }
+            _ => {
+                self.diagnostics.push(Diagnostic::error(
+                    "indexed access requires an array or list",
+                    span,
+                ));
+                (HirExpressionKind::Collection(Vec::new()), Type::Dynamic)
+            }
+        }
+    }
+
+    fn check_method_call(
+        &mut self,
+        receiver: &Expression,
+        method: &super::ast::Name,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        if method.text == "byte" {
+            let value = self.check_expression(receiver, None);
+            if value.ty != Type::String {
+                self.diagnostics.push(Diagnostic::error(
+                    format!(
+                        "string `byte` requires a `string` receiver, found `{}`",
+                        value.ty
+                    ),
+                    receiver.span,
+                ));
+            }
+            if arguments.len() != 1 {
+                self.diagnostics.push(Diagnostic::error(
+                    format!(
+                        "string `byte` expects exactly one argument, found {}",
+                        arguments.len()
+                    ),
+                    span,
+                ));
+            }
+            let index = arguments
+                .first()
+                .map(|argument| self.check_expression(argument, Some(&Type::Int)))
+                .unwrap_or(HirExpression {
+                    kind: HirExpressionKind::Literal(Literal::Integer("0".into())),
+                    ty: Type::Dynamic,
+                    span,
+                });
+            for argument in arguments.iter().skip(1) {
+                self.check_expression(argument, None);
+            }
+            return (
+                HirExpressionKind::StringByte {
+                    value: Box::new(value),
+                    index: Box::new(index),
+                },
+                Type::Int,
+            );
+        }
+        if method.text == "slice" {
+            let value = self.check_expression(receiver, None);
+            if value.ty != Type::String {
+                self.diagnostics.push(Diagnostic::error(
+                    format!(
+                        "string `slice` requires a `string` receiver, found `{}`",
+                        value.ty
+                    ),
+                    receiver.span,
+                ));
+            }
+            if arguments.len() != 2 {
+                self.diagnostics.push(Diagnostic::error(
+                    format!(
+                        "string `slice` expects exactly two arguments, found {}",
+                        arguments.len()
+                    ),
+                    span,
+                ));
+            }
+            let placeholder = || HirExpression {
+                kind: HirExpressionKind::Literal(Literal::Integer("0".into())),
+                ty: Type::Dynamic,
+                span,
+            };
+            let start = arguments
+                .first()
+                .map(|argument| self.check_expression(argument, Some(&Type::Int)))
+                .unwrap_or_else(&placeholder);
+            let end = arguments
+                .get(1)
+                .map(|argument| self.check_expression(argument, Some(&Type::Int)))
+                .unwrap_or_else(placeholder);
+            for argument in arguments.iter().skip(2) {
+                self.check_expression(argument, None);
+            }
+            return (
+                HirExpressionKind::StringSlice {
+                    value: Box::new(value),
+                    start: Box::new(start),
+                    end: Box::new(end),
+                },
+                Type::String,
+            );
+        }
+        let Some((local, ty)) = self.local_expression_type(receiver, "list method call") else {
+            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+        };
+        let Type::List(element) = ty else {
+            self.diagnostics.push(Diagnostic::error(
+                "method calls are supported only for `list` values",
+                span,
+            ));
+            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+        };
+        match method.text.as_str() {
+            "push" => {
+                if arguments.len() != 1 {
+                    self.diagnostics.push(Diagnostic::error(
+                        "list `push` expects exactly one argument",
+                        span,
+                    ));
+                }
+                let value = arguments
+                    .first()
+                    .map(|value| self.check_expression(value, Some(&element)))
+                    .unwrap_or(HirExpression {
+                        kind: HirExpressionKind::Collection(Vec::new()),
+                        ty: Type::Dynamic,
+                        span,
+                    });
+                (
+                    HirExpressionKind::ListPush {
+                        local,
+                        value: Box::new(value),
+                    },
+                    Type::Void,
+                )
+            }
+            "pop" => {
+                if !arguments.is_empty() {
+                    self.diagnostics
+                        .push(Diagnostic::error("list `pop` takes no arguments", span));
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                }
+                (HirExpressionKind::ListPop { local }, *element)
+            }
+            _ => {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("unsupported list method `{}`", method.text),
+                    method.span,
+                ));
+                for argument in arguments {
+                    self.check_expression(argument, None);
+                }
+                (HirExpressionKind::Collection(Vec::new()), Type::Dynamic)
+            }
+        }
+    }
+
+    fn local_expression_type(
+        &mut self,
+        expression: &Expression,
+        operation: &str,
+    ) -> Option<(SymbolId, Type)> {
+        let ExpressionKind::Identifier(name) = &expression.kind else {
+            self.diagnostics.push(Diagnostic::error(
+                format!("{operation} currently requires a local variable"),
+                expression.span,
+            ));
+            self.check_expression(expression, None);
+            return None;
+        };
+        let symbol = self.reference_id(name.span);
+        let kind = self.symbol(symbol).kind.clone();
+        let ty = match kind {
+            SymbolKind::Variable { ty } | SymbolKind::Parameter { ty } => {
+                self.resolve_type(&ty, name.span)
+            }
+            _ => {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("{operation} requires a local variable"),
+                    name.span,
+                ));
+                Type::Dynamic
+            }
+        };
+        Some((symbol, ty))
+    }
+
     fn struct_field(&self, id: TypeId, name: &str) -> Option<(u32, Type)> {
         self.structs
             .iter()
@@ -849,6 +1329,56 @@ impl Analyzer<'_> {
                     .collect(),
             ),
             other => other.clone(),
+        }
+    }
+
+    fn validate_collection_type(&mut self, ty: &Type, span: super::source::Span) {
+        let element = match ty {
+            Type::Array { element, .. } | Type::List(element) => element,
+            _ => return,
+        };
+        let supported = match &**element {
+            Type::Int | Type::Bool | Type::Char | Type::Enum(_) => true,
+            Type::Struct(id) => self
+                .structs
+                .iter()
+                .find(|definition| definition.id == *id)
+                .is_some_and(|definition| {
+                    definition.fields.iter().all(|field| {
+                        matches!(
+                            field.ty,
+                            Type::Int | Type::Bool | Type::Char | Type::String | Type::Enum(_)
+                        )
+                    })
+                }),
+            _ => false,
+        };
+        if !supported {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "bootstrap collections do not support element type `{}`",
+                    element
+                ),
+                span,
+            ));
+        }
+    }
+
+    fn struct_copy_if_symbol(&self, expression: HirExpression) -> HirExpression {
+        let Type::Struct(struct_id) = &expression.ty else {
+            return expression;
+        };
+        let struct_id = *struct_id;
+        if !matches!(&expression.kind, HirExpressionKind::Symbol(_)) {
+            return expression;
+        }
+        HirExpression {
+            span: expression.span,
+            ty: Type::Struct(struct_id),
+            kind: HirExpressionKind::StructCopy {
+                struct_id,
+                source: Box::new(expression),
+            },
         }
     }
 
@@ -958,6 +1488,10 @@ mod tests {
     #[test]
     fn validates_executable_main_contract() {
         let hir = analyze_source("public void main() {}").unwrap();
+        assert!(validate_executable(&hir).is_ok());
+
+        let hir =
+            analyze_source("public void main(string[] args) { int count = args.length; }").unwrap();
         assert!(validate_executable(&hir).is_ok());
 
         let hir = analyze_source("public int main() { return 0; }").unwrap();
@@ -1171,6 +1705,42 @@ mod tests {
     }
 
     #[test]
+    fn accepts_struct_value_copies_and_struct_lists() {
+        analyze_source("enum Kind { word } struct Token { Kind kind; string lexeme; int line; bool valid; char marker; } private void f() { Token a = Token { kind: Kind.word, lexeme: \"x\", line: 1, valid: true, marker: 'x' }; Token b = a; b = a; list Token tokens = []; tokens.push(b); Token first = tokens[0]; tokens[0] = first; Token last = tokens.pop(); }").unwrap();
+    }
+
+    #[test]
+    fn rejects_cross_struct_copies_and_list_elements() {
+        let errors = messages(
+            "struct A { int value; } struct B { int value; } private void f() { A a = A { value: 1 }; B b = B { value: 2 }; b = a; A copy = b; list A values = []; values.push(b); values[0] = b; }",
+        );
+        assert!(
+            errors
+                .iter()
+                .filter(|message| message.contains("type mismatch"))
+                .count()
+                >= 4
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_struct_field_layouts() {
+        let errors = messages(
+            "struct Bad { list int values; int[1] fixed; float number; } private void f() { list Bad values = []; }",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("struct fields support only"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("collections do not support element type"))
+        );
+    }
+
+    #[test]
     fn rejects_type_name_used_as_field_value_without_panicking() {
         assert!(
             messages("struct A { int x; } private void f() { int y = A.x; }")
@@ -1238,5 +1808,195 @@ mod tests {
     #[test]
     fn accepts_struct_containing_enum() {
         analyze_source("enum Kind { first, second } struct Item { Kind kind; int value; } private int f() { Item item = Item { kind: Kind.first, value: 1 }; item.value = 2; if (item.kind == Kind.first) { return item.value; } return 0; }").unwrap();
+    }
+
+    #[test]
+    fn accepts_array_list_and_string_operations() {
+        analyze_source(
+            "private void f() { int[2] a = [1, 2]; a[0] = a[1]; int al = a.length; list int xs = [3, 4]; xs.push(a[0]); int x = xs.pop(); xs[0] = x; int ll = xs.length; string s = \"ab\" + \"c\"; int sl = s.length; bool same = s == \"abc\"; }",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_array_length_and_element_mismatches() {
+        let errors = messages("private void f() { int[2] a = [1]; int[1] b = [true]; }");
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("array length is 2"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expected `int`, found `bool`"))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_collection_indexes_and_values() {
+        let errors = messages(
+            "private void f() { int[1] a = [1]; int x = a[true]; list int xs = [1]; xs.push(false); string bad = xs[0]; }",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expected `int`, found `bool`"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expected `int`, found `bool`"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expected `string`, found `int`"))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_list_methods() {
+        let errors =
+            messages("private void f() { list int xs = [1]; xs.push(); xs.pop(1); xs.sort(); }");
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("push") && message.contains("one argument"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("pop") && message.contains("no arguments"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("unsupported list method `sort`"))
+        );
+    }
+
+    #[test]
+    fn rejects_string_ordering_and_indexing() {
+        let errors = messages(
+            "private void f() { string s = \"abc\"; bool before = s < \"def\"; char c = s[0]; }",
+        );
+        assert!(errors.iter().any(|message| message.contains("ordering") || message.contains("integer operands")));
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("string indexing is not supported"))
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_collection_element_types() {
+        let errors = messages(
+            "struct Item { float value; } private void f() { float[1] fs = [1.0]; list string ss = [\"a\"]; int[1][1] nested = [[1]]; list Item items = []; }",
+        );
+        assert!(
+            errors
+                .iter()
+                .filter(|message| message.contains("collections do not support element type"))
+                .count()
+                >= 4
+        );
+    }
+
+    #[test]
+    fn rejects_whole_collection_copies() {
+        let errors = messages(
+            "private void f() { int[1] a = [1]; int[1] b = a; a = b; list int xs = [1]; list int ys = xs; xs = ys; }",
+        );
+        assert!(errors.iter().any(|message| message.contains("whole-array")));
+        assert!(errors.iter().any(|message| message.contains("whole-list")));
+    }
+
+    #[test]
+    fn validates_string_byte_intrinsic() {
+        analyze_source("private int f() { string value = \"a\"; return value.byte(0); }").unwrap();
+        let errors = messages(
+            "private void f() { int value = 1; int a = value.byte(0); string text = \"a\"; int b = text.byte(); int c = text.byte(0, 1); int d = text.byte(true); }",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("requires a `string` receiver"))
+        );
+        assert!(errors.iter().any(|message| message.contains("found 0")));
+        assert!(errors.iter().any(|message| message.contains("found 2")));
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expected `int`, found `bool`"))
+        );
+    }
+
+    #[test]
+    fn validates_string_slice_intrinsic() {
+        analyze_source(
+            "private string f(string source) { return source.slice(0, source.length); }",
+        )
+        .unwrap();
+        let errors = messages(
+            "private void f() { string source = \"abc\"; string a = source.slice(0); string b = source.slice(true, 2); int value = 1; string c = value.slice(0, 1); }",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("exactly two arguments"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expected `int`, found `bool`"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("requires a `string` receiver"))
+        );
+    }
+
+    #[test]
+    fn validates_read_file_intrinsic() {
+        analyze_source("private string f(string path) { return readFile(path); }").unwrap();
+        let errors = messages(
+            "private void f() { string a = readFile(); string b = readFile(1); string c = readFile(\"a\", \"b\"); }",
+        );
+        assert!(errors.iter().any(|message| message.contains("found 0")));
+        assert!(errors.iter().any(|message| message.contains("found 2")));
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expected `string`, found `int`"))
+        );
+    }
+
+    #[test]
+    fn restricts_string_array_to_main_parameter() {
+        let errors = messages(
+            "private string[] bad(string[] args) { string[] local = args; return args; } public void main() {}",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("sole parameter"))
+        );
+        assert!(errors.iter().any(|message| message.contains("return type")));
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("reserved for the parameter"))
+        );
+
+        for source in [
+            "public int main() { return 0; }",
+            "public void main(int x) {}",
+            "public void main(string x) {}",
+        ] {
+            let hir = analyze_source(source).unwrap();
+            assert!(validate_executable(&hir).is_err());
+        }
     }
 }

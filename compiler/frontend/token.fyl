@@ -1,0 +1,14 @@
+enum tokenKind
+{
+    identifier,
+    integer,
+    eof
+}
+
+struct Token
+{
+    tokenKind kind;
+    string lexeme;
+    int line;
+    int column;
+}

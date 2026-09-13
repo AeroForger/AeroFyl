@@ -76,6 +76,13 @@ pub enum HirStatement {
         value: HirExpression,
         span: Span,
     },
+    IndexedAssignment {
+        local: SymbolId,
+        collection_type: Type,
+        index: HirExpression,
+        value: HirExpression,
+        span: Span,
+    },
     Return {
         value: Option<HirExpression>,
         span: Span,
@@ -121,9 +128,15 @@ pub enum HirExpressionKind {
         right: Box<HirExpression>,
     },
     Collection(Vec<HirExpression>),
+    ArrayLiteral(Vec<HirExpression>),
+    ListLiteral(Vec<HirExpression>),
     StructLiteral {
         struct_id: TypeId,
         fields: Vec<(u32, HirExpression)>,
+    },
+    StructCopy {
+        struct_id: TypeId,
+        source: Box<HirExpression>,
     },
     FieldLoad {
         local: SymbolId,
@@ -133,6 +146,59 @@ pub enum HirExpressionKind {
     EnumValue {
         enum_id: TypeId,
         variant: u32,
+    },
+    ArrayLoad {
+        local: SymbolId,
+        index: Box<HirExpression>,
+    },
+    ArrayLength {
+        length: usize,
+    },
+    ListLoad {
+        local: SymbolId,
+        index: Box<HirExpression>,
+    },
+    ListLength {
+        local: SymbolId,
+    },
+    CliArgLoad {
+        local: SymbolId,
+        index: Box<HirExpression>,
+    },
+    CliArgsLength {
+        local: SymbolId,
+    },
+    ListPush {
+        local: SymbolId,
+        value: Box<HirExpression>,
+    },
+    ListPop {
+        local: SymbolId,
+    },
+    StringLiteral(String),
+    StringLength {
+        value: Box<HirExpression>,
+    },
+    StringByte {
+        value: Box<HirExpression>,
+        index: Box<HirExpression>,
+    },
+    StringSlice {
+        value: Box<HirExpression>,
+        start: Box<HirExpression>,
+        end: Box<HirExpression>,
+    },
+    ReadFile {
+        path: Box<HirExpression>,
+    },
+    StringConcat {
+        left: Box<HirExpression>,
+        right: Box<HirExpression>,
+    },
+    StringEqual {
+        equal: bool,
+        left: Box<HirExpression>,
+        right: Box<HirExpression>,
     },
     Tuple(Vec<HirExpression>),
 }

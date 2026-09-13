@@ -74,6 +74,7 @@ impl Resolver {
         };
         resolver.define_builtin("print");
         resolver.define_builtin("input");
+        resolver.define_builtin("readFile");
         resolver
     }
 
@@ -218,6 +219,20 @@ impl Resolver {
                     ExpressionKind::Identifier(name) if self.type_names.contains_key(&name.text)
                 ) {
                     self.resolve_expression(base);
+                }
+            }
+            ExpressionKind::Index { base, index } => {
+                self.resolve_expression(base);
+                self.resolve_expression(index);
+            }
+            ExpressionKind::MethodCall {
+                receiver,
+                arguments,
+                ..
+            } => {
+                self.resolve_expression(receiver);
+                for argument in arguments {
+                    self.resolve_expression(argument);
                 }
             }
             ExpressionKind::Literal(_) => {}

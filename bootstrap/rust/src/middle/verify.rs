@@ -238,6 +238,14 @@ pub fn verify_module(module: &IrModule) -> Result<VerifiedIrModule<'_>, Vec<IrVe
     for item in &module.structs {
         for field in &item.fields {
             validate_known_type(&field.ty, &structs, &enums, None, &mut errors);
+            if !matches!(
+                field.ty,
+                Type::Int | Type::Bool | Type::Char | Type::String | Type::Enum(_)
+            ) {
+                errors.push(module_error(IrVerificationErrorKind::InvalidOperation(
+                    "struct field has an unsupported bootstrap layout",
+                )));
+            }
         }
     }
     let mut signatures = HashMap::new();
@@ -273,6 +281,39 @@ pub fn verify_module(module: &IrModule) -> Result<VerifiedIrModule<'_>, Vec<IrVe
                 &enums,
                 Some(&function.name),
                 &mut errors,
+            );
+        }
+        let cli_parameter_is_valid = function.name == "main"
+            && matches!(
+                function.parameters.as_slice(),
+                [IrLocal {
+                    ty: Type::CliArgs,
+                    ..
+                }]
+            );
+        if function.return_type == Type::CliArgs
+            || function
+                .locals
+                .iter()
+                .any(|local| local.ty == Type::CliArgs)
+            || (function
+                .parameters
+                .iter()
+                .any(|local| local.ty == Type::CliArgs)
+                && !cli_parameter_is_valid)
+            || function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .any(|instruction| instruction.result_type == Some(Type::CliArgs))
+        {
+            push_error(
+                &mut errors,
+                function,
+                None,
+                IrVerificationErrorKind::InvalidOperation(
+                    "string[] is valid only as the sole parameter of main",
+                ),
             );
         }
         for instruction in function.blocks.iter().flat_map(|block| &block.instructions) {
@@ -404,6 +445,10 @@ fn collect_definitions(
                 IrInstructionKind::BindLocal { .. }
                     | IrInstructionKind::StructInit { .. }
                     | IrInstructionKind::FieldStore { .. }
+                    | IrInstructionKind::ArrayInit { .. }
+                    | IrInstructionKind::ArrayStore { .. }
+                    | IrInstructionKind::ListInit { .. }
+                    | IrInstructionKind::ListStore { .. }
             );
             match (
                 instruction.result,
@@ -550,7 +595,7 @@ fn validate_instruction(
         function,
         block,
         signatures,
-        structs: _,
+        structs,
         enums,
         locals,
         values,
@@ -601,6 +646,33 @@ fn validate_instruction(
         } => validate_struct_operation(&context, Some(*local), *struct_id, fields, None, errors),
         IrInstructionKind::StructValue { struct_id, fields } => {
             validate_struct_operation(&context, None, *struct_id, fields, result_type, errors)
+        }
+        IrInstructionKind::AggregateCopy { struct_id, source } => {
+            if !structs.contains_key(struct_id) {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::UnknownStruct(*struct_id),
+                );
+            }
+            check_value_type(
+                function,
+                block,
+                *source,
+                &Type::Struct(*struct_id),
+                "aggregate copy source",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Struct(*struct_id),
+                "aggregate copy result",
+                errors,
+            );
         }
         IrInstructionKind::FieldLoad {
             local,
@@ -654,6 +726,462 @@ fn validate_instruction(
                 result_type,
                 &Type::Enum(*enum_id),
                 "enum constant result",
+                errors,
+            );
+        }
+        IrInstructionKind::ArrayInit {
+            local,
+            element_type,
+            length,
+            values: items,
+        } => {
+            check_local_type(
+                &context,
+                *local,
+                &Type::Array {
+                    element: Box::new(element_type.clone()),
+                    length: *length,
+                },
+                errors,
+            );
+            if items.len() != *length {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation(
+                        "array initializer length does not match array type",
+                    ),
+                );
+            }
+            for value in items {
+                check_value_type(
+                    function,
+                    block,
+                    *value,
+                    element_type,
+                    "array initializer",
+                    values,
+                    errors,
+                );
+            }
+        }
+        IrInstructionKind::ArrayLoad {
+            local,
+            element_type,
+            length,
+            index,
+        } => {
+            check_collection_local(
+                &context,
+                *local,
+                Type::Array {
+                    element: Box::new(element_type.clone()),
+                    length: *length,
+                },
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *index,
+                &Type::Int,
+                "array index",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                element_type,
+                "array load",
+                errors,
+            );
+        }
+        IrInstructionKind::ArrayStore {
+            local,
+            element_type,
+            length,
+            index,
+            value,
+        } => {
+            check_collection_local(
+                &context,
+                *local,
+                Type::Array {
+                    element: Box::new(element_type.clone()),
+                    length: *length,
+                },
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *index,
+                &Type::Int,
+                "array index",
+                values,
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *value,
+                element_type,
+                "array store",
+                values,
+                errors,
+            );
+        }
+        IrInstructionKind::ArrayLength(_) => check_result_type(
+            function,
+            block,
+            result_type,
+            &Type::Int,
+            "array length",
+            errors,
+        ),
+        IrInstructionKind::ListInit {
+            local,
+            element_type,
+            values: items,
+        } => {
+            check_collection_local(
+                &context,
+                *local,
+                Type::List(Box::new(element_type.clone())),
+                errors,
+            );
+            for value in items {
+                check_value_type(
+                    function,
+                    block,
+                    *value,
+                    element_type,
+                    "list initializer",
+                    values,
+                    errors,
+                );
+            }
+        }
+        IrInstructionKind::ListLoad {
+            local,
+            element_type,
+            index,
+        } => {
+            check_collection_local(
+                &context,
+                *local,
+                Type::List(Box::new(element_type.clone())),
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *index,
+                &Type::Int,
+                "list index",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                element_type,
+                "list load",
+                errors,
+            );
+        }
+        IrInstructionKind::ListStore {
+            local,
+            element_type,
+            index,
+            value,
+        } => {
+            check_collection_local(
+                &context,
+                *local,
+                Type::List(Box::new(element_type.clone())),
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *index,
+                &Type::Int,
+                "list index",
+                values,
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *value,
+                element_type,
+                "list store",
+                values,
+                errors,
+            );
+        }
+        IrInstructionKind::ListPush {
+            local,
+            element_type,
+            value,
+        } => {
+            check_collection_local(
+                &context,
+                *local,
+                Type::List(Box::new(element_type.clone())),
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *value,
+                element_type,
+                "list push",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Void,
+                "list push",
+                errors,
+            );
+        }
+        IrInstructionKind::ListPop {
+            local,
+            element_type,
+        } => {
+            check_collection_local(
+                &context,
+                *local,
+                Type::List(Box::new(element_type.clone())),
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                element_type,
+                "list pop",
+                errors,
+            );
+        }
+        IrInstructionKind::ListLength {
+            local,
+            element_type,
+        } => {
+            check_collection_local(
+                &context,
+                *local,
+                Type::List(Box::new(element_type.clone())),
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Int,
+                "list length",
+                errors,
+            );
+        }
+        IrInstructionKind::CliArgLoad { local, index } => {
+            check_local_type(&context, *local, &Type::CliArgs, errors);
+            check_value_type(
+                function,
+                block,
+                *index,
+                &Type::Int,
+                "command-line argument index",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::String,
+                "command-line argument load",
+                errors,
+            );
+        }
+        IrInstructionKind::CliArgsLength { local } => {
+            check_local_type(&context, *local, &Type::CliArgs, errors);
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Int,
+                "command-line argument length",
+                errors,
+            );
+        }
+        IrInstructionKind::StringConstant(_) => {
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::String,
+                "string literal",
+                errors,
+            );
+        }
+        IrInstructionKind::StringConcat { left, right } => {
+            check_value_type(
+                function,
+                block,
+                *left,
+                &Type::String,
+                "string concat",
+                values,
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *right,
+                &Type::String,
+                "string concat",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::String,
+                "string concat",
+                errors,
+            );
+        }
+        IrInstructionKind::StringEqual { left, right, .. } => {
+            check_value_type(
+                function,
+                block,
+                *left,
+                &Type::String,
+                "string equality",
+                values,
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *right,
+                &Type::String,
+                "string equality",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Bool,
+                "string equality",
+                errors,
+            );
+        }
+        IrInstructionKind::StringLength(value) => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                &Type::String,
+                "string length",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Int,
+                "string length",
+                errors,
+            );
+        }
+        IrInstructionKind::StringByte { value, index } => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                &Type::String,
+                "string byte receiver",
+                values,
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *index,
+                &Type::Int,
+                "string byte index",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Int,
+                "string byte result",
+                errors,
+            );
+        }
+        IrInstructionKind::StringSlice { value, start, end } => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                &Type::String,
+                "string slice receiver",
+                values,
+                errors,
+            );
+            for index in [*start, *end] {
+                check_value_type(
+                    function,
+                    block,
+                    index,
+                    &Type::Int,
+                    "string slice index",
+                    values,
+                    errors,
+                );
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::String,
+                "string slice result",
+                errors,
+            );
+        }
+        IrInstructionKind::ReadFile(path) => {
+            check_value_type(
+                function,
+                block,
+                *path,
+                &Type::String,
+                "readFile path",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::String,
+                "readFile result",
                 errors,
             );
         }
@@ -910,6 +1438,15 @@ fn check_local_type(
             IrVerificationErrorKind::UnknownLocal(local),
         ),
     }
+}
+
+fn check_collection_local(
+    context: &InstructionContext<'_>,
+    local: SymbolId,
+    expected: Type,
+    errors: &mut Vec<IrVerificationError>,
+) {
+    check_local_type(context, local, &expected, errors);
 }
 
 fn validate_binary(
@@ -1275,7 +1812,12 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
         IrInstructionKind::Constant(_)
         | IrInstructionKind::LoadLocal(_)
         | IrInstructionKind::FieldLoad { .. }
-        | IrInstructionKind::EnumConstant { .. } => Vec::new(),
+        | IrInstructionKind::EnumConstant { .. }
+        | IrInstructionKind::ArrayLength(_)
+        | IrInstructionKind::ListPop { .. }
+        | IrInstructionKind::ListLength { .. }
+        | IrInstructionKind::CliArgsLength { .. }
+        | IrInstructionKind::StringConstant(_) => Vec::new(),
         IrInstructionKind::BindLocal { value, .. } | IrInstructionKind::Copy(value) => vec![*value],
         IrInstructionKind::Call { arguments, .. } | IrInstructionKind::Aggregate(arguments) => {
             arguments.clone()
@@ -1285,6 +1827,22 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
             fields.iter().map(|(_, value)| *value).collect()
         }
         IrInstructionKind::FieldStore { value, .. } => vec![*value],
+        IrInstructionKind::AggregateCopy { source, .. } => vec![*source],
+        IrInstructionKind::ArrayInit { values, .. }
+        | IrInstructionKind::ListInit { values, .. } => values.clone(),
+        IrInstructionKind::ArrayLoad { index, .. }
+        | IrInstructionKind::ListLoad { index, .. }
+        | IrInstructionKind::CliArgLoad { index, .. } => {
+            vec![*index]
+        }
+        IrInstructionKind::ArrayStore { index, value, .. }
+        | IrInstructionKind::ListStore { index, value, .. } => vec![*index, *value],
+        IrInstructionKind::ListPush { value, .. } => vec![*value],
+        IrInstructionKind::StringConcat { left, right }
+        | IrInstructionKind::StringEqual { left, right, .. } => vec![*left, *right],
+        IrInstructionKind::StringLength(value) | IrInstructionKind::ReadFile(value) => vec![*value],
+        IrInstructionKind::StringByte { value, index } => vec![*value, *index],
+        IrInstructionKind::StringSlice { value, start, end } => vec![*value, *start, *end],
         IrInstructionKind::Unary { operand, .. } => vec![*operand],
         IrInstructionKind::Binary { left, right, .. } => vec![*left, *right],
     }
@@ -1851,6 +2409,271 @@ mod tests {
             "enum Kind { first } struct Item { Kind kind; int value; } private int f() { Item item = Item { kind: Kind.first, value: 1 }; item.value = 2; return item.value; }",
         );
         assert!(verify_module(&module).is_ok());
+    }
+
+    #[test]
+    fn verifies_aggregate_copy_list_and_slice_ir() {
+        let module = lower_source(
+            "struct Token { string text; int line; } private void f() { Token a = Token { text: \"abc\", line: 1 }; Token b = a; list Token values = []; values.push(b); values[0] = b; Token first = values[0]; Token last = values.pop(); string piece = first.text.slice(0, 1); }",
+        );
+        assert!(verify_module(&module).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_aggregate_copy_and_list_result_types() {
+        let source = "struct Token { int line; } private void f() { Token a = Token { line: 1 }; Token b = a; list Token values = []; values.push(b); Token first = values[0]; }";
+        let mut copy = lower_source(source);
+        let operation = copy.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.instructions)
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::AggregateCopy { .. }))
+            .unwrap();
+        operation.result_type = Some(Type::Int);
+        assert_has_error(&copy, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "aggregate copy result",
+                    ..
+                }
+            )
+        });
+
+        let mut list = lower_source(source);
+        let operation = list.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.instructions)
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::ListLoad { .. }))
+            .unwrap();
+        operation.result_type = Some(Type::Int);
+        assert_has_error(&list, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "list load",
+                    ..
+                }
+            )
+        });
+    }
+
+    #[test]
+    fn rejects_invalid_string_slice_ir_types() {
+        let mut indexes = lower_source(
+            "private string f() { string source = \"abc\"; return source.slice(0, 1); }",
+        );
+        let start_value = indexes.functions[0].blocks[0]
+            .instructions
+            .iter()
+            .find_map(|instruction| match instruction.kind {
+                IrInstructionKind::StringSlice { start, .. } => Some(start),
+                _ => None,
+            })
+            .unwrap();
+        let start = indexes.functions[0].blocks[0]
+            .instructions
+            .iter_mut()
+            .find(|instruction| instruction.result == Some(start_value))
+            .unwrap();
+        start.result_type = Some(Type::Bool);
+        start.kind = IrInstructionKind::Constant(IrConstant::Bool(false));
+        assert_has_error(&indexes, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "string slice index",
+                    ..
+                }
+            )
+        });
+
+        let mut result = lower_source(
+            "private string f() { string source = \"abc\"; return source.slice(0, 1); }",
+        );
+        let slice = result.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.instructions)
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::StringSlice { .. }))
+            .unwrap();
+        slice.result_type = Some(Type::Int);
+        assert_has_error(&result, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "string slice result",
+                    ..
+                }
+            )
+        });
+    }
+
+    #[test]
+    fn rejects_unsupported_aggregate_layout_metadata() {
+        let mut module = lower_source(
+            "struct Token { int line; } private void f() { Token value = Token { line: 1 }; }",
+        );
+        module.structs[0].fields[0].ty = Type::List(Box::new(Type::Int));
+        assert_has_error(
+            &module,
+            |kind| matches!(kind, IrVerificationErrorKind::InvalidOperation(message) if message.contains("unsupported bootstrap layout")),
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_collection_and_string_ir_types() {
+        let mut array = lower_source("private int f() { int[1] values = [1]; return values[0]; }");
+        let load = array.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.instructions)
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::ArrayLoad { .. }))
+            .unwrap();
+        load.result_type = Some(Type::Bool);
+        assert_has_error(&array, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "array load",
+                    ..
+                }
+            )
+        });
+
+        let mut list = lower_source("private void f() { list int values = [1]; }");
+        let init = list.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.instructions)
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::ListInit { .. }))
+            .unwrap();
+        let IrInstructionKind::ListInit { element_type, .. } = &mut init.kind else {
+            unreachable!()
+        };
+        *element_type = Type::Bool;
+        assert_has_error(&list, |kind| {
+            matches!(kind, IrVerificationErrorKind::TypeMismatch { .. })
+        });
+
+        let mut string = lower_source("private string f() { return \"value\"; }");
+        string.functions[0].blocks[0].instructions[0].result_type = Some(Type::Int);
+        assert_has_error(&string, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "string literal",
+                    ..
+                }
+            )
+        });
+    }
+
+    #[test]
+    fn verifies_source_ingestion_ir_types_and_cli_handoff() {
+        let valid = lower_source(
+            "private int scan(string path) { string source = readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+        );
+        assert!(verify_module(&valid).is_ok());
+        let mut invalid_cli = valid.clone();
+        invalid_cli.functions[1].name = "not_main".into();
+        assert_has_error(
+            &invalid_cli,
+            |kind| matches!(kind, IrVerificationErrorKind::InvalidOperation(message) if message.contains("sole parameter of main")),
+        );
+
+        let mut byte_index =
+            lower_source("private int f() { string source = \"a\"; return source.byte(0); }");
+        let index_value = byte_index.functions[0].blocks[0]
+            .instructions
+            .iter()
+            .find_map(|instruction| match instruction.kind {
+                IrInstructionKind::StringByte { index, .. } => Some(index),
+                _ => None,
+            })
+            .unwrap();
+        let index = byte_index.functions[0].blocks[0]
+            .instructions
+            .iter_mut()
+            .find(|instruction| instruction.result == Some(index_value))
+            .unwrap();
+        index.result_type = Some(Type::Bool);
+        index.kind = IrInstructionKind::Constant(IrConstant::Bool(false));
+        assert_has_error(&byte_index, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "string byte index",
+                    ..
+                }
+            )
+        });
+        assert!(byte_index.functions[0].blocks[0]
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction.kind, IrInstructionKind::StringByte { index, .. } if index == index_value)));
+
+        let mut byte_result =
+            lower_source("private int f() { string source = \"a\"; return source.byte(0); }");
+        let byte = byte_result.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.instructions)
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::StringByte { .. }))
+            .unwrap();
+        byte.result_type = Some(Type::String);
+        assert_has_error(&byte_result, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "string byte result",
+                    ..
+                }
+            )
+        });
+
+        let mut read = lower_source("private string f() { return readFile(\"file\"); }");
+        let path_value = read.functions[0].blocks[0]
+            .instructions
+            .iter()
+            .find_map(|instruction| match instruction.kind {
+                IrInstructionKind::ReadFile(path) => Some(path),
+                _ => None,
+            })
+            .unwrap();
+        let path = read.functions[0].blocks[0]
+            .instructions
+            .iter_mut()
+            .find(|instruction| instruction.result == Some(path_value))
+            .unwrap();
+        path.result_type = Some(Type::Int);
+        path.kind = IrInstructionKind::Constant(IrConstant::Integer("1".into()));
+        let operation = read.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.instructions)
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::ReadFile(_)))
+            .unwrap();
+        operation.result_type = Some(Type::Int);
+        assert_has_error(&read, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "readFile path",
+                    ..
+                }
+            )
+        });
+        assert_has_error(&read, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "readFile result",
+                    ..
+                }
+            )
+        });
     }
 
     fn branch_module() -> IrModule {

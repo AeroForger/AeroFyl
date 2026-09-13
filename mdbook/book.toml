@@ -1,0 +1,8 @@
+[book]
+title = "Aerofyl Pre-alpha Guide"
+authors = ["Aerofyl contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"

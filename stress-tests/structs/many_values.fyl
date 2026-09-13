@@ -1,0 +1,15 @@
+struct Pair
+{
+    int left;
+    int right;
+}
+
+public void main()
+{
+    Pair a = Pair { left: 1, right: 2 };
+    Pair b = a;
+    Pair c = b;
+    Pair d = c;
+    Pair e = d;
+    e.left = e.left + e.right;
+}

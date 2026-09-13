@@ -10,6 +10,8 @@ pub enum Type {
     Bool,
     Char,
     String,
+    /// Bootstrap-only read-only command-line argument collection (`string[]`).
+    CliArgs,
     Void,
     Dynamic,
     /// A named type before semantic resolution.
@@ -40,6 +42,7 @@ impl fmt::Display for Type {
             Self::Bool => formatter.write_str("bool"),
             Self::Char => formatter.write_str("char"),
             Self::String => formatter.write_str("string"),
+            Self::CliArgs => formatter.write_str("string[]"),
             Self::Void => formatter.write_str("void"),
             Self::Dynamic => formatter.write_str("dynamic"),
             Self::Named(name) => formatter.write_str(name),

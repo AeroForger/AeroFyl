@@ -141,6 +141,15 @@ pub enum ExpressionKind {
         base: Box<Expression>,
         name: Name,
     },
+    Index {
+        base: Box<Expression>,
+        index: Box<Expression>,
+    },
+    MethodCall {
+        receiver: Box<Expression>,
+        method: Name,
+        arguments: Vec<Expression>,
+    },
     /// Reserved for the documented tuple concept. Tuple value syntax is not yet
     /// specified, so the parser does not construct this variant.
     Tuple(Vec<Expression>),
