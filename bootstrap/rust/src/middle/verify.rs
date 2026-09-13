@@ -4,6 +4,7 @@ use std::fmt;
 use crate::frontend::ast::{BinaryOperator, UnaryOperator};
 use crate::frontend::resolution::SymbolId;
 use crate::frontend::types::Type;
+use crate::frontend::types::TypeId;
 
 use super::ir::*;
 
@@ -12,6 +13,17 @@ pub struct IrVerificationError {
     pub function: Option<String>,
     pub block: Option<BlockId>,
     pub kind: IrVerificationErrorKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct VerifiedIrModule<'module> {
+    module: &'module IrModule,
+}
+
+impl<'module> VerifiedIrModule<'module> {
+    pub(crate) const fn as_module(self) -> &'module IrModule {
+        self.module
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +59,22 @@ pub enum IrVerificationErrorKind {
         found: Option<Type>,
     },
     InvalidBranchCondition(Type),
+    UnknownStruct(TypeId),
+    InvalidField {
+        struct_id: TypeId,
+        field: u32,
+    },
+    UnknownEnum(TypeId),
+    InvalidEnumVariant {
+        enum_id: TypeId,
+        variant: u32,
+    },
+    DuplicateType(TypeId),
+    InvalidType(Type),
+    InvalidFieldOffset {
+        struct_id: TypeId,
+        field: u32,
+    },
 }
 
 impl fmt::Display for IrVerificationError {
@@ -128,6 +156,20 @@ impl fmt::Display for IrVerificationErrorKind {
                     "branch condition must be `bool`, found `{found}`"
                 )
             }
+            Self::UnknownStruct(id) => write!(formatter, "unknown struct type {id:?}"),
+            Self::InvalidField { struct_id, field } => {
+                write!(formatter, "unknown field {field} for struct {struct_id:?}")
+            }
+            Self::UnknownEnum(id) => write!(formatter, "unknown enum type {id:?}"),
+            Self::InvalidEnumVariant { enum_id, variant } => {
+                write!(formatter, "unknown variant {variant} for enum {enum_id:?}")
+            }
+            Self::DuplicateType(id) => write!(formatter, "duplicate IR type ID {id:?}"),
+            Self::InvalidType(ty) => write!(formatter, "unknown or unresolved IR type `{ty}`"),
+            Self::InvalidFieldOffset { struct_id, field } => write!(
+                formatter,
+                "field {field} of struct {struct_id:?} has an invalid bootstrap offset"
+            ),
         }
     }
 }
@@ -138,11 +180,66 @@ struct Signature {
     return_type: Type,
 }
 
+#[derive(Clone, Copy)]
+struct InstructionContext<'a> {
+    function: &'a IrFunction,
+    block: BlockId,
+    signatures: &'a HashMap<SymbolId, Signature>,
+    structs: &'a HashMap<TypeId, &'a IrStruct>,
+    enums: &'a HashMap<TypeId, &'a IrEnum>,
+    locals: &'a HashMap<SymbolId, Type>,
+    values: &'a HashMap<ValueId, Type>,
+}
+
 /// Verifies all functions and collects independent IR invariant violations.
 /// Unreachable blocks are hard failures because lowering never intentionally
 /// creates them and silently accepting them can hide broken CFG construction.
-pub fn verify_module(module: &IrModule) -> Result<(), Vec<IrVerificationError>> {
+pub fn verify_module(module: &IrModule) -> Result<VerifiedIrModule<'_>, Vec<IrVerificationError>> {
     let mut errors = Vec::new();
+    let mut type_ids = HashSet::new();
+    let mut structs = HashMap::new();
+    for item in &module.structs {
+        if !type_ids.insert(item.id) || structs.insert(item.id, item).is_some() {
+            errors.push(module_error(IrVerificationErrorKind::DuplicateType(
+                item.id,
+            )));
+        }
+        let mut names = HashSet::new();
+        for (field, metadata) in item.fields.iter().enumerate() {
+            if !names.insert(&metadata.name) {
+                errors.push(module_error(IrVerificationErrorKind::InvalidOperation(
+                    "struct metadata contains duplicate field names",
+                )));
+            }
+            if metadata.offset != field as u32 * 8 {
+                errors.push(module_error(IrVerificationErrorKind::InvalidFieldOffset {
+                    struct_id: item.id,
+                    field: field as u32,
+                }));
+            }
+        }
+    }
+    let mut enums = HashMap::new();
+    for item in &module.enums {
+        if !type_ids.insert(item.id) || enums.insert(item.id, item).is_some() {
+            errors.push(module_error(IrVerificationErrorKind::DuplicateType(
+                item.id,
+            )));
+        }
+        let mut names = HashSet::new();
+        for variant in &item.variants {
+            if !names.insert(variant) {
+                errors.push(module_error(IrVerificationErrorKind::InvalidOperation(
+                    "enum metadata contains duplicate variant names",
+                )));
+            }
+        }
+    }
+    for item in &module.structs {
+        for field in &item.fields {
+            validate_known_type(&field.ty, &structs, &enums, None, &mut errors);
+        }
+    }
     let mut signatures = HashMap::new();
     for function in &module.functions {
         let signature = Signature {
@@ -162,10 +259,31 @@ pub fn verify_module(module: &IrModule) -> Result<(), Vec<IrVerificationError>> 
         }
     }
     for function in &module.functions {
-        verify_function(function, &signatures, &mut errors);
+        validate_known_type(
+            &function.return_type,
+            &structs,
+            &enums,
+            Some(&function.name),
+            &mut errors,
+        );
+        for local in function.parameters.iter().chain(&function.locals) {
+            validate_known_type(
+                &local.ty,
+                &structs,
+                &enums,
+                Some(&function.name),
+                &mut errors,
+            );
+        }
+        for instruction in function.blocks.iter().flat_map(|block| &block.instructions) {
+            if let Some(ty) = &instruction.result_type {
+                validate_known_type(ty, &structs, &enums, Some(&function.name), &mut errors);
+            }
+        }
+        verify_function(function, &signatures, &structs, &enums, &mut errors);
     }
     if errors.is_empty() {
-        Ok(())
+        Ok(VerifiedIrModule { module })
     } else {
         Err(errors)
     }
@@ -174,6 +292,8 @@ pub fn verify_module(module: &IrModule) -> Result<(), Vec<IrVerificationError>> 
 fn verify_function(
     function: &IrFunction,
     signatures: &HashMap<SymbolId, Signature>,
+    structs: &HashMap<TypeId, &IrStruct>,
+    enums: &HashMap<TypeId, &IrEnum>,
     errors: &mut Vec<IrVerificationError>,
 ) {
     let mut blocks = HashMap::new();
@@ -238,7 +358,15 @@ fn verify_function(
 
     let locals = collect_locals(function, errors);
     let (value_types, definitions) = collect_definitions(function, &successors, errors);
-    validate_instructions(function, signatures, &locals, &value_types, errors);
+    validate_instructions(
+        function,
+        signatures,
+        structs,
+        enums,
+        &locals,
+        &value_types,
+        errors,
+    );
     validate_definite_values(function, &reachable, &successors, &definitions, errors);
 }
 
@@ -271,7 +399,12 @@ fn collect_definitions(
     for block in &function.blocks {
         let block_definitions = definitions.entry(block.id).or_default();
         for instruction in &block.instructions {
-            let produces_value = !matches!(instruction.kind, IrInstructionKind::BindLocal { .. });
+            let produces_value = !matches!(
+                instruction.kind,
+                IrInstructionKind::BindLocal { .. }
+                    | IrInstructionKind::StructInit { .. }
+                    | IrInstructionKind::FieldStore { .. }
+            );
             match (
                 instruction.result,
                 instruction.result_type.as_ref(),
@@ -335,6 +468,8 @@ fn collect_definitions(
 fn validate_instructions(
     function: &IrFunction,
     signatures: &HashMap<SymbolId, Signature>,
+    structs: &HashMap<TypeId, &IrStruct>,
+    enums: &HashMap<TypeId, &IrEnum>,
     locals: &HashMap<SymbolId, Type>,
     values: &HashMap<ValueId, Type>,
     errors: &mut Vec<IrVerificationError>,
@@ -342,12 +477,16 @@ fn validate_instructions(
     for block in &function.blocks {
         for instruction in &block.instructions {
             validate_instruction(
-                function,
-                block.id,
+                InstructionContext {
+                    function,
+                    block: block.id,
+                    signatures,
+                    structs,
+                    enums,
+                    locals,
+                    values,
+                },
                 instruction,
-                signatures,
-                locals,
-                values,
                 errors,
             );
         }
@@ -403,14 +542,19 @@ fn validate_instructions(
 }
 
 fn validate_instruction(
-    function: &IrFunction,
-    block: BlockId,
+    context: InstructionContext<'_>,
     instruction: &IrInstruction,
-    signatures: &HashMap<SymbolId, Signature>,
-    locals: &HashMap<SymbolId, Type>,
-    values: &HashMap<ValueId, Type>,
     errors: &mut Vec<IrVerificationError>,
 ) {
+    let InstructionContext {
+        function,
+        block,
+        signatures,
+        structs: _,
+        enums,
+        locals,
+        values,
+    } = context;
     let result_type = instruction.result.and_then(|value| values.get(&value));
     match &instruction.kind {
         IrInstructionKind::Constant(constant) => {
@@ -450,6 +594,69 @@ fn validate_instruction(
                 IrVerificationErrorKind::UnknownLocal(*local),
             ),
         },
+        IrInstructionKind::StructInit {
+            local,
+            struct_id,
+            fields,
+        } => validate_struct_operation(&context, Some(*local), *struct_id, fields, None, errors),
+        IrInstructionKind::StructValue { struct_id, fields } => {
+            validate_struct_operation(&context, None, *struct_id, fields, result_type, errors)
+        }
+        IrInstructionKind::FieldLoad {
+            local,
+            struct_id,
+            field,
+        } => validate_field_operation(
+            &context,
+            *local,
+            *struct_id,
+            *field,
+            None,
+            result_type,
+            errors,
+        ),
+        IrInstructionKind::FieldStore {
+            local,
+            struct_id,
+            field,
+            value,
+        } => validate_field_operation(
+            &context,
+            *local,
+            *struct_id,
+            *field,
+            Some(*value),
+            None,
+            errors,
+        ),
+        IrInstructionKind::EnumConstant { enum_id, variant } => {
+            match enums.get(enum_id) {
+                Some(definition) if (*variant as usize) < definition.variants.len() => {}
+                Some(_) => push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidEnumVariant {
+                        enum_id: *enum_id,
+                        variant: *variant,
+                    },
+                ),
+                None => push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::UnknownEnum(*enum_id),
+                ),
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Enum(*enum_id),
+                "enum constant result",
+                errors,
+            );
+        }
         IrInstructionKind::Copy(value) => {
             if let Some(ty) = values.get(value) {
                 check_result_type(function, block, result_type, ty, "copy result", errors);
@@ -551,6 +758,160 @@ fn validate_instruction(
     }
 }
 
+fn validate_struct_operation(
+    context: &InstructionContext<'_>,
+    local: Option<SymbolId>,
+    struct_id: TypeId,
+    fields: &[(u32, ValueId)],
+    result: Option<&Type>,
+    errors: &mut Vec<IrVerificationError>,
+) {
+    let Some(definition) = context.structs.get(&struct_id) else {
+        push_error(
+            errors,
+            context.function,
+            Some(context.block),
+            IrVerificationErrorKind::UnknownStruct(struct_id),
+        );
+        return;
+    };
+    if let Some(local) = local {
+        check_local_type(context, local, &Type::Struct(struct_id), errors);
+    }
+    if result.is_some() {
+        check_result_type(
+            context.function,
+            context.block,
+            result,
+            &Type::Struct(struct_id),
+            "struct value result",
+            errors,
+        );
+    }
+    let mut seen = HashSet::new();
+    for (field, value) in fields {
+        let Some(metadata) = definition.fields.get(*field as usize) else {
+            push_error(
+                errors,
+                context.function,
+                Some(context.block),
+                IrVerificationErrorKind::InvalidField {
+                    struct_id,
+                    field: *field,
+                },
+            );
+            continue;
+        };
+        if !seen.insert(*field) {
+            push_error(
+                errors,
+                context.function,
+                Some(context.block),
+                IrVerificationErrorKind::InvalidOperation(
+                    "struct construction contains a duplicate field",
+                ),
+            );
+        }
+        check_value_type(
+            context.function,
+            context.block,
+            *value,
+            &metadata.ty,
+            "struct field initializer",
+            context.values,
+            errors,
+        );
+    }
+    if seen.len() != definition.fields.len() {
+        push_error(
+            errors,
+            context.function,
+            Some(context.block),
+            IrVerificationErrorKind::InvalidOperation(
+                "struct construction does not initialize every field exactly once",
+            ),
+        );
+    }
+}
+
+fn validate_field_operation(
+    context: &InstructionContext<'_>,
+    local: SymbolId,
+    struct_id: TypeId,
+    field: u32,
+    stored_value: Option<ValueId>,
+    result: Option<&Type>,
+    errors: &mut Vec<IrVerificationError>,
+) {
+    check_local_type(context, local, &Type::Struct(struct_id), errors);
+    let Some(definition) = context.structs.get(&struct_id) else {
+        push_error(
+            errors,
+            context.function,
+            Some(context.block),
+            IrVerificationErrorKind::UnknownStruct(struct_id),
+        );
+        return;
+    };
+    let Some(metadata) = definition.fields.get(field as usize) else {
+        push_error(
+            errors,
+            context.function,
+            Some(context.block),
+            IrVerificationErrorKind::InvalidField { struct_id, field },
+        );
+        return;
+    };
+    if let Some(value) = stored_value {
+        check_value_type(
+            context.function,
+            context.block,
+            value,
+            &metadata.ty,
+            "field store",
+            context.values,
+            errors,
+        );
+    }
+    if result.is_some() {
+        check_result_type(
+            context.function,
+            context.block,
+            result,
+            &metadata.ty,
+            "field load",
+            errors,
+        );
+    }
+}
+
+fn check_local_type(
+    context: &InstructionContext<'_>,
+    local: SymbolId,
+    expected: &Type,
+    errors: &mut Vec<IrVerificationError>,
+) {
+    match context.locals.get(&local) {
+        Some(found) if found != expected => push_error(
+            errors,
+            context.function,
+            Some(context.block),
+            IrVerificationErrorKind::TypeMismatch {
+                context: "struct local",
+                expected: expected.clone(),
+                found: found.clone(),
+            },
+        ),
+        Some(_) => {}
+        None => push_error(
+            errors,
+            context.function,
+            Some(context.block),
+            IrVerificationErrorKind::UnknownLocal(local),
+        ),
+    }
+}
+
 fn validate_binary(
     function: &IrFunction,
     block: BlockId,
@@ -628,7 +989,9 @@ fn validate_binary(
             let left_type = values.get(&left);
             let right_type = values.get(&right);
             if let (Some(left_type), Some(right_type)) = (left_type, right_type) {
-                if left_type != right_type || !matches!(left_type, Type::Int | Type::Bool) {
+                if left_type != right_type
+                    || !matches!(left_type, Type::Int | Type::Bool | Type::Enum(_))
+                {
                     push_error(
                         errors,
                         function,
@@ -909,11 +1272,19 @@ fn constant_type(constant: &IrConstant) -> Type {
 
 fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
     match kind {
-        IrInstructionKind::Constant(_) | IrInstructionKind::LoadLocal(_) => Vec::new(),
+        IrInstructionKind::Constant(_)
+        | IrInstructionKind::LoadLocal(_)
+        | IrInstructionKind::FieldLoad { .. }
+        | IrInstructionKind::EnumConstant { .. } => Vec::new(),
         IrInstructionKind::BindLocal { value, .. } | IrInstructionKind::Copy(value) => vec![*value],
         IrInstructionKind::Call { arguments, .. } | IrInstructionKind::Aggregate(arguments) => {
             arguments.clone()
         }
+        IrInstructionKind::StructInit { fields, .. }
+        | IrInstructionKind::StructValue { fields, .. } => {
+            fields.iter().map(|(_, value)| *value).collect()
+        }
+        IrInstructionKind::FieldStore { value, .. } => vec![*value],
         IrInstructionKind::Unary { operand, .. } => vec![*operand],
         IrInstructionKind::Binary { left, right, .. } => vec![*left, *right],
     }
@@ -991,6 +1362,46 @@ fn push_error(
     });
 }
 
+fn module_error(kind: IrVerificationErrorKind) -> IrVerificationError {
+    IrVerificationError {
+        function: None,
+        block: None,
+        kind,
+    }
+}
+
+fn validate_known_type(
+    ty: &Type,
+    structs: &HashMap<TypeId, &IrStruct>,
+    enums: &HashMap<TypeId, &IrEnum>,
+    function: Option<&str>,
+    errors: &mut Vec<IrVerificationError>,
+) {
+    let valid = match ty {
+        Type::Struct(id) => structs.contains_key(id),
+        Type::Enum(id) => enums.contains_key(id),
+        Type::Named(_) => false,
+        Type::Array { element, .. } | Type::List(element) => {
+            validate_known_type(element, structs, enums, function, errors);
+            true
+        }
+        Type::Tuple(elements) => {
+            for element in elements {
+                validate_known_type(element, structs, enums, function, errors);
+            }
+            true
+        }
+        _ => true,
+    };
+    if !valid {
+        errors.push(IrVerificationError {
+            function: function.map(str::to_owned),
+            block: None,
+            kind: IrVerificationErrorKind::InvalidType(ty.clone()),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1042,6 +1453,8 @@ mod tests {
 
     fn int_module() -> IrModule {
         IrModule {
+            structs: Vec::new(),
+            enums: Vec::new(),
             functions: vec![function(
                 Type::Int,
                 vec![IrBlock {
@@ -1068,7 +1481,7 @@ mod tests {
 
     #[test]
     fn accepts_valid_straight_line_ir() {
-        assert_eq!(verify_module(&int_module()), Ok(()));
+        assert!(verify_module(&int_module()).is_ok());
     }
 
     #[test]
@@ -1321,7 +1734,7 @@ mod tests {
     #[test]
     fn accepts_valid_loop_cfg() {
         let module = lower_source("private void f(bool run) { while (run) { run = false; } }");
-        assert_eq!(verify_module(&module), Ok(()));
+        assert!(verify_module(&module).is_ok());
     }
 
     #[test]
@@ -1329,13 +1742,13 @@ mod tests {
         let module = lower_source(
             "private int f(bool choose) { if (choose) { return 1; } else { return 2; } }",
         );
-        assert_eq!(verify_module(&module), Ok(()));
+        assert!(verify_module(&module).is_ok());
     }
 
     #[test]
     fn accepts_valid_short_circuit_cfg() {
         let module = lower_source("private bool f(bool a, bool b) { return a && b || a; }");
-        assert_eq!(verify_module(&module), Ok(()));
+        assert!(verify_module(&module).is_ok());
     }
 
     #[test]
@@ -1343,11 +1756,107 @@ mod tests {
         let module = lower_source(
             "private void f(bool run, bool a, bool b) { while (run) { bool value = a && b; run = false; } }",
         );
-        assert_eq!(verify_module(&module), Ok(()));
+        assert!(verify_module(&module).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_struct_field_id() {
+        let mut module = lower_source(
+            "struct Item { int value; } private int f() { Item item = Item { value: 1 }; return item.value; }",
+        );
+        let instruction = module.functions[0]
+            .blocks
+            .iter_mut()
+            .flat_map(|block| &mut block.instructions)
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::FieldLoad { .. }))
+            .unwrap();
+        let IrInstructionKind::FieldLoad { field, .. } = &mut instruction.kind else {
+            unreachable!()
+        };
+        *field = 99;
+        assert_has_error(&module, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::InvalidField { field: 99, .. }
+            )
+        });
+    }
+
+    #[test]
+    fn rejects_invalid_enum_variant() {
+        let mut module =
+            lower_source("enum State { idle } private void f() { State state = State.idle; }");
+        let instruction = &mut module.functions[0].blocks[0].instructions[0];
+        let IrInstructionKind::EnumConstant { variant, .. } = &mut instruction.kind else {
+            unreachable!()
+        };
+        *variant = 9;
+        assert_has_error(&module, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::InvalidEnumVariant { variant: 9, .. }
+            )
+        });
+    }
+
+    #[test]
+    fn rejects_struct_field_initializer_type_mismatch() {
+        let mut module = lower_source(
+            "struct Item { int value; } private void f() { Item item = Item { value: 1 }; }",
+        );
+        let value = &mut module.functions[0].blocks[0].instructions[0];
+        value.result_type = Some(Type::Bool);
+        value.kind = IrInstructionKind::Constant(IrConstant::Bool(true));
+        assert_has_error(&module, |kind| {
+            matches!(
+                kind,
+                IrVerificationErrorKind::TypeMismatch {
+                    context: "struct field initializer",
+                    expected: Type::Int,
+                    found: Type::Bool
+                }
+            )
+        });
+    }
+
+    #[test]
+    fn rejects_enum_comparison_type_mismatch() {
+        let mut module =
+            lower_source("enum A { one } private void f() { bool same = A.one == A.one; }");
+        let mut second_enum = module.enums[0].clone();
+        second_enum.id = TypeId(1);
+        second_enum.name = "B".to_owned();
+        module.enums.push(second_enum);
+        let mut constants: Vec<_> = module.functions[0].blocks[0]
+            .instructions
+            .iter_mut()
+            .filter(|instruction| {
+                matches!(instruction.kind, IrInstructionKind::EnumConstant { .. })
+            })
+            .collect();
+        constants[1].result_type = Some(Type::Enum(TypeId(1)));
+        let IrInstructionKind::EnumConstant { enum_id, .. } = &mut constants[1].kind else {
+            unreachable!()
+        };
+        *enum_id = TypeId(1);
+        assert_has_error(
+            &module,
+            |kind| matches!(kind, IrVerificationErrorKind::InvalidOperation(message) if message.contains("equality operands")),
+        );
+    }
+
+    #[test]
+    fn accepts_valid_struct_and_enum_ir() {
+        let module = lower_source(
+            "enum Kind { first } struct Item { Kind kind; int value; } private int f() { Item item = Item { kind: Kind.first, value: 1 }; item.value = 2; return item.value; }",
+        );
+        assert!(verify_module(&module).is_ok());
     }
 
     fn branch_module() -> IrModule {
         IrModule {
+            structs: Vec::new(),
+            enums: Vec::new(),
             functions: vec![function(
                 Type::Int,
                 vec![

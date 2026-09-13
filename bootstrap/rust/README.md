@@ -21,7 +21,7 @@ compiler is used.
 normal compilation path is therefore:
 
 ```text
-source -> AST -> HIR -> IR -> verify IR -> x86-64 -> ELF
+source -> AST -> HIR -> IR -> verify IR -> VerifiedIrModule -> x86-64 -> ELF
 ```
 
 Verification checks that function, block, value, and local identifiers are
@@ -37,8 +37,11 @@ to matching function signatures, and returns match their function type.
 Short-circuit expressions use one logical result defined in path-disjoint
 predecessors of the same merge block; other multiple definitions are rejected.
 
-Verification returns all reasonably independent problems it finds as structured
-`IrVerificationError` values. Driver diagnostics label these failures as
+Successful verification returns a borrowing `VerifiedIrModule` capability whose
+constructor and raw-module accessor are private to the compiler. The x86-64
+lowering API accepts only this verified wrapper, so raw IR cannot cross the
+backend boundary. Verification returns all reasonably independent problems it
+finds as structured `IrVerificationError` values. Driver diagnostics label these failures as
 `internal compiler error: invalid IR`: they indicate a compiler bug after valid
 source has passed semantic analysis, and are distinct from source diagnostics
 that include source locations. A failed verification stops compilation before
@@ -61,9 +64,62 @@ the backend is called.
 - `true` and `false`, unary `!`, short-circuit `&&` and `||`
 - integer `==`, `!=`, `<`, `<=`, `>`, and `>=`; Boolean `==` and `!=`
 - `if`/`else`, `while`, `break`, `continue`, and exact-type variable assignment
+- fixed-layout structs with complete named-field construction, field access,
+  and field assignment
+- payload-free enums, qualified variants, and enum `==`/`!=`
 
-Executable lowering currently supports `int` parameters, `int` and `void`
-returns, integer locals, integer arithmetic, and calls. An executable must have
+## Bootstrap structs and enums
+
+Struct declarations and values use the following forms:
+
+```fyl
+struct Point
+{
+    int x;
+    int y;
+}
+
+Point point = Point {
+    x: 10,
+    y: 20
+};
+
+point.x = point.x + 1;
+```
+
+Every field must appear exactly once in a literal and field types match exactly.
+The bootstrap layout preserves declaration order, aligns the struct to eight
+bytes, and gives each supported scalar or enum field one eight-byte slot. Field
+zero has byte offset zero, field one offset eight, and so on. This is an internal
+bootstrap layout, not a permanent Aerofyl ABI. Structs are stack-local: nested
+struct fields, whole-struct copies, struct parameters, struct returns, and
+passing structs by value are unsupported and produce structured diagnostics or
+backend errors. There is no heap allocation, field visibility, methods,
+inheritance, interfaces, generics, or default/omitted fields.
+
+Enums are payload-free and use qualified values:
+
+```fyl
+enum State
+{
+    idle,
+    running,
+    stopped
+}
+
+State state = State.running;
+bool active = state != State.idle;
+```
+
+The x86-64 bootstrap represents each enum as one eight-byte integer slot.
+Variants receive zero-based discriminants in declaration order. This ordering is
+bootstrap behavior and is not promised as a stable external ABI. Enum payloads,
+explicit discriminants, unqualified variants, methods, tagged unions, and enum
+ordering comparisons are unsupported. Enums can be stored in struct fields.
+
+Executable lowering currently supports scalar integer, Boolean, and enum values,
+stack-local structs with scalar/enum fields, integer arithmetic, and calls.
+Struct parameters and returns are not supported. An executable must have
 exactly one `public void main()` with no parameters. Linux startup calls it and
 then exits with status zero through the x86-64 `exit` syscall.
 

@@ -1,11 +1,35 @@
 use crate::frontend::ast::{BinaryOperator, UnaryOperator, Visibility};
 use crate::frontend::resolution::SymbolId;
 use crate::frontend::source::Span;
-use crate::frontend::types::Type;
+use crate::frontend::types::{Type, TypeId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IrModule {
+    pub structs: Vec<IrStruct>,
+    pub enums: Vec<IrEnum>,
     pub functions: Vec<IrFunction>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IrStruct {
+    pub id: TypeId,
+    pub name: String,
+    pub fields: Vec<IrField>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IrField {
+    pub name: String,
+    pub ty: Type,
+    /// Eight-byte slot offset from the start of the bootstrap struct layout.
+    pub offset: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IrEnum {
+    pub id: TypeId,
+    pub name: String,
+    pub variants: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -67,6 +91,30 @@ pub enum IrInstructionKind {
     BindLocal {
         local: SymbolId,
         value: ValueId,
+    },
+    StructInit {
+        local: SymbolId,
+        struct_id: TypeId,
+        fields: Vec<(u32, ValueId)>,
+    },
+    StructValue {
+        struct_id: TypeId,
+        fields: Vec<(u32, ValueId)>,
+    },
+    FieldLoad {
+        local: SymbolId,
+        struct_id: TypeId,
+        field: u32,
+    },
+    FieldStore {
+        local: SymbolId,
+        struct_id: TypeId,
+        field: u32,
+        value: ValueId,
+    },
+    EnumConstant {
+        enum_id: TypeId,
+        variant: u32,
     },
     Copy(ValueId),
     Call {

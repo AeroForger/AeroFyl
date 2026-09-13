@@ -3,7 +3,30 @@ use super::types::Type;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Module {
+    pub structs: Vec<StructDeclaration>,
+    pub enums: Vec<EnumDeclaration>,
     pub functions: Vec<Function>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StructDeclaration {
+    pub name: Name,
+    pub fields: Vec<FieldDeclaration>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldDeclaration {
+    pub ty: TypeNode,
+    pub name: Name,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnumDeclaration {
+    pub name: Name,
+    pub variants: Vec<Name>,
     pub span: Span,
 }
 
@@ -82,7 +105,7 @@ pub struct VariableDeclaration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Assignment {
-    pub target: Name,
+    pub target: Expression,
     pub value: Expression,
 }
 
@@ -110,9 +133,24 @@ pub enum ExpressionKind {
         right: Box<Expression>,
     },
     Collection(Vec<Expression>),
+    StructLiteral {
+        name: Name,
+        fields: Vec<StructLiteralField>,
+    },
+    Member {
+        base: Box<Expression>,
+        name: Name,
+    },
     /// Reserved for the documented tuple concept. Tuple value syntax is not yet
     /// specified, so the parser does not construct this variant.
     Tuple(Vec<Expression>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StructLiteralField {
+    pub name: Name,
+    pub value: Expression,
+    pub span: Span,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -61,6 +61,7 @@ struct Resolver {
     resolution: Resolution,
     scopes: Vec<HashMap<String, SymbolId>>,
     diagnostics: Vec<Diagnostic>,
+    type_names: HashMap<String, Span>,
 }
 
 impl Resolver {
@@ -69,6 +70,7 @@ impl Resolver {
             resolution: Resolution::default(),
             scopes: vec![HashMap::new()],
             diagnostics: Vec::new(),
+            type_names: HashMap::new(),
         };
         resolver.define_builtin("print");
         resolver.define_builtin("input");
@@ -76,6 +78,33 @@ impl Resolver {
     }
 
     fn resolve(mut self, module: &Module) -> Result<Resolution, Vec<Diagnostic>> {
+        for (name, span) in module
+            .structs
+            .iter()
+            .map(|item| (&item.name.text, item.name.span))
+            .chain(
+                module
+                    .enums
+                    .iter()
+                    .map(|item| (&item.name.text, item.name.span)),
+            )
+        {
+            if self.type_names.insert(name.clone(), span).is_some() {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("duplicate type declaration `{name}`"),
+                    span,
+                ));
+            }
+        }
+        for declaration in &module.structs {
+            self.check_member_names(
+                declaration.fields.iter().map(|field| &field.name),
+                "struct field",
+            );
+        }
+        for declaration in &module.enums {
+            self.check_member_names(declaration.variants.iter(), "enum variant");
+        }
         for function in &module.functions {
             self.define(
                 &function.name.text,
@@ -130,7 +159,7 @@ impl Resolver {
                     );
                 }
                 StatementKind::Assignment(assignment) => {
-                    self.resolve_name(&assignment.target.text, assignment.target.span);
+                    self.resolve_expression(&assignment.target);
                     self.resolve_expression(&assignment.value);
                 }
                 StatementKind::Return(Some(value)) | StatementKind::Expression(value) => {
@@ -178,7 +207,36 @@ impl Resolver {
                     self.resolve_expression(value);
                 }
             }
+            ExpressionKind::StructLiteral { fields, .. } => {
+                for field in fields {
+                    self.resolve_expression(&field.value);
+                }
+            }
+            ExpressionKind::Member { base, .. } => {
+                if !matches!(
+                    &base.kind,
+                    ExpressionKind::Identifier(name) if self.type_names.contains_key(&name.text)
+                ) {
+                    self.resolve_expression(base);
+                }
+            }
             ExpressionKind::Literal(_) => {}
+        }
+    }
+
+    fn check_member_names<'a>(
+        &mut self,
+        names: impl Iterator<Item = &'a super::ast::Name>,
+        description: &str,
+    ) {
+        let mut seen = HashMap::new();
+        for name in names {
+            if seen.insert(&name.text, name.span).is_some() {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("duplicate {description} `{}`", name.text),
+                    name.span,
+                ));
+            }
         }
     }
 

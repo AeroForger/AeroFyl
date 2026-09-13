@@ -1,16 +1,22 @@
+use std::collections::{HashMap, HashSet};
+
 use super::ast::{Expression, ExpressionKind, Literal, Module, StatementKind, Visibility};
 use super::diagnostics::Diagnostic;
 use super::resolution::{Resolution, SymbolId, SymbolKind, resolve};
-use super::types::Type;
+use super::types::{Type, TypeId};
 use crate::middle::hir::*;
 
 pub fn analyze(module: &Module) -> Result<HirModule, Vec<Diagnostic>> {
     let resolution = resolve(module)?;
-    Analyzer {
+    let mut analyzer = Analyzer {
         resolution: &resolution,
         diagnostics: Vec::new(),
-    }
-    .analyze_module(module)
+        structs: Vec::new(),
+        enums: Vec::new(),
+        type_names: HashMap::new(),
+    };
+    analyzer.collect_types(module);
+    analyzer.analyze_module(module)
 }
 
 /// Validates the additional source-level contract required for an executable.
@@ -63,25 +69,89 @@ pub fn validate_executable(module: &HirModule) -> Result<SymbolId, Vec<Diagnosti
 struct Analyzer<'resolution> {
     resolution: &'resolution Resolution,
     diagnostics: Vec<Diagnostic>,
+    structs: Vec<HirStruct>,
+    enums: Vec<HirEnum>,
+    type_names: HashMap<String, Type>,
 }
 
 impl Analyzer<'_> {
+    fn collect_types(&mut self, module: &Module) {
+        for declaration in &module.structs {
+            let id = TypeId(self.type_names.len() as u32);
+            self.type_names
+                .entry(declaration.name.text.clone())
+                .or_insert(Type::Struct(id));
+        }
+        for declaration in &module.enums {
+            let id = TypeId(self.type_names.len() as u32);
+            self.type_names
+                .entry(declaration.name.text.clone())
+                .or_insert(Type::Enum(id));
+        }
+        for declaration in &module.structs {
+            let Some(Type::Struct(id)) = self.type_names.get(&declaration.name.text).cloned()
+            else {
+                continue;
+            };
+            let fields = declaration
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    let ty = self.resolve_type(&field.ty.kind, field.ty.span);
+                    if matches!(ty, Type::Struct(_)) {
+                        self.diagnostics.push(Diagnostic::error(
+                            "nested struct fields are not supported by the bootstrap layout",
+                            field.ty.span,
+                        ));
+                    }
+                    HirField {
+                        name: field.name.text.clone(),
+                        ty,
+                        offset: index as u32 * 8,
+                    }
+                })
+                .collect();
+            self.structs.push(HirStruct {
+                id,
+                name: declaration.name.text.clone(),
+                fields,
+            });
+        }
+        for declaration in &module.enums {
+            let Some(Type::Enum(id)) = self.type_names.get(&declaration.name.text).cloned() else {
+                continue;
+            };
+            self.enums.push(HirEnum {
+                id,
+                name: declaration.name.text.clone(),
+                variants: declaration
+                    .variants
+                    .iter()
+                    .map(|variant| variant.text.clone())
+                    .collect(),
+            });
+        }
+    }
+
     fn analyze_module(mut self, module: &Module) -> Result<HirModule, Vec<Diagnostic>> {
         let mut functions = Vec::new();
         for function in &module.functions {
             let symbol = self.declaration_id(function.name.span);
+            let return_type =
+                self.resolve_type(&function.return_type.kind, function.return_type.span);
             let parameters = function
                 .parameters
                 .iter()
                 .map(|parameter| HirParameter {
                     symbol: self.declaration_id(parameter.name.span),
-                    ty: parameter.ty.kind.clone(),
+                    ty: self.resolve_type(&parameter.ty.kind, parameter.ty.span),
                 })
                 .collect();
-            let body = self.analyze_block(&function.body, &function.return_type.kind, 0);
-            if function.return_type.kind == Type::Int && !block_definitely_returns(&function.body) {
+            let body = self.analyze_block(&function.body, &return_type, 0);
+            if return_type != Type::Void && !block_definitely_returns(&function.body) {
                 self.diagnostics.push(Diagnostic::error(
-                    "an `int` function must return an `int` value",
+                    format!("a `{return_type}` function must return a value"),
                     function.name.span,
                 ));
             }
@@ -90,7 +160,7 @@ impl Analyzer<'_> {
                 name: function.name.text.clone(),
                 name_span: function.name.span,
                 visibility: function.visibility,
-                return_type: function.return_type.kind.clone(),
+                return_type,
                 parameters,
                 body,
                 span: function.span,
@@ -98,6 +168,8 @@ impl Analyzer<'_> {
         }
         if self.diagnostics.is_empty() {
             Ok(HirModule {
+                structs: self.structs,
+                enums: self.enums,
                 functions,
                 span: module.span,
             })
@@ -116,36 +188,17 @@ impl Analyzer<'_> {
         for statement in &block.statements {
             let hir = match &statement.kind {
                 StatementKind::Variable(variable) => {
-                    let initializer =
-                        self.check_expression(&variable.initializer, Some(&variable.ty.kind));
+                    let ty = self.resolve_type(&variable.ty.kind, variable.ty.span);
+                    let initializer = self.check_expression(&variable.initializer, Some(&ty));
                     HirStatement::Variable {
                         symbol: self.declaration_id(variable.name.span),
-                        ty: variable.ty.kind.clone(),
+                        ty,
                         initializer,
                         span: statement.span,
                     }
                 }
                 StatementKind::Assignment(assignment) => {
-                    let symbol = self.reference_id(assignment.target.span);
-                    let target_type = match &self.symbol(symbol).kind {
-                        SymbolKind::Variable { ty } | SymbolKind::Parameter { ty } => ty.clone(),
-                        _ => {
-                            self.diagnostics.push(Diagnostic::error(
-                                format!(
-                                    "`{}` is not an assignable variable",
-                                    assignment.target.text
-                                ),
-                                assignment.target.span,
-                            ));
-                            Type::Dynamic
-                        }
-                    };
-                    let value = self.check_expression(&assignment.value, Some(&target_type));
-                    HirStatement::Assignment {
-                        symbol,
-                        value,
-                        span: statement.span,
-                    }
+                    self.check_assignment(&assignment.target, &assignment.value, statement.span)
                 }
                 StatementKind::Return(value) => {
                     let value = match value {
@@ -242,8 +295,11 @@ impl Analyzer<'_> {
             }
             ExpressionKind::Identifier(name) => {
                 let id = self.reference_id(name.span);
-                let ty = match &self.symbol(id).kind {
-                    SymbolKind::Variable { ty } | SymbolKind::Parameter { ty } => ty.clone(),
+                let symbol_kind = self.symbol(id).kind.clone();
+                let ty = match symbol_kind {
+                    SymbolKind::Variable { ty } | SymbolKind::Parameter { ty } => {
+                        self.resolve_type(&ty, name.span)
+                    }
                     SymbolKind::Function { .. } | SymbolKind::Builtin | SymbolKind::Module => {
                         self.diagnostics.push(Diagnostic::error(
                             format!("`{}` cannot be used as a value", name.text),
@@ -262,6 +318,11 @@ impl Analyzer<'_> {
                         parameters,
                         return_type,
                     } => {
+                        let parameters: Vec<_> = parameters
+                            .iter()
+                            .map(|ty| self.resolve_type(ty, callee.span))
+                            .collect();
+                        let return_type = self.resolve_type(&return_type, callee.span);
                         if parameters.len() != arguments.len() {
                             self.diagnostics.push(Diagnostic::error(
                                 format!(
@@ -368,11 +429,17 @@ impl Analyzer<'_> {
                     super::ast::BinaryOperator::Less
                     | super::ast::BinaryOperator::LessEqual
                     | super::ast::BinaryOperator::Greater
-                    | super::ast::BinaryOperator::GreaterEqual => (
-                        self.check_expression(left, Some(&Type::Int)),
-                        self.check_expression(right, Some(&Type::Int)),
-                        Type::Bool,
-                    ),
+                    | super::ast::BinaryOperator::GreaterEqual => {
+                        let left = self.check_expression(left, None);
+                        let right = self.check_expression(right, Some(&left.ty));
+                        if left.ty != Type::Int {
+                            self.diagnostics.push(Diagnostic::error(
+                                "ordering comparison expected `int` operands; enums support only `==` and `!=`",
+                                expression.span,
+                            ));
+                        }
+                        (left, right, Type::Bool)
+                    }
                     super::ast::BinaryOperator::LogicalAnd
                     | super::ast::BinaryOperator::LogicalOr => (
                         self.check_expression(left, Some(&Type::Bool)),
@@ -382,9 +449,11 @@ impl Analyzer<'_> {
                     super::ast::BinaryOperator::Equal | super::ast::BinaryOperator::NotEqual => {
                         let left = self.check_expression(left, None);
                         let right = self.check_expression(right, None);
-                        if left.ty != right.ty || !matches!(left.ty, Type::Int | Type::Bool) {
+                        if left.ty != right.ty
+                            || !matches!(left.ty, Type::Int | Type::Bool | Type::Enum(_))
+                        {
                             self.diagnostics.push(Diagnostic::error(
-                                "equality requires matching `int` or matching `bool` operands",
+                                "equality requires matching `int`, `bool`, or enum operands",
                                 expression.span,
                             ));
                         }
@@ -459,6 +528,12 @@ impl Analyzer<'_> {
                     expected.cloned().unwrap_or(Type::Dynamic),
                 )
             }
+            ExpressionKind::StructLiteral { name, fields } => {
+                self.check_struct_literal(name, fields, expression.span)
+            }
+            ExpressionKind::Member { base, name } => {
+                self.check_member_expression(base, name, expression.span)
+            }
         };
 
         if let Some(expected) = expected
@@ -473,6 +548,307 @@ impl Analyzer<'_> {
             kind,
             ty: actual,
             span: expression.span,
+        }
+    }
+
+    fn check_assignment(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+        span: super::source::Span,
+    ) -> HirStatement {
+        match &target.kind {
+            ExpressionKind::Identifier(name) => {
+                let symbol = self.reference_id(name.span);
+                let symbol_kind = self.symbol(symbol).kind.clone();
+                let target_type = match symbol_kind {
+                    SymbolKind::Variable { ty } | SymbolKind::Parameter { ty } => {
+                        self.resolve_type(&ty, name.span)
+                    }
+                    _ => {
+                        self.diagnostics.push(Diagnostic::error(
+                            format!("`{}` is not an assignable variable", name.text),
+                            name.span,
+                        ));
+                        Type::Dynamic
+                    }
+                };
+                HirStatement::Assignment {
+                    symbol,
+                    value: self.check_expression(value, Some(&target_type)),
+                    span,
+                }
+            }
+            ExpressionKind::Member { base, name } => {
+                let ExpressionKind::Identifier(base_name) = &base.kind else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "field assignment currently requires a local struct variable",
+                        target.span,
+                    ));
+                    return HirStatement::Expression(self.check_expression(value, None));
+                };
+                if self.type_names.contains_key(&base_name.text) {
+                    self.diagnostics.push(Diagnostic::error(
+                        "field assignment requires a local struct variable, not a type name",
+                        base_name.span,
+                    ));
+                    return HirStatement::Expression(self.check_expression(value, None));
+                }
+                let local = self.reference_id(base_name.span);
+                let symbol_kind = self.symbol(local).kind.clone();
+                let base_type = match symbol_kind {
+                    SymbolKind::Variable { ty } | SymbolKind::Parameter { ty } => {
+                        self.resolve_type(&ty, base_name.span)
+                    }
+                    _ => Type::Dynamic,
+                };
+                let Type::Struct(struct_id) = base_type else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "field assignment requires a struct value",
+                        target.span,
+                    ));
+                    return HirStatement::Expression(self.check_expression(value, None));
+                };
+                let Some((field, field_type)) = self.struct_field(struct_id, &name.text) else {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("unknown struct field `{}`", name.text),
+                        name.span,
+                    ));
+                    return HirStatement::Expression(self.check_expression(value, None));
+                };
+                HirStatement::FieldAssignment {
+                    local,
+                    struct_id,
+                    field,
+                    value: self.check_expression(value, Some(&field_type)),
+                    span,
+                }
+            }
+            _ => {
+                self.diagnostics.push(Diagnostic::error(
+                    "assignment target must be a variable or struct field",
+                    target.span,
+                ));
+                HirStatement::Expression(self.check_expression(value, None))
+            }
+        }
+    }
+
+    fn check_struct_literal(
+        &mut self,
+        name: &super::ast::Name,
+        fields: &[super::ast::StructLiteralField],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        let Some(Type::Struct(struct_id)) = self.type_names.get(&name.text).cloned() else {
+            self.diagnostics.push(Diagnostic::error(
+                format!("unknown struct `{}`", name.text),
+                name.span,
+            ));
+            return (
+                HirExpressionKind::StructLiteral {
+                    struct_id: TypeId(u32::MAX),
+                    fields: Vec::new(),
+                },
+                Type::Dynamic,
+            );
+        };
+        let definition = self
+            .structs
+            .iter()
+            .find(|item| item.id == struct_id)
+            .cloned()
+            .expect("resolved struct has HIR metadata");
+        let mut seen = HashSet::new();
+        let mut checked = Vec::new();
+        for initializer in fields {
+            let Some((index, field)) = definition
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, field)| field.name == initializer.name.text)
+            else {
+                self.diagnostics.push(Diagnostic::error(
+                    format!(
+                        "unknown field `{}` in struct `{}`",
+                        initializer.name.text, name.text
+                    ),
+                    initializer.name.span,
+                ));
+                self.check_expression(&initializer.value, None);
+                continue;
+            };
+            if !seen.insert(index as u32) {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("duplicate struct literal field `{}`", initializer.name.text),
+                    initializer.name.span,
+                ));
+            }
+            checked.push((
+                index as u32,
+                self.check_expression(&initializer.value, Some(&field.ty)),
+            ));
+        }
+        for (index, field) in definition.fields.iter().enumerate() {
+            if !seen.contains(&(index as u32)) {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("missing field `{}` in struct `{}`", field.name, name.text),
+                    span,
+                ));
+            }
+        }
+        (
+            HirExpressionKind::StructLiteral {
+                struct_id,
+                fields: checked,
+            },
+            Type::Struct(struct_id),
+        )
+    }
+
+    fn check_member_expression(
+        &mut self,
+        base: &Expression,
+        name: &super::ast::Name,
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        if let ExpressionKind::Identifier(type_name) = &base.kind
+            && let Some(Type::Enum(enum_id)) = self.type_names.get(&type_name.text).cloned()
+        {
+            let definition = self
+                .enums
+                .iter()
+                .find(|item| item.id == enum_id)
+                .expect("resolved enum has HIR metadata");
+            if let Some(variant) = definition
+                .variants
+                .iter()
+                .position(|variant| variant == &name.text)
+            {
+                return (
+                    HirExpressionKind::EnumValue {
+                        enum_id,
+                        variant: variant as u32,
+                    },
+                    Type::Enum(enum_id),
+                );
+            }
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "unknown variant `{}` for enum `{}`",
+                    name.text, type_name.text
+                ),
+                name.span,
+            ));
+            return (
+                HirExpressionKind::EnumValue {
+                    enum_id,
+                    variant: u32::MAX,
+                },
+                Type::Enum(enum_id),
+            );
+        }
+
+        if let ExpressionKind::Identifier(type_name) = &base.kind
+            && self.type_names.contains_key(&type_name.text)
+        {
+            self.diagnostics.push(Diagnostic::error(
+                format!("`{}` is a type, not a struct value", type_name.text),
+                type_name.span,
+            ));
+            return (
+                HirExpressionKind::FieldLoad {
+                    local: SymbolId(u32::MAX),
+                    struct_id: TypeId(u32::MAX),
+                    field: u32::MAX,
+                },
+                Type::Dynamic,
+            );
+        }
+
+        let checked_base = self.check_expression(base, None);
+        let Type::Struct(struct_id) = checked_base.ty else {
+            self.diagnostics.push(Diagnostic::error(
+                "field access requires a struct value",
+                span,
+            ));
+            return (
+                HirExpressionKind::FieldLoad {
+                    local: SymbolId(u32::MAX),
+                    struct_id: TypeId(u32::MAX),
+                    field: u32::MAX,
+                },
+                Type::Dynamic,
+            );
+        };
+        let HirExpressionKind::Symbol(local) = checked_base.kind else {
+            self.diagnostics.push(Diagnostic::error(
+                "field access currently requires a local struct variable",
+                span,
+            ));
+            return (
+                HirExpressionKind::FieldLoad {
+                    local: SymbolId(u32::MAX),
+                    struct_id,
+                    field: u32::MAX,
+                },
+                Type::Dynamic,
+            );
+        };
+        let Some((field, ty)) = self.struct_field(struct_id, &name.text) else {
+            self.diagnostics.push(Diagnostic::error(
+                format!("unknown struct field `{}`", name.text),
+                name.span,
+            ));
+            return (
+                HirExpressionKind::FieldLoad {
+                    local,
+                    struct_id,
+                    field: u32::MAX,
+                },
+                Type::Dynamic,
+            );
+        };
+        (
+            HirExpressionKind::FieldLoad {
+                local,
+                struct_id,
+                field,
+            },
+            ty,
+        )
+    }
+
+    fn struct_field(&self, id: TypeId, name: &str) -> Option<(u32, Type)> {
+        self.structs
+            .iter()
+            .find(|item| item.id == id)?
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, field)| field.name == name)
+            .map(|(index, field)| (index as u32, field.ty.clone()))
+    }
+
+    fn resolve_type(&mut self, ty: &Type, span: super::source::Span) -> Type {
+        match ty {
+            Type::Named(name) => self.type_names.get(name).cloned().unwrap_or_else(|| {
+                self.diagnostics
+                    .push(Diagnostic::error(format!("unknown type `{name}`"), span));
+                Type::Dynamic
+            }),
+            Type::Array { element, length } => Type::Array {
+                element: Box::new(self.resolve_type(element, span)),
+                length: *length,
+            },
+            Type::List(element) => Type::List(Box::new(self.resolve_type(element, span))),
+            Type::Tuple(elements) => Type::Tuple(
+                elements
+                    .iter()
+                    .map(|element| self.resolve_type(element, span))
+                    .collect(),
+            ),
+            other => other.clone(),
         }
     }
 
@@ -684,5 +1060,183 @@ mod tests {
                 .iter()
                 .any(|error| error.message.contains("`continue`"))
         );
+    }
+
+    fn messages(source: &str) -> Vec<String> {
+        analyze_source(source)
+            .unwrap_err()
+            .into_iter()
+            .map(|error| error.message)
+            .collect()
+    }
+
+    #[test]
+    fn rejects_duplicate_struct_names() {
+        assert!(
+            messages("struct A {} struct A {}")
+                .iter()
+                .any(|message| message.contains("duplicate type"))
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_struct_fields() {
+        assert!(
+            messages("struct A { int x; int x; }")
+                .iter()
+                .any(|message| message.contains("duplicate struct field"))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_struct() {
+        assert!(
+            messages("private void f() { Missing x = Missing {}; }")
+                .iter()
+                .any(|message| message.contains("unknown struct")
+                    || message.contains("unknown type"))
+        );
+    }
+
+    #[test]
+    fn rejects_missing_struct_field() {
+        assert!(
+            messages("struct A { int x; int y; } private void f() { A a = A { x: 1 }; }")
+                .iter()
+                .any(|message| message.contains("missing field `y`"))
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_struct_literal_field() {
+        assert!(
+            messages("struct A { int x; } private void f() { A a = A { x: 1, x: 2 }; }")
+                .iter()
+                .any(|message| message.contains("duplicate struct literal field"))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_struct_literal_field() {
+        assert!(
+            messages("struct A { int x; } private void f() { A a = A { x: 1, y: 2 }; }")
+                .iter()
+                .any(|message| message.contains("unknown field `y`"))
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_struct_field_type() {
+        assert!(
+            messages("struct A { int x; } private void f() { A a = A { x: true }; }")
+                .iter()
+                .any(|message| message.contains("expected `int`, found `bool`"))
+        );
+    }
+
+    #[test]
+    fn rejects_field_access_on_non_struct() {
+        assert!(
+            messages("private void f() { int x = 1; int y = x.nope; }")
+                .iter()
+                .any(|message| message.contains("field access requires a struct"))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_field_assignment() {
+        assert!(
+            messages("struct A { int x; } private void f() { A a = A { x: 1 }; a.x = false; }")
+                .iter()
+                .any(|message| message.contains("expected `int`, found `bool`"))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_field_access() {
+        assert!(
+            messages("struct A { int x; } private void f() { A a = A { x: 1 }; int y = a.nope; }")
+                .iter()
+                .any(|message| message.contains("unknown struct field `nope`"))
+        );
+    }
+
+    #[test]
+    fn rejects_nested_struct_layout() {
+        assert!(
+            messages("struct Inner { int x; } struct Outer { Inner inner; }")
+                .iter()
+                .any(|message| message.contains("nested struct fields are not supported"))
+        );
+    }
+
+    #[test]
+    fn rejects_type_name_used_as_field_value_without_panicking() {
+        assert!(
+            messages("struct A { int x; } private void f() { int y = A.x; }")
+                .iter()
+                .any(|message| message.contains("is a type, not a struct value"))
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_enum_names() {
+        assert!(
+            messages("enum A { one } enum A { two }")
+                .iter()
+                .any(|message| message.contains("duplicate type"))
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_enum_variants() {
+        assert!(
+            messages("enum A { one, one }")
+                .iter()
+                .any(|message| message.contains("duplicate enum variant"))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_enum_variant() {
+        assert!(
+            messages("enum A { one } private void f() { A a = A.two; }")
+                .iter()
+                .any(|message| message.contains("unknown variant `two`"))
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_enum_assignment() {
+        assert!(
+            messages("enum A { one } enum B { one } private void f() { A a = B.one; }")
+                .iter()
+                .any(|message| message.contains("type mismatch"))
+        );
+    }
+
+    #[test]
+    fn rejects_comparison_between_different_enums() {
+        assert!(
+            messages(
+                "enum A { one } enum B { one } private void f() { bool same = A.one == B.one; }"
+            )
+            .iter()
+            .any(|message| message.contains("equality requires matching"))
+        );
+    }
+
+    #[test]
+    fn rejects_enum_ordering_comparison() {
+        assert!(
+            messages("enum A { one, two } private void f() { bool less = A.one < A.two; }")
+                .iter()
+                .any(|message| message.contains("enums support only"))
+        );
+    }
+
+    #[test]
+    fn accepts_struct_containing_enum() {
+        analyze_source("enum Kind { first, second } struct Item { Kind kind; int value; } private int f() { Item item = Item { kind: Kind.first, value: 1 }; item.value = 2; if (item.kind == Kind.first) { return item.value; } return 0; }").unwrap();
     }
 }

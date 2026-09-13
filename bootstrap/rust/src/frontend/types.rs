@@ -1,5 +1,8 @@
 use std::fmt;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TypeId(pub u32);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Type {
     Int,
@@ -9,7 +12,14 @@ pub enum Type {
     String,
     Void,
     Dynamic,
-    Array { element: Box<Type>, length: usize },
+    /// A named type before semantic resolution.
+    Named(String),
+    Struct(TypeId),
+    Enum(TypeId),
+    Array {
+        element: Box<Type>,
+        length: usize,
+    },
     List(Box<Type>),
     Tuple(Vec<Type>),
 }
@@ -32,6 +42,9 @@ impl fmt::Display for Type {
             Self::String => formatter.write_str("string"),
             Self::Void => formatter.write_str("void"),
             Self::Dynamic => formatter.write_str("dynamic"),
+            Self::Named(name) => formatter.write_str(name),
+            Self::Struct(id) => write!(formatter, "struct#{}", id.0),
+            Self::Enum(id) => write!(formatter, "enum#{}", id.0),
             Self::Array { element, length } => write!(formatter, "{element}[{length}]"),
             Self::List(element) => write!(formatter, "list {element}"),
             Self::Tuple(elements) => {

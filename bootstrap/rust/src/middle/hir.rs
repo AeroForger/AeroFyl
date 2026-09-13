@@ -1,12 +1,35 @@
 use crate::frontend::ast::{BinaryOperator, Literal, UnaryOperator, Visibility};
 use crate::frontend::resolution::SymbolId;
 use crate::frontend::source::Span;
-use crate::frontend::types::Type;
+use crate::frontend::types::{Type, TypeId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HirModule {
+    pub structs: Vec<HirStruct>,
+    pub enums: Vec<HirEnum>,
     pub functions: Vec<HirFunction>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HirStruct {
+    pub id: TypeId,
+    pub name: String,
+    pub fields: Vec<HirField>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HirField {
+    pub name: String,
+    pub ty: Type,
+    pub offset: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HirEnum {
+    pub id: TypeId,
+    pub name: String,
+    pub variants: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -43,6 +66,13 @@ pub enum HirStatement {
     },
     Assignment {
         symbol: SymbolId,
+        value: HirExpression,
+        span: Span,
+    },
+    FieldAssignment {
+        local: SymbolId,
+        struct_id: TypeId,
+        field: u32,
         value: HirExpression,
         span: Span,
     },
@@ -91,5 +121,18 @@ pub enum HirExpressionKind {
         right: Box<HirExpression>,
     },
     Collection(Vec<HirExpression>),
+    StructLiteral {
+        struct_id: TypeId,
+        fields: Vec<(u32, HirExpression)>,
+    },
+    FieldLoad {
+        local: SymbolId,
+        struct_id: TypeId,
+        field: u32,
+    },
+    EnumValue {
+        enum_id: TypeId,
+        variant: u32,
+    },
     Tuple(Vec<HirExpression>),
 }

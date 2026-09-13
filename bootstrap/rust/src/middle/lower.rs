@@ -7,6 +7,32 @@ use crate::middle::ir::*;
 /// Lowers checked HIR to a simple non-SSA control-flow graph.
 pub fn lower(module: &HirModule) -> IrModule {
     IrModule {
+        structs: module
+            .structs
+            .iter()
+            .map(|item| IrStruct {
+                id: item.id,
+                name: item.name.clone(),
+                fields: item
+                    .fields
+                    .iter()
+                    .map(|field| IrField {
+                        name: field.name.clone(),
+                        ty: field.ty.clone(),
+                        offset: field.offset,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        enums: module
+            .enums
+            .iter()
+            .map(|item| IrEnum {
+                id: item.id,
+                name: item.name.clone(),
+                variants: item.variants.clone(),
+            })
+            .collect(),
         functions: module
             .functions
             .iter()
@@ -83,20 +109,37 @@ impl FunctionLowerer {
                 initializer,
                 span,
             } => {
-                let value = self.expression(initializer);
                 self.locals.push(IrLocal {
                     symbol: *symbol,
                     ty: ty.clone(),
                 });
-                self.emit(
-                    None,
-                    None,
-                    IrInstructionKind::BindLocal {
-                        local: *symbol,
-                        value,
-                    },
-                    *span,
-                );
+                if let HirExpressionKind::StructLiteral { struct_id, fields } = &initializer.kind {
+                    let fields = fields
+                        .iter()
+                        .map(|(field, value)| (*field, self.expression(value)))
+                        .collect();
+                    self.emit(
+                        None,
+                        None,
+                        IrInstructionKind::StructInit {
+                            local: *symbol,
+                            struct_id: *struct_id,
+                            fields,
+                        },
+                        *span,
+                    );
+                } else {
+                    let value = self.expression(initializer);
+                    self.emit(
+                        None,
+                        None,
+                        IrInstructionKind::BindLocal {
+                            local: *symbol,
+                            value,
+                        },
+                        *span,
+                    );
+                }
             }
             HirStatement::Assignment {
                 symbol,
@@ -109,6 +152,26 @@ impl FunctionLowerer {
                     None,
                     IrInstructionKind::BindLocal {
                         local: *symbol,
+                        value,
+                    },
+                    *span,
+                );
+            }
+            HirStatement::FieldAssignment {
+                local,
+                struct_id,
+                field,
+                value,
+                span,
+            } => {
+                let value = self.expression(value);
+                self.emit(
+                    None,
+                    None,
+                    IrInstructionKind::FieldStore {
+                        local: *local,
+                        struct_id: *struct_id,
+                        field: *field,
                         value,
                     },
                     *span,
@@ -254,6 +317,28 @@ impl FunctionLowerer {
                 let values = values.iter().map(|value| self.expression(value)).collect();
                 IrInstructionKind::Aggregate(values)
             }
+            HirExpressionKind::StructLiteral { struct_id, fields } => {
+                IrInstructionKind::StructValue {
+                    struct_id: *struct_id,
+                    fields: fields
+                        .iter()
+                        .map(|(field, value)| (*field, self.expression(value)))
+                        .collect(),
+                }
+            }
+            HirExpressionKind::FieldLoad {
+                local,
+                struct_id,
+                field,
+            } => IrInstructionKind::FieldLoad {
+                local: *local,
+                struct_id: *struct_id,
+                field: *field,
+            },
+            HirExpressionKind::EnumValue { enum_id, variant } => IrInstructionKind::EnumConstant {
+                enum_id: *enum_id,
+                variant: *variant,
+            },
         };
         self.emit_value(kind, expression.ty.clone(), expression.span)
     }

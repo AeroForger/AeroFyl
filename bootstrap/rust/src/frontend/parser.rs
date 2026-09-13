@@ -26,9 +26,20 @@ impl Parser {
         let file = self.peek().span.file;
         let start = self.peek().span.start;
         let mut functions = Vec::new();
+        let mut structs = Vec::new();
+        let mut enums = Vec::new();
         while !self.at(&TokenKind::Eof) {
-            match self.parse_function() {
-                Ok(function) => functions.push(function),
+            let result = if self.at(&TokenKind::Keyword(Keyword::Struct)) {
+                self.parse_struct()
+                    .map(|declaration| structs.push(declaration))
+            } else if self.at(&TokenKind::Keyword(Keyword::Enum)) {
+                self.parse_enum().map(|declaration| enums.push(declaration))
+            } else {
+                self.parse_function()
+                    .map(|function| functions.push(function))
+            };
+            match result {
+                Ok(()) => {}
                 Err(error) => {
                     self.diagnostics.push(error);
                     self.synchronize_top_level();
@@ -37,10 +48,58 @@ impl Parser {
         }
         let span = Span::new(file, start, self.peek().span.end);
         if self.diagnostics.is_empty() {
-            Ok(Module { functions, span })
+            Ok(Module {
+                structs,
+                enums,
+                functions,
+                span,
+            })
         } else {
             Err(self.diagnostics)
         }
+    }
+
+    fn parse_struct(&mut self) -> Result<StructDeclaration, Diagnostic> {
+        let start = self.advance().span;
+        let name = self.expect_identifier("expected struct name")?;
+        self.expect(TokenKind::LeftBrace, "expected `{` after struct name")?;
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            let ty = self.parse_type()?;
+            let field_name = self.expect_identifier("expected field name")?;
+            let end = self.expect(TokenKind::Semicolon, "expected `;` after struct field")?;
+            fields.push(FieldDeclaration {
+                span: ty.span.join(end.span),
+                ty,
+                name: field_name,
+            });
+        }
+        let end = self.expect(
+            TokenKind::RightBrace,
+            "expected `}` after struct declaration",
+        )?;
+        Ok(StructDeclaration {
+            name,
+            fields,
+            span: start.join(end.span),
+        })
+    }
+
+    fn parse_enum(&mut self) -> Result<EnumDeclaration, Diagnostic> {
+        let start = self.advance().span;
+        let name = self.expect_identifier("expected enum name")?;
+        self.expect(TokenKind::LeftBrace, "expected `{` after enum name")?;
+        let mut variants = Vec::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            variants.push(self.expect_identifier("expected enum variant")?);
+            self.consume(&TokenKind::Comma);
+        }
+        let end = self.expect(TokenKind::RightBrace, "expected `}` after enum declaration")?;
+        Ok(EnumDeclaration {
+            name,
+            variants,
+            span: start.join(end.span),
+        })
     }
 
     fn parse_function(&mut self) -> Result<Function, Diagnostic> {
@@ -134,6 +193,7 @@ impl Parser {
             TokenKind::Keyword(Keyword::String) => Type::String,
             TokenKind::Keyword(Keyword::Void) => Type::Void,
             TokenKind::Keyword(Keyword::Dynamic) => Type::Dynamic,
+            TokenKind::Identifier(name) => Type::Named(name),
             _ => return Err(Diagnostic::error("expected a known type", token.span)),
         };
         let mut end = token.span;
@@ -241,7 +301,7 @@ impl Parser {
                 span: start.join(end.span),
             });
         }
-        if self.starts_type() {
+        if self.starts_variable_declaration() {
             let ty = self.parse_type()?;
             let name = self.expect_identifier("expected variable name")?;
             self.expect(TokenKind::Equal, "expected `=` in variable declaration")?;
@@ -259,19 +319,18 @@ impl Parser {
                 span: start.join(end.span),
             });
         }
-        if matches!(self.peek().kind, TokenKind::Identifier(_))
-            && self.peek_at(1).kind == TokenKind::Equal
-        {
-            let target = self.expect_identifier("expected assignment target")?;
-            self.expect(TokenKind::Equal, "expected `=` in assignment")?;
+        let expression = self.parse_expression()?;
+        if self.consume(&TokenKind::Equal) {
             let value = self.parse_expression()?;
             let end = self.expect(TokenKind::Semicolon, "expected `;` after assignment")?;
             return Ok(Statement {
-                kind: StatementKind::Assignment(Assignment { target, value }),
+                kind: StatementKind::Assignment(Assignment {
+                    target: expression,
+                    value,
+                }),
                 span: start.join(end.span),
             });
         }
-        let expression = self.parse_expression()?;
         let end = self.expect(TokenKind::Semicolon, "expected `;` after expression")?;
         Ok(Statement {
             kind: StatementKind::Expression(expression),
@@ -496,32 +555,88 @@ impl Parser {
             _ => return Err(Diagnostic::error("expected expression", token.span)),
         };
 
-        if self.consume(&TokenKind::LeftParen) {
-            let callee = match expression.kind {
-                ExpressionKind::Identifier(name) => name,
-                _ => {
-                    return Err(Diagnostic::error(
-                        "only a named function can be called",
-                        expression.span,
-                    ));
-                }
-            };
-            let mut arguments = Vec::new();
-            if !self.at(&TokenKind::RightParen) {
-                loop {
-                    arguments.push(self.parse_expression()?);
+        loop {
+            if self.at(&TokenKind::LeftBrace)
+                && matches!(expression.kind, ExpressionKind::Identifier(_))
+            {
+                self.advance();
+                let name = match expression.kind {
+                    ExpressionKind::Identifier(name) => name,
+                    _ => {
+                        return Err(Diagnostic::error(
+                            "only a named struct can begin a struct literal",
+                            expression.span,
+                        ));
+                    }
+                };
+                let mut fields = Vec::new();
+                while !self.at(&TokenKind::RightBrace) {
+                    let field_name = self.expect_identifier("expected struct field name")?;
+                    self.expect(TokenKind::Colon, "expected `:` after struct field name")?;
+                    let value = self.parse_expression()?;
+                    let field_span = field_name.span.join(value.span);
+                    fields.push(StructLiteralField {
+                        name: field_name,
+                        value,
+                        span: field_span,
+                    });
                     if !self.consume(&TokenKind::Comma) {
                         break;
                     }
                 }
+                let close =
+                    self.expect(TokenKind::RightBrace, "expected `}` after struct literal")?;
+                expression = Expression {
+                    span: expression.span.join(close.span),
+                    kind: ExpressionKind::StructLiteral { name, fields },
+                };
+            } else if self.consume(&TokenKind::LeftParen) {
+                let callee = match expression.kind {
+                    ExpressionKind::Identifier(name) => name,
+                    _ => {
+                        return Err(Diagnostic::error(
+                            "only a named function can be called",
+                            expression.span,
+                        ));
+                    }
+                };
+                let mut arguments = Vec::new();
+                if !self.at(&TokenKind::RightParen) {
+                    loop {
+                        arguments.push(self.parse_expression()?);
+                        if !self.consume(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                }
+                let close =
+                    self.expect(TokenKind::RightParen, "expected `)` after call arguments")?;
+                expression = Expression {
+                    span: expression.span.join(close.span),
+                    kind: ExpressionKind::Call { callee, arguments },
+                };
+            } else if self.consume(&TokenKind::Dot) {
+                let name = self.expect_identifier("expected field or variant after `.`")?;
+                expression = Expression {
+                    span: expression.span.join(name.span),
+                    kind: ExpressionKind::Member {
+                        base: Box::new(expression),
+                        name,
+                    },
+                };
+            } else {
+                break;
             }
-            let close = self.expect(TokenKind::RightParen, "expected `)` after call arguments")?;
-            expression = Expression {
-                span: expression.span.join(close.span),
-                kind: ExpressionKind::Call { callee, arguments },
-            };
         }
         Ok(expression)
+    }
+
+    fn starts_variable_declaration(&self) -> bool {
+        if matches!(self.peek().kind, TokenKind::Identifier(_)) {
+            matches!(self.peek_at(1).kind, TokenKind::Identifier(_))
+        } else {
+            self.starts_type()
+        }
     }
 
     fn starts_type(&self) -> bool {
@@ -537,6 +652,7 @@ impl Parser {
                     | Keyword::Void
                     | Keyword::Dynamic
             ) | TokenKind::LeftParen
+                | TokenKind::Identifier(_)
         )
     }
 
@@ -593,7 +709,9 @@ impl Parser {
         while !self.at(&TokenKind::Eof) {
             if matches!(
                 self.peek().kind,
-                TokenKind::Keyword(Keyword::Public | Keyword::Private)
+                TokenKind::Keyword(
+                    Keyword::Public | Keyword::Private | Keyword::Struct | Keyword::Enum
+                )
             ) {
                 return;
             }
@@ -698,6 +816,72 @@ mod tests {
         assert!(matches!(
             else_block.as_ref().unwrap().statements[1].kind,
             StatementKind::Continue
+        ));
+    }
+
+    #[test]
+    fn parses_struct_declaration() {
+        let module = parse_source("struct Point { int x; int y; }");
+        assert_eq!(module.structs[0].name.text, "Point");
+        assert_eq!(module.structs[0].fields.len(), 2);
+    }
+
+    #[test]
+    fn parses_enum_declaration_without_variant_semicolons() {
+        let module = parse_source("enum State { idle, running, stopped }");
+        assert_eq!(module.enums[0].variants.len(), 3);
+        assert_eq!(module.enums[0].variants[1].text, "running");
+    }
+
+    #[test]
+    fn parses_struct_literal() {
+        let module =
+            parse_source("struct Point { int x; } private void f() { Point p = Point { x: 1 }; }");
+        let StatementKind::Variable(variable) = &module.functions[0].body.statements[0].kind else {
+            panic!("expected variable declaration");
+        };
+        assert!(matches!(
+            variable.initializer.kind,
+            ExpressionKind::StructLiteral { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_field_access() {
+        let module = parse_source("struct Point { int x; } private int f(Point p) { return p.x; }");
+        let StatementKind::Return(Some(value)) = &module.functions[0].body.statements[0].kind
+        else {
+            panic!("expected return");
+        };
+        assert!(matches!(value.kind, ExpressionKind::Member { .. }));
+    }
+
+    #[test]
+    fn parses_field_assignment() {
+        let module = parse_source(
+            "struct Point { int x; } private void f() { Point p = Point { x: 1 }; p.x = 2; }",
+        );
+        let StatementKind::Assignment(assignment) = &module.functions[0].body.statements[1].kind
+        else {
+            panic!("expected assignment");
+        };
+        assert!(matches!(
+            assignment.target.kind,
+            ExpressionKind::Member { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_qualified_enum_variant() {
+        let module = parse_source(
+            "enum State { idle, running } private void f() { State s = State.running; }",
+        );
+        let StatementKind::Variable(variable) = &module.functions[0].body.statements[0].kind else {
+            panic!("expected variable");
+        };
+        assert!(matches!(
+            variable.initializer.kind,
+            ExpressionKind::Member { .. }
         ));
     }
 }

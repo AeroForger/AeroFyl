@@ -24,6 +24,8 @@ pub enum Keyword {
     String,
     Void,
     Dynamic,
+    Struct,
+    Enum,
 }
 
 impl Keyword {
@@ -51,6 +53,8 @@ impl Keyword {
             "string" => Self::String,
             "void" => Self::Void,
             "dynamic" => Self::Dynamic,
+            "struct" => Self::Struct,
+            "enum" => Self::Enum,
             _ => return None,
         })
     }
@@ -72,6 +76,8 @@ pub enum TokenKind {
     RightBracket,
     Comma,
     Semicolon,
+    Colon,
+    Dot,
     Equal,
     EqualEqual,
     BangEqual,

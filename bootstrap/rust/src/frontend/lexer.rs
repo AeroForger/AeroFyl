@@ -43,6 +43,8 @@ impl<'source> Lexer<'source> {
                 ']' => self.single(TokenKind::RightBracket),
                 ',' => self.single(TokenKind::Comma),
                 ';' => self.single(TokenKind::Semicolon),
+                ':' => self.single(TokenKind::Colon),
+                '.' => self.single(TokenKind::Dot),
                 '=' => self.one_or_two('=', TokenKind::EqualEqual, TokenKind::Equal),
                 '!' => self.one_or_two('=', TokenKind::BangEqual, TokenKind::Bang),
                 '<' => self.one_or_two('=', TokenKind::LessEqual, TokenKind::Less),

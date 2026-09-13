@@ -137,13 +137,13 @@ pub fn compile(
         })?;
     }
     let ir = crate::middle::lower::lower(&hir);
-    crate::middle::verify::verify_module(&ir).map_err(CompileError::Ir)?;
+    let verified = crate::middle::verify::verify_module(&ir).map_err(CompileError::Ir)?;
 
     let artifact = match options.emit {
         Emit::Check => None,
         Emit::Elf => {
             let machine =
-                crate::backend::x86_64::lower::lower(&ir).map_err(CompileError::Backend)?;
+                crate::backend::x86_64::lower::lower(&verified).map_err(CompileError::Backend)?;
             let code = crate::backend::x86_64::emitter::emit_module(&machine)
                 .map_err(CompileError::Emit)?;
             Some(
@@ -284,7 +284,8 @@ mod tests {
             .find(|function| function.name == helper_name)
             .unwrap()
             .symbol;
-        let mut machine = crate::backend::x86_64::lower::lower(&output.ir).unwrap();
+        let verified = crate::middle::verify::verify_module(&output.ir).unwrap();
+        let mut machine = crate::backend::x86_64::lower::lower(&verified).unwrap();
         machine.startup = vec![
             Instruction::Call(helper),
             Instruction::MoveRegister {
@@ -342,5 +343,26 @@ mod tests {
     fn executes_break_and_continue_targets() {
         let source = "public int test() { int x = 0; while (x < 10) { x = x + 1; if (x < 5) { continue; } if (x == 5) { break; } } return x; } public void main() { int result = test(); }";
         assert_eq!(run_helper_as_exit_status(source, "test"), 5);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_struct_acceptance_program() {
+        let source = "struct Point { int x; int y; } public int test() { Point point = Point { x: 10, y: 20 }; point.x = point.x + 5; return point.x; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 15);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_enum_acceptance_program() {
+        let source = "enum State { idle, running, stopped } public int test() { State state = State.running; if (state == State.running) { return 1; } return 0; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 1);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_struct_with_enum_acceptance_program() {
+        let source = "enum TokenKind { identifier, integer, eof } struct Token { TokenKind kind; int line; } public int test() { Token token = Token { kind: TokenKind.identifier, line: 1 }; if (token.kind == TokenKind.identifier) { token.line = 42; } return token.line; } public void main() { int result = test(); }";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 42);
     }
 }
