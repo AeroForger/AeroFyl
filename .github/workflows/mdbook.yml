@@ -1,0 +1,59 @@
+name: Build Docs
+
+on:
+  push:
+    paths:
+      - "mdbook/**"
+      - .github/workflows/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  MDBOOK_VERSION: 0.4.52
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install mdBook
+        run: cargo install --version "${MDBOOK_VERSION}" mdbook
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build Sydrogen Book
+        working-directory: mdbook/
+        run: mdbook build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: mdbook/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
