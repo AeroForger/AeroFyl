@@ -1,0 +1,21 @@
+use token;
+
+private bool isLetter(string source, int offset)
+{
+    return source.byte(offset) >= 'a' && source.byte(offset) <= 'z';
+}
+
+public list Token scan(string source)
+{
+    list Token tokens = [];
+    if (source.length > 0 && isLetter(source, 0))
+    {
+        Token token = Token {
+            kind: TokenKind.identifier,
+            lexeme: source.slice(0, source.length),
+            offset: 0
+        };
+        tokens.push(token);
+    }
+    return tokens;
+}

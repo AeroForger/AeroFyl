@@ -191,6 +191,35 @@ pub enum HirExpressionKind {
     ReadFile {
         path: Box<HirExpression>,
     },
+    ReadBytes {
+        path: Box<HirExpression>,
+    },
+    Exit {
+        code: Box<HirExpression>,
+    },
+    WriteFile {
+        path: Box<HirExpression>,
+        data: Box<HirExpression>,
+    },
+    WriteBytes {
+        path: Box<HirExpression>,
+        data: Box<HirExpression>,
+    },
+    Exists {
+        path: Box<HirExpression>,
+    },
+    Print {
+        value: Box<HirExpression>,
+        stderr: bool,
+        newline: bool,
+    },
+    Input {
+        target: Type,
+    },
+    Convert {
+        value: Box<HirExpression>,
+        target: Type,
+    },
     StringConcat {
         left: Box<HirExpression>,
         right: Box<HirExpression>,

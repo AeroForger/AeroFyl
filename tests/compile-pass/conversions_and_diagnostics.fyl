@@ -1,0 +1,56 @@
+enum Severity
+{
+    error,
+    warning
+}
+
+struct SourceLocation
+{
+    string file;
+    int line;
+    int column;
+    int byteOffset;
+}
+
+struct SourceSpan
+{
+    string file;
+    int startOffset;
+    int endOffset;
+    int startLine;
+    int startColumn;
+}
+
+struct Diagnostic
+{
+    Severity severity;
+    string message;
+    string file;
+    int startOffset;
+    int endOffset;
+    int line;
+    int column;
+}
+
+private int digitValue(char digit)
+{
+    return int(digit) - int('0');
+}
+
+public void main()
+{
+    char letter = char(65);
+    int letterValue = int(letter);
+    int severityValue = int(Severity.warning);
+    int digit = digitValue('7');
+    Diagnostic diagnostic = Diagnostic {
+        severity: Severity.error,
+        message: "unexpected token",
+        file: "main.fyl",
+        startOffset: 10,
+        endOffset: 11,
+        line: 2,
+        column: 5
+    };
+    list Diagnostic diagnostics = [diagnostic];
+}

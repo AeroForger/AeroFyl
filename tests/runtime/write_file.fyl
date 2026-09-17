@@ -1,0 +1,11 @@
+use std.fs;
+
+public void main(string[] args)
+{
+    writeFile(args[0], "generated output");
+    string result = readFile(args[0]);
+    if (result != "generated output")
+    {
+        exit(69);
+    }
+}

@@ -3,7 +3,9 @@
 This is a partial grammar for forms accepted by the bootstrap. It does not define unspecified language areas. Literal token definitions are in [lexical.md](lexical.md).
 
 ```text
-module          = { struct-decl | enum-decl | function-decl } ;
+module          = { import-decl | struct-decl | enum-decl | function-decl } ;
+import-decl     = "use" module-name ";" ;
+module-name     = identifier { "." identifier } ;
 struct-decl     = "struct" identifier "{" { type identifier ";" } "}" ;
 enum-decl       = "enum" identifier "{" identifier { "," identifier } [ "," ] "}" ;
 function-decl   = visibility type identifier "(" [ parameters ] ")" block ;
@@ -17,7 +19,7 @@ type            = basic-type
                 | type "[" integer-literal "]"
                 | "string" "[" "]"
                 | "(" type { "," type } ")" ;
-basic-type      = "int" | "float" | "bool" | "char"
+basic-type      = "int" | "byte" | "float" | "bool" | "char"
                 | "string" | "void" | "dynamic" ;
 
 block           = "{" { statement } "}" ;
@@ -48,4 +50,7 @@ assignable      = identifier { member | index } ;
 
 Primary expressions currently include identifiers, known literals, parenthesized expressions, collection literals, and named struct literals. Qualified enum variants use `EnumName.variant`.
 
-Tuple return types are parsed, but tuple value syntax is not specified yet. Import grammar for `use` and `using` is not specified yet. An `else if` shorthand is not currently accepted; nested `if` inside `else` can express the same control shape.
+`int(expression)` and `char(expression)` use ordinary call-shaped syntax but
+are checked as explicit conversions rather than function calls.
+
+Tuple return types are parsed, but tuple value syntax is not specified yet. `using` remains reserved and has no grammar. An `else if` shorthand is not currently accepted; nested `if` inside `else` can express the same control shape.

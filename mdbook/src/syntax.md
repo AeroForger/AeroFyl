@@ -11,4 +11,7 @@ public void main()
 
 The bootstrap recognizes identifiers, decimal integer and float literals, string literals, character literals, Boolean literals, grouping, calls, collection literals, struct literals, member access, indexing, and the currently documented operators.
 
-Comments are not specified yet. String and character escape rules are not specified. See the `spec/` directory for the partial grammar and lexical reference.
+Character literals support `\n`, `\r`, `\t`, `\0`, `\\`, and `\'`. String
+escapes and comments are not specified. A module imports a sibling file with
+`use name;`; `use std.io;` and `use std.fs;` import built-in standard-library
+modules. See the `spec/` directory for the complete current rules.

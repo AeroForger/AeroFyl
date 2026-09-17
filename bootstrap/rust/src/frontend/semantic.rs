@@ -24,7 +24,7 @@ pub fn validate_executable(module: &HirModule) -> Result<SymbolId, Vec<Diagnosti
     let main_functions: Vec<_> = module
         .functions
         .iter()
-        .filter(|function| function.name == "main")
+        .filter(|function| function.name == "main" && function.name_span.file == module.span.file)
         .collect();
     if main_functions.is_empty() {
         return Err(vec![Diagnostic::error(
@@ -241,7 +241,10 @@ impl Analyzer<'_> {
                         ));
                     }
                     if matches!(ty, Type::List(_))
-                        && !matches!(variable.initializer.kind, ExpressionKind::Collection(_))
+                        && !matches!(
+                            variable.initializer.kind,
+                            ExpressionKind::Collection(_) | ExpressionKind::Call { .. }
+                        )
                     {
                         self.diagnostics.push(Diagnostic::error(
                             "whole-list cloning is not supported",
@@ -343,8 +346,21 @@ impl Analyzer<'_> {
             ExpressionKind::Literal(literal) => {
                 let ty = match literal {
                     Literal::Integer(value) => {
-                        self.validate_integer_magnitude(value, i64::MAX as u128, expression.span);
-                        Type::Int
+                        if expected == Some(&Type::Byte) {
+                            self.validate_integer_magnitude(
+                                value,
+                                u8::MAX as u128,
+                                expression.span,
+                            );
+                            Type::Byte
+                        } else {
+                            self.validate_integer_magnitude(
+                                value,
+                                i64::MAX as u128,
+                                expression.span,
+                            );
+                            Type::Int
+                        }
                     }
                     Literal::Float(_) => Type::Float,
                     Literal::String(value) => {
@@ -353,6 +369,16 @@ impl Analyzer<'_> {
                             expected,
                             HirExpressionKind::StringLiteral(value.clone()),
                             Type::String,
+                        );
+                    }
+                    Literal::Char(value) if expected == Some(&Type::Int) => {
+                        return self.finish_expression(
+                            expression,
+                            expected,
+                            HirExpressionKind::Literal(Literal::Integer(
+                                (*value as u32).to_string(),
+                            )),
+                            Type::Int,
                         );
                     }
                     Literal::Char(_) => Type::Char,
@@ -417,11 +443,213 @@ impl Analyzer<'_> {
                         )
                     }
                     SymbolKind::Builtin => {
-                        if callee.text == "readFile" {
+                        if matches!(
+                            callee.text.as_str(),
+                            "print" | "println" | "eprint" | "eprintln"
+                        ) {
                             if arguments.len() != 1 {
                                 self.diagnostics.push(Diagnostic::error(
                                     format!(
-                                        "`readFile` expects exactly one argument, found {}",
+                                        "`{}` expects exactly one argument, found {}",
+                                        callee.text,
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let value = arguments
+                                .first()
+                                .map(|argument| self.check_expression(argument, None))
+                                .unwrap_or(HirExpression {
+                                    kind: HirExpressionKind::StringLiteral(String::new()),
+                                    ty: Type::Dynamic,
+                                    span: expression.span,
+                                });
+                            for argument in arguments.iter().skip(1) {
+                                self.check_expression(argument, None);
+                            }
+                            if !matches!(
+                                value.ty,
+                                Type::String | Type::Char | Type::Int | Type::Bool
+                            ) {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`{}` cannot print a `{}` value",
+                                        callee.text, value.ty
+                                    ),
+                                    value.span,
+                                ));
+                            }
+                            (
+                                HirExpressionKind::Print {
+                                    value: Box::new(value),
+                                    stderr: callee.text.starts_with('e'),
+                                    newline: callee.text.ends_with("println"),
+                                },
+                                Type::Void,
+                            )
+                        } else if callee.text == "input" {
+                            if arguments.len() > 1 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`input` expects zero or one argument, found {}",
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let target = arguments.first().and_then(|argument| {
+                                let ExpressionKind::Identifier(name) = &argument.kind else {
+                                    self.diagnostics.push(Diagnostic::error(
+                                        "`input` type argument must be a supported type name",
+                                        argument.span,
+                                    ));
+                                    return None;
+                                };
+                                match name.text.as_str() {
+                                    "string" => Some(Type::String),
+                                    "int" => Some(Type::Int),
+                                    "bool" => Some(Type::Bool),
+                                    "char" => Some(Type::Char),
+                                    "float" => {
+                                        self.diagnostics.push(Diagnostic::error(
+                                            "`input(float)` is unavailable because floating-point execution is not implemented",
+                                            argument.span,
+                                        ));
+                                        None
+                                    }
+                                    _ => {
+                                        self.diagnostics.push(Diagnostic::error(
+                                            "`input` supports string, int, bool, and char",
+                                            argument.span,
+                                        ));
+                                        None
+                                    }
+                                }
+                            }).unwrap_or(Type::String);
+                            (
+                                HirExpressionKind::Input {
+                                    target: target.clone(),
+                                },
+                                target,
+                            )
+                        } else if callee.text == "readFile" || callee.text == "readBytes" {
+                            if arguments.len() != 1 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`{}` expects exactly one argument, found {}",
+                                        callee.text,
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let path = arguments
+                                .first()
+                                .map(|argument| {
+                                    self.check_expression(argument, Some(&Type::String))
+                                })
+                                .unwrap_or(HirExpression {
+                                    kind: HirExpressionKind::StringLiteral(String::new()),
+                                    ty: Type::Dynamic,
+                                    span: expression.span,
+                                });
+                            for argument in arguments.iter().skip(1) {
+                                self.check_expression(argument, None);
+                            }
+                            if callee.text == "readFile" {
+                                (
+                                    HirExpressionKind::ReadFile {
+                                        path: Box::new(path),
+                                    },
+                                    Type::String,
+                                )
+                            } else {
+                                (
+                                    HirExpressionKind::ReadBytes {
+                                        path: Box::new(path),
+                                    },
+                                    Type::List(Box::new(Type::Byte)),
+                                )
+                            }
+                        } else if callee.text == "exit" {
+                            if arguments.len() != 1 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`exit` expects exactly one argument, found {}",
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let code = arguments
+                                .first()
+                                .map(|argument| self.check_expression(argument, Some(&Type::Int)))
+                                .unwrap_or(HirExpression {
+                                    kind: HirExpressionKind::Literal(Literal::Integer("0".into())),
+                                    ty: Type::Dynamic,
+                                    span: expression.span,
+                                });
+                            for argument in arguments.iter().skip(1) {
+                                self.check_expression(argument, None);
+                            }
+                            (
+                                HirExpressionKind::Exit {
+                                    code: Box::new(code),
+                                },
+                                Type::Void,
+                            )
+                        } else if callee.text == "writeFile" || callee.text == "writeBytes" {
+                            if arguments.len() != 2 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`{}` expects exactly two arguments, found {}",
+                                        callee.text,
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let placeholder = || HirExpression {
+                                kind: HirExpressionKind::StringLiteral(String::new()),
+                                ty: Type::Dynamic,
+                                span: expression.span,
+                            };
+                            let path = arguments
+                                .first()
+                                .map(|argument| {
+                                    self.check_expression(argument, Some(&Type::String))
+                                })
+                                .unwrap_or_else(&placeholder);
+                            let data_type = if callee.text == "writeFile" {
+                                Type::String
+                            } else {
+                                Type::List(Box::new(Type::Byte))
+                            };
+                            let data = arguments
+                                .get(1)
+                                .map(|argument| self.check_expression(argument, Some(&data_type)))
+                                .unwrap_or_else(placeholder);
+                            for argument in arguments.iter().skip(2) {
+                                self.check_expression(argument, None);
+                            }
+                            let kind = if callee.text == "writeFile" {
+                                HirExpressionKind::WriteFile {
+                                    path: Box::new(path),
+                                    data: Box::new(data),
+                                }
+                            } else {
+                                HirExpressionKind::WriteBytes {
+                                    path: Box::new(path),
+                                    data: Box::new(data),
+                                }
+                            };
+                            (kind, Type::Void)
+                        } else if callee.text == "exists" {
+                            if arguments.len() != 1 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`exists` expects exactly one argument, found {}",
                                         arguments.len()
                                     ),
                                     expression.span,
@@ -441,10 +669,65 @@ impl Analyzer<'_> {
                                 self.check_expression(argument, None);
                             }
                             (
-                                HirExpressionKind::ReadFile {
+                                HirExpressionKind::Exists {
                                     path: Box::new(path),
                                 },
-                                Type::String,
+                                Type::Bool,
+                            )
+                        } else if matches!(callee.text.as_str(), "int" | "char" | "byte") {
+                            if arguments.len() != 1 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`{}` conversion expects exactly one argument, found {}",
+                                        callee.text,
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let value = arguments
+                                .first()
+                                .map(|argument| self.check_expression(argument, None))
+                                .unwrap_or(HirExpression {
+                                    kind: HirExpressionKind::Literal(Literal::Integer("0".into())),
+                                    ty: Type::Dynamic,
+                                    span: expression.span,
+                                });
+                            for argument in arguments.iter().skip(1) {
+                                self.check_expression(argument, None);
+                            }
+                            let target = match callee.text.as_str() {
+                                "int" => Type::Int,
+                                "char" => Type::Char,
+                                "byte" => Type::Byte,
+                                _ => unreachable!(),
+                            };
+                            let valid = match (&value.ty, &target) {
+                                (Type::Int, Type::Int)
+                                | (Type::Char, Type::Char)
+                                | (Type::Char, Type::Int)
+                                | (Type::Byte, Type::Byte)
+                                | (Type::Byte, Type::Int)
+                                | (Type::Enum(_), Type::Int)
+                                | (Type::Int, Type::Char)
+                                | (Type::Int, Type::Byte) => true,
+                                _ => false,
+                            };
+                            if !valid {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "cannot explicitly convert `{}` to `{target}`",
+                                        value.ty
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            (
+                                HirExpressionKind::Convert {
+                                    value: Box::new(value),
+                                    target: target.clone(),
+                                },
+                                target,
                             )
                         } else {
                             // TODO(spec): other builtin signatures and behavior are missing.
@@ -555,9 +838,9 @@ impl Analyzer<'_> {
                     | super::ast::BinaryOperator::GreaterEqual => {
                         let left = self.check_expression(left, None);
                         let right = self.check_expression(right, Some(&left.ty));
-                        if left.ty != Type::Int {
+                        if !matches!(left.ty, Type::Int | Type::Byte) {
                             self.diagnostics.push(Diagnostic::error(
-                                "ordering comparison expected `int` operands; enums support only `==` and `!=`",
+                                "ordering comparison expected matching `int` or `byte` operands; enums support only `==` and `!=`",
                                 expression.span,
                             ));
                         }
@@ -571,7 +854,7 @@ impl Analyzer<'_> {
                     ),
                     super::ast::BinaryOperator::Equal | super::ast::BinaryOperator::NotEqual => {
                         let left = self.check_expression(left, None);
-                        let right = self.check_expression(right, None);
+                        let right = self.check_expression(right, Some(&left.ty));
                         if left.ty == Type::String && right.ty == Type::String {
                             return self.finish_expression(
                                 expression,
@@ -585,10 +868,13 @@ impl Analyzer<'_> {
                             );
                         }
                         if left.ty != right.ty
-                            || !matches!(left.ty, Type::Int | Type::Bool | Type::Enum(_))
+                            || !matches!(
+                                left.ty,
+                                Type::Int | Type::Byte | Type::Bool | Type::Char | Type::Enum(_)
+                            )
                         {
                             self.diagnostics.push(Diagnostic::error(
-                                "equality requires matching `int`, `bool`, or enum operands",
+                                "equality requires matching `int`, `byte`, `bool`, `char`, or enum operands",
                                 expression.span,
                             ));
                         }
@@ -771,6 +1057,14 @@ impl Analyzer<'_> {
                 else {
                     return HirStatement::Expression(self.check_expression(value, None));
                 };
+                if matches!(collection_type, Type::List(_))
+                    && matches!(self.symbol(local).kind, SymbolKind::Parameter { .. })
+                {
+                    self.diagnostics.push(Diagnostic::error(
+                        "list parameters are read-only",
+                        target.span,
+                    ));
+                }
                 let element_type = match &collection_type {
                     Type::Array { element, .. } | Type::List(element) => (**element).clone(),
                     Type::String => {
@@ -1222,6 +1516,14 @@ impl Analyzer<'_> {
             ));
             return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
         };
+        if matches!(method.text.as_str(), "push" | "pop")
+            && matches!(self.symbol(local).kind, SymbolKind::Parameter { .. })
+        {
+            self.diagnostics.push(Diagnostic::error(
+                "list parameters are read-only",
+                receiver.span,
+            ));
+        }
         match method.text.as_str() {
             "push" => {
                 if arguments.len() != 1 {
@@ -1337,9 +1639,10 @@ impl Analyzer<'_> {
             Type::Array { element, .. } | Type::List(element) => element,
             _ => return,
         };
-        let supported = match &**element {
-            Type::Int | Type::Bool | Type::Char | Type::Enum(_) => true,
-            Type::Struct(id) => self
+        let supported = match (&**element, ty) {
+            (Type::Byte, Type::List(_)) => true,
+            (Type::Int | Type::Bool | Type::Char | Type::String | Type::Enum(_), _) => true,
+            (Type::Struct(id), _) => self
                 .structs
                 .iter()
                 .find(|definition| definition.id == *id)
@@ -1422,6 +1725,10 @@ fn block_definitely_returns(block: &super::ast::Block) -> bool {
         .iter()
         .any(|statement| match &statement.kind {
             StatementKind::Return(_) => true,
+            StatementKind::Expression(Expression {
+                kind: ExpressionKind::Call { callee, .. },
+                ..
+            }) if callee.text == "exit" => true,
             StatementKind::If {
                 then_block,
                 else_block: Some(else_block),
@@ -1892,14 +2199,14 @@ mod tests {
     #[test]
     fn rejects_unsupported_collection_element_types() {
         let errors = messages(
-            "struct Item { float value; } private void f() { float[1] fs = [1.0]; list string ss = [\"a\"]; int[1][1] nested = [[1]]; list Item items = []; }",
+            "struct Item { float value; } private void f() { float[1] fs = [1.0]; int[1][1] nested = [[1]]; list Item items = []; }",
         );
         assert!(
             errors
                 .iter()
                 .filter(|message| message.contains("collections do not support element type"))
                 .count()
-                >= 4
+                >= 3
         );
     }
 
@@ -1960,9 +2267,10 @@ mod tests {
 
     #[test]
     fn validates_read_file_intrinsic() {
-        analyze_source("private string f(string path) { return readFile(path); }").unwrap();
+        analyze_source("use std.fs; private string f(string path) { return readFile(path); }")
+            .unwrap();
         let errors = messages(
-            "private void f() { string a = readFile(); string b = readFile(1); string c = readFile(\"a\", \"b\"); }",
+            "use std.fs; private void f() { string a = readFile(); string b = readFile(1); string c = readFile(\"a\", \"b\"); }",
         );
         assert!(errors.iter().any(|message| message.contains("found 0")));
         assert!(errors.iter().any(|message| message.contains("found 2")));

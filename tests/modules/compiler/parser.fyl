@@ -1,0 +1,6 @@
+use token;
+
+public int countTokens(list Token tokens)
+{
+    return tokens.length;
+}

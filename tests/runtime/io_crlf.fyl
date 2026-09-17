@@ -1,0 +1,7 @@
+use std.io;
+
+public void main()
+{
+    string value = input(string);
+    println(value);
+}

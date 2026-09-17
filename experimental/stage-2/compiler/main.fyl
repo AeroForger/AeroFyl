@@ -1,0 +1,8 @@
+use lexer;
+use std.io;
+use std.fs;
+
+public void main(string[] args){
+    string source = readFile("test.fyl");
+    list Token tokens = lex(source);
+}

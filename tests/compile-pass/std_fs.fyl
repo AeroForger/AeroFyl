@@ -1,0 +1,10 @@
+use std.fs;
+
+public void main()
+{
+    byte low = 0;
+    byte high = byte(255);
+    list byte bytes = [low, high];
+    bool ordered = bytes[0] < bytes[1];
+    bool present = exists("data.bin");
+}

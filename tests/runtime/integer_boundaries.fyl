@@ -1,0 +1,16 @@
+public void main()
+{
+    int maximum = 9223372036854775807;
+    int minimum = maximum + 1;
+    bool correct = minimum < 0
+        && -minimum == minimum
+        && minimum - 1 == maximum
+        && maximum * 2 == -2
+        && -7 / 3 == -2
+        && 7 / -3 == -2
+        && -7 / -3 == 2;
+    if (!correct)
+    {
+        exit(69);
+    }
+}

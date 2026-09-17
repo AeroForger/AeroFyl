@@ -248,7 +248,12 @@ impl FunctionLowerer {
                 self.terminate(IrTerminator::Return(value));
             }
             HirStatement::Expression(expression) => {
-                self.expression(expression);
+                if let HirExpressionKind::Exit { code } = &expression.kind {
+                    let code = self.expression(code);
+                    self.terminate(IrTerminator::Exit(code));
+                } else {
+                    self.expression(expression);
+                }
             }
             HirStatement::If {
                 condition,
@@ -349,6 +354,9 @@ impl FunctionLowerer {
         }
         let kind = match &expression.kind {
             HirExpressionKind::Literal(literal) => IrInstructionKind::Constant(match literal {
+                Literal::Integer(value) if expression.ty == Type::Byte => {
+                    IrConstant::Byte(value.clone())
+                }
                 Literal::Integer(value) => IrConstant::Integer(value.clone()),
                 Literal::Float(value) => IrConstant::Float(value.clone()),
                 Literal::String(value) => IrConstant::String(value.clone()),
@@ -490,6 +498,39 @@ impl FunctionLowerer {
             }
             HirExpressionKind::ReadFile { path } => {
                 IrInstructionKind::ReadFile(self.expression(path))
+            }
+            HirExpressionKind::ReadBytes { path } => {
+                IrInstructionKind::ReadBytes(self.expression(path))
+            }
+            HirExpressionKind::WriteFile { path, data } => IrInstructionKind::WriteFile {
+                path: self.expression(path),
+                data: self.expression(data),
+            },
+            HirExpressionKind::WriteBytes { path, data } => IrInstructionKind::WriteBytes {
+                path: self.expression(path),
+                data: self.expression(data),
+            },
+            HirExpressionKind::Exists { path } => IrInstructionKind::Exists(self.expression(path)),
+            HirExpressionKind::Print {
+                value,
+                stderr,
+                newline,
+            } => IrInstructionKind::Print {
+                value: self.expression(value),
+                value_type: value.ty.clone(),
+                stderr: *stderr,
+                newline: *newline,
+            },
+            HirExpressionKind::Input { target } => IrInstructionKind::Input {
+                target: target.clone(),
+            },
+            HirExpressionKind::Convert { value, target } => IrInstructionKind::Convert {
+                value: self.expression(value),
+                from: value.ty.clone(),
+                to: target.clone(),
+            },
+            HirExpressionKind::Exit { .. } => {
+                unreachable!("exit lowers as a control-flow terminator")
             }
             HirExpressionKind::StringConcat { left, right } => IrInstructionKind::StringConcat {
                 left: self.expression(left),
@@ -779,7 +820,7 @@ mod tests {
     #[test]
     fn lowers_source_ingestion_to_explicit_ir() {
         let ir = lower_source(
-            "private int scan(string path) { string source = readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+            "use std.fs; private int scan(string path) { string source = readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
         );
         let instructions: Vec<_> = ir
             .functions

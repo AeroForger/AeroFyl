@@ -1,0 +1,6 @@
+use std.fs;
+
+public void main(string[] args)
+{
+    string value = readFile(args[0]);
+}

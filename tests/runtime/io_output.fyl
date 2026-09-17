@@ -1,0 +1,19 @@
+use std.io;
+
+public void main()
+{
+    print("");
+    print("Hello");
+    println(", World!");
+    println(123);
+    println(-456);
+    println(0);
+    println(-9223372036854775808);
+    println(true);
+    println(false);
+    print('A');
+    println('é');
+
+    eprint("error: ");
+    eprintln("something happened");
+}

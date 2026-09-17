@@ -1,0 +1,23 @@
+use std.fs;
+
+public void main(string[] args)
+{
+    list byte elfHeader = [127, 69, 76, 70, 2, 1, 1, 0, 0, 255];
+    writeBytes(args[0], elfHeader);
+
+    list byte restored = readBytes(args[0]);
+    if (restored.length != elfHeader.length)
+    {
+        exit(1);
+    }
+
+    int index = 0;
+    while (index < restored.length)
+    {
+        if (restored[index] != elfHeader[index])
+        {
+            exit(2);
+        }
+        index = index + 1;
+    }
+}

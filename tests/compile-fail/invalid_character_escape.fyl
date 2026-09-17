@@ -1,0 +1,4 @@
+public void main()
+{
+    char invalid = '\q';
+}

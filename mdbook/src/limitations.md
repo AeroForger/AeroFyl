@@ -5,16 +5,15 @@ The executable backend supports Linux x86-64 only. Floating-point execution is a
 The following areas remain unspecified or incomplete:
 
 - exact identifier rules
-- comments and escape syntax
-- integer overflow and language-level failure behavior
+- comments and string escape syntax
+- formatted standard-error diagnostics
 - floating-point execution
-- conversions, coercions, and `dynamic`
-- modules and imports
+- conversions beyond the documented integer/byte/character/enum subset, coercions, and `dynamic`
+- qualified user-module paths, aliases, and packages
 - project manifest naming and keys
 - tuple values
 - general collection inference and representation
-- `print` and `input`
-- permanent entry-point and command-line argument rules
-- ownership, references, and memory management
+- entry-point forms beyond the two documented signatures
+- reclamation, user-visible references, and general ownership
 
 The complete boundary is maintained in the repository `spec/` directory and the Rust bootstrap README.

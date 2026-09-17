@@ -2,7 +2,7 @@
 
 Aerofyl is a compiled systems programming language currently in pre-alpha.
 
-The current compiler is written in Rust and exists to bootstrap the first compiler written in Aerofyl. It is the Stage 0 implementation, not the permanent compiler and not a claim of self-hosting.
+The current compiler is written in Rust and exists to bootstrap the first compiler written in Aerofyl. It is the Stage 0 implementation, not the permanent compiler and not a claim of self-hosting. Its current subset includes relative multi-file imports and intentional `exit(code)` termination for compiler development.
 
 ## Development phases
 
@@ -14,9 +14,16 @@ The current compiler is written in Rust and exists to bootstrap the first compil
 
 ## Current implementation
 
-The bootstrap includes source loading, lexing, a handwritten parser, name resolution, semantic analysis, HIR, backend-independent IR, IR verification, and direct generation of Linux x86-64 ELF executables. Its implemented source subset includes functions, locals, assignment, integer arithmetic, Boolean logic, control flow, structs, payload-free enums, fixed arrays, lists, strings, string byte and slice operations, file reading, and command-line arguments.
+The bootstrap includes source loading, lexing, a handwritten parser, name resolution, semantic analysis, HIR, backend-independent IR, IR verification, and direct generation of Linux x86-64 ELF executables. Its implemented source subset includes functions, locals, assignment, integer arithmetic, bytes, Boolean logic, control flow, structs, payload-free enums, fixed arrays, lists, strings, string byte and slice operations, filesystem access, and command-line arguments.
 
-The executable backend is limited to Linux x86-64. Several parsed types and reserved language concepts do not have executable lowering. Modules, imports, package management, comments, string escapes, floating-point execution, and many language-level runtime rules remain unspecified or unimplemented. See [bootstrap details](bootstrap/rust/README.md) for the precise supported subset and temporary runtime behavior.
+The executable backend is limited to Linux x86-64. The current compiler subset
+has defined signed-integer behavior, explicit integer/character conversions,
+stable command-line arguments, the explicitly imported `std.io` standard-stream
+API, and the `std.fs` text/binary filesystem API. Package
+management, qualified user-module paths, comments, string escapes,
+floating-point execution, and several
+aggregate layouts remain unspecified or unimplemented. See [bootstrap
+details](bootstrap/rust/README.md) for the precise boundary.
 
 ## Repository layout
 

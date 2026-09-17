@@ -6,6 +6,7 @@ pub struct TypeId(pub u32);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Type {
     Int,
+    Byte,
     Float,
     Bool,
     Char,
@@ -38,6 +39,7 @@ impl fmt::Display for Type {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Int => formatter.write_str("int"),
+            Self::Byte => formatter.write_str("byte"),
             Self::Float => formatter.write_str("float"),
             Self::Bool => formatter.write_str("bool"),
             Self::Char => formatter.write_str("char"),

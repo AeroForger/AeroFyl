@@ -1,0 +1,6 @@
+use std.io;
+
+public void main()
+{
+    bool value = input(bool);
+}

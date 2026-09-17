@@ -149,9 +149,19 @@ pub fn lower(module: &VerifiedIrModule<'_>) -> Result<MachineModule, BackendErro
         .iter()
         .map(|function| lower_function(function, &structs, &string_offsets))
         .collect::<Result<Vec<_>, _>>()?;
-    functions.extend(runtime::functions());
+    let startup = startup::generate(main.symbol, !main.parameters.is_empty());
+    let runtime_roots: HashSet<_> = functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .chain(&startup)
+        .filter_map(|instruction| match instruction {
+            Instruction::Call(symbol) => Some(*symbol),
+            _ => None,
+        })
+        .collect();
+    functions.extend(runtime::functions_for(&runtime_roots));
     Ok(MachineModule {
-        startup: startup::generate(main.symbol, !main.parameters.is_empty()),
+        startup,
         entry_function: main.symbol,
         functions,
         read_only_data,
@@ -188,6 +198,7 @@ fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
     if !matches!(
         function.return_type,
         Type::Int
+            | Type::Byte
             | Type::Bool
             | Type::Char
             | Type::String
@@ -204,6 +215,7 @@ fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
         if !matches!(
             parameter.ty,
             Type::Int
+                | Type::Byte
                 | Type::Bool
                 | Type::Char
                 | Type::String
@@ -221,6 +233,7 @@ fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
         if !matches!(
             local.ty,
             Type::Int
+                | Type::Byte
                 | Type::Bool
                 | Type::Char
                 | Type::String
@@ -387,6 +400,16 @@ fn lower_instruction(
             output.push(Instruction::MoveImmediate64 {
                 destination: Register::Rax,
                 value: magnitude,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::Constant(IrConstant::Byte(value)) => {
+            let value = value
+                .parse::<u8>()
+                .map_err(|_| BackendError::InvalidIntegerLiteral(value.clone()))?;
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: u64::from(value),
             });
             store_result(instruction, slots, output)?;
         }
@@ -681,6 +704,14 @@ fn lower_instruction(
                             source: Register::Rax,
                         });
                     }
+                } else if element_type == &Type::Byte {
+                    load_value(output, slots, *value, Register::Rax)?;
+                    output.push(Instruction::Store8 {
+                        base: Register::R11,
+                        displacement: i32::try_from(element_offset)
+                            .map_err(|_| BackendError::FrameTooLarge(function.name.clone()))?,
+                        source: Register::Rax,
+                    });
                 } else {
                     load_value(output, slots, *value, Register::Rax)?;
                     output.push(Instruction::Store64 {
@@ -735,6 +766,14 @@ fn lower_instruction(
                     source: Register::Rdx,
                 });
                 store_result(instruction, slots, output)?;
+            } else if element_type == &Type::Byte {
+                output.push(Instruction::Call(runtime::LIST_ELEMENT));
+                output.push(Instruction::Load8 {
+                    destination: Register::Rax,
+                    base: Register::Rax,
+                    displacement: 0,
+                });
+                store_result(instruction, slots, output)?;
             } else {
                 output.push(Instruction::Call(runtime::LIST_LOAD));
                 store_result(instruction, slots, output)?;
@@ -765,6 +804,14 @@ fn lower_instruction(
                     Register::Rdx,
                     struct_word_count(structs, *struct_id, function)?,
                 )?;
+            } else if element_type == &Type::Byte {
+                output.push(Instruction::Call(runtime::LIST_ELEMENT));
+                load_value(output, slots, *value, Register::Rcx)?;
+                output.push(Instruction::Store8 {
+                    base: Register::Rax,
+                    displacement: 0,
+                    source: Register::Rcx,
+                });
             } else {
                 load_value(output, slots, *value, Register::Rdx)?;
                 output.push(Instruction::Call(runtime::LIST_STORE));
@@ -794,6 +841,13 @@ fn lower_instruction(
                     Register::Rdx,
                     struct_word_count(structs, *struct_id, function)?,
                 )?;
+            } else if element_type == &Type::Byte {
+                load_value(output, slots, *value, Register::Rcx)?;
+                output.push(Instruction::Store8 {
+                    base: Register::Rdx,
+                    displacement: 0,
+                    source: Register::Rcx,
+                });
             } else {
                 load_value(output, slots, *value, Register::Rcx)?;
                 output.push(Instruction::Store64 {
@@ -845,7 +899,18 @@ fn lower_instruction(
                 });
                 store_result(instruction, slots, output)?;
             } else {
-                output.push(Instruction::Call(runtime::LIST_POP));
+                output.push(Instruction::Call(if element_type == &Type::Byte {
+                    runtime::LIST_POP_ELEMENT
+                } else {
+                    runtime::LIST_POP
+                }));
+                if element_type == &Type::Byte {
+                    output.push(Instruction::Load8 {
+                        destination: Register::Rax,
+                        base: Register::Rax,
+                        displacement: 0,
+                    });
+                }
                 store_result(instruction, slots, output)?;
             }
         }
@@ -937,6 +1002,95 @@ fn lower_instruction(
             output.push(Instruction::Call(runtime::READ_FILE));
             store_result(instruction, slots, output)?;
         }
+        IrInstructionKind::ReadBytes(path) => {
+            load_value(output, slots, *path, Register::Rdi)?;
+            output.push(Instruction::Call(runtime::READ_BYTES));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::WriteFile { path, data } => {
+            load_value(output, slots, *path, Register::Rdi)?;
+            load_value(output, slots, *data, Register::Rsi)?;
+            output.push(Instruction::Call(runtime::WRITE_FILE));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::WriteBytes { path, data } => {
+            load_value(output, slots, *path, Register::Rdi)?;
+            load_value(output, slots, *data, Register::Rsi)?;
+            output.push(Instruction::Call(runtime::WRITE_BYTES));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::Exists(path) => {
+            load_value(output, slots, *path, Register::Rdi)?;
+            output.push(Instruction::Call(runtime::EXISTS));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::Print {
+            value,
+            value_type,
+            stderr,
+            newline,
+        } => {
+            load_value(output, slots, *value, Register::Rdi)?;
+            let type_code = match value_type {
+                Type::String => 0,
+                Type::Int => 1,
+                Type::Bool => 2,
+                Type::Char => 3,
+                _ => {
+                    return Err(BackendError::UnsupportedIr {
+                        function: function.name.clone(),
+                        feature: "unsupported std.io output type",
+                    });
+                }
+            };
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rsi,
+                value: type_code,
+            });
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rdx,
+                value: if *stderr { 2 } else { 1 },
+            });
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rcx,
+                value: u64::from(*newline),
+            });
+            output.push(Instruction::Call(runtime::PRINT));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::Input { target } => {
+            let function = match target {
+                Type::String => runtime::INPUT_LINE,
+                Type::Int => runtime::INPUT_INT,
+                Type::Bool => runtime::INPUT_BOOL,
+                Type::Char => runtime::INPUT_CHAR,
+                _ => {
+                    return Err(BackendError::UnsupportedIr {
+                        function: function.name.clone(),
+                        feature: "unsupported std.io input type",
+                    });
+                }
+            };
+            output.push(Instruction::Call(function));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::Convert { value, from, to } => {
+            load_value(output, slots, *value, Register::Rax)?;
+            if matches!((from, to), (Type::Int, Type::Char)) {
+                output.push(Instruction::MoveRegister {
+                    destination: Register::Rdi,
+                    source: Register::Rax,
+                });
+                output.push(Instruction::Call(runtime::INT_TO_CHAR));
+            } else if matches!((from, to), (Type::Int, Type::Byte)) {
+                output.push(Instruction::MoveRegister {
+                    destination: Register::Rdi,
+                    source: Register::Rax,
+                });
+                output.push(Instruction::Call(runtime::INT_TO_BYTE));
+            }
+            store_result(instruction, slots, output)?;
+        }
         IrInstructionKind::Copy(value) => {
             load_value(output, slots, *value, Register::Rax)?;
             store_result(instruction, slots, output)?;
@@ -979,8 +1133,15 @@ fn lower_instruction(
                     source: Register::Rcx,
                 },
                 BinaryOperator::Divide => {
-                    output.push(Instruction::SignExtendRaxIntoRdx);
-                    Instruction::DivideSigned(Register::Rcx)
+                    output.push(Instruction::MoveRegister {
+                        destination: Register::Rdi,
+                        source: Register::Rax,
+                    });
+                    output.push(Instruction::MoveRegister {
+                        destination: Register::Rsi,
+                        source: Register::Rcx,
+                    });
+                    Instruction::Call(runtime::INTEGER_DIVIDE)
                 }
                 BinaryOperator::Equal
                 | BinaryOperator::NotEqual
@@ -1073,6 +1234,14 @@ fn lower_terminator(
                 load_value(output, slots, *value, Register::Rax)?;
             }
             emit_epilogue(output);
+        }
+        IrTerminator::Exit(code) => {
+            load_value(output, slots, *code, Register::Rdi)?;
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: 60,
+            });
+            output.push(Instruction::Syscall);
         }
         IrTerminator::Jump(target) => output.push(Instruction::Jump(*target)),
         IrTerminator::Branch {
@@ -1168,6 +1337,7 @@ fn type_stride(
     function: &IrFunction,
 ) -> Result<usize, BackendError> {
     match ty {
+        Type::Byte => Ok(1),
         Type::Struct(id) => struct_word_count(structs, *id, function)?
             .checked_mul(8)
             .ok_or_else(|| BackendError::FrameTooLarge(function.name.clone())),
@@ -1294,11 +1464,9 @@ mod tests {
                 .iter()
                 .any(|item| matches!(item, Instruction::MultiplySigned { .. }))
         );
-        assert!(
-            instructions
-                .iter()
-                .any(|item| matches!(item, Instruction::DivideSigned(_)))
-        );
+        assert!(instructions.iter().any(
+            |item| matches!(item, Instruction::Call(symbol) if *symbol == runtime::INTEGER_DIVIDE)
+        ));
         assert!(
             instructions
                 .iter()
@@ -1518,7 +1686,7 @@ mod tests {
     #[test]
     fn lowers_source_ingestion_through_central_runtime_helpers() {
         let module = lower_source(
-            "private int scan() { string source = readFile(\"fixture\"); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+            "use std.fs; private int scan() { string source = readFile(\"fixture\"); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
         );
         let scan = &module.functions[0].instructions;
         assert!(scan.iter().any(
@@ -1548,6 +1716,28 @@ mod tests {
                 .iter()
                 .any(|function| function.symbol == runtime::MAIN_ARGS)
         );
+    }
+
+    #[test]
+    fn includes_only_reachable_filesystem_runtime_features() {
+        let unused = lower_source("use std.fs; public void main() {}");
+        assert_eq!(unused.functions.len(), 1);
+
+        let module =
+            lower_source("use std.fs; public void main() { bool present = exists(\"data.txt\"); }");
+        let symbols: HashSet<_> = module
+            .functions
+            .iter()
+            .map(|function| function.symbol)
+            .collect();
+        assert!(symbols.contains(&runtime::EXISTS));
+        assert!(symbols.contains(&runtime::ALLOC));
+        assert!(symbols.contains(&runtime::FS_ERROR));
+        assert!(symbols.contains(&runtime::WRITE_ALL));
+        assert!(!symbols.contains(&runtime::READ_FILE));
+        assert!(!symbols.contains(&runtime::WRITE_FILE));
+        assert!(!symbols.contains(&runtime::READ_BYTES));
+        assert!(!symbols.contains(&runtime::WRITE_BYTES));
     }
 
     #[test]

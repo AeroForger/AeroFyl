@@ -1,0 +1,20 @@
+use std.io;
+
+public void main()
+{
+    string implicitString = input();
+    string explicitString = input(string);
+    int positive = input(int);
+    int negative = input(int);
+    bool yes = input(bool);
+    bool no = input(bool);
+    char character = input(char);
+
+    println(implicitString);
+    println(explicitString);
+    println(positive);
+    println(negative);
+    println(yes);
+    println(no);
+    println(character);
+}

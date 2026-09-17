@@ -1,0 +1,66 @@
+enum Keyword {
+    Public,
+    Private,
+    Use,
+    Using,
+    Return,
+    If,
+    Else,
+    While,
+    Break,
+    Continue,
+    True,
+    False,
+    List,
+    Int,
+    Byte,
+    Float,
+    Bool,
+    Char,
+    String,
+    Void,
+    Dynamic,
+    Struct,
+    Enum,
+}
+enum TokenKind {
+    Identifier,
+    Integer,
+    Float,
+    String,
+    Char,
+    Keyword,
+    LeftParen,
+    RightParen,
+    LeftBrace,
+    RightBrace,
+    LeftBracket,
+    RightBracket,
+    Comma,
+    Semicolon,
+    Colon,
+    Dot,
+    Equal,
+    EqualEqual,
+    BangEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Bang,
+    AmpersandAmpersand,
+    PipePipe,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Eof,
+}
+struct Token {
+    TokenKind kind;
+    string text;
+    int start;
+    int end;
+    int line;
+    int column;
+}

@@ -8,15 +8,24 @@ The exact identifier alphabet is not specified yet. The bootstrap accepts an und
 
 ## Keywords
 
-The known keywords are `public`, `private`, `use`, `using`, `return`, `if`, `else`, `while`, `break`, `continue`, `true`, `false`, `print`, `input`, `list`, `int`, `float`, `bool`, `char`, `string`, `void`, `dynamic`, `struct`, and `enum`.
+The known keywords are `public`, `private`, `use`, `using`, `return`, `if`, `else`, `while`, `break`, `continue`, `true`, `false`, `print`, `input`, `list`, `int`, `byte`, `float`, `bool`, `char`, `string`, `void`, `dynamic`, `struct`, and `enum`.
 
-`use`, `using`, `print`, and `input` are reserved by the bootstrap, but their language grammar or behavior is not specified yet.
+`using` remains reserved without language behavior. `print` and `input` are
+reserved names belonging to the explicitly imported `std.io` API. `use`
+introduces a module import.
+
+`byte` is soft in identifier positions so the established
+`string.byte(index)` member remains source-compatible; it denotes the byte type
+and conversion where a type or primary expression is expected.
 
 ## Literals
 
 Known literal forms are decimal integers, decimal floating-point values with digits on both sides of the decimal point, double-quoted strings, single-character literals, `true`, `false`, and bracketed collection literals.
 
-String escape behavior is not fully specified yet. Character escape behavior is not specified yet. The bootstrap treats a backslash in a string as ordinary text and requires exactly one Unicode scalar value in a character literal.
+The bootstrap treats a backslash in a string as ordinary text; string escape
+syntax remains unspecified. A character literal contains exactly one Unicode
+scalar value or one of these escapes: `\n`, `\r`, `\t`, `\0`, `\\`, or `\'`.
+Other character escapes are errors.
 
 ## Whitespace and comments
 

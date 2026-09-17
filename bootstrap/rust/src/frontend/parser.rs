@@ -3,6 +3,7 @@ use super::diagnostics::Diagnostic;
 use super::source::Span;
 use super::token::{Keyword, Token, TokenKind};
 use super::types::Type;
+use std::collections::HashSet;
 
 pub type ParseError = Diagnostic;
 pub type ParseResult = Result<Module, Vec<ParseError>>;
@@ -28,8 +29,19 @@ impl Parser {
         let mut functions = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
+        let mut imports = Vec::new();
+        let mut imported_names = HashSet::new();
         while !self.at(&TokenKind::Eof) {
-            let result = if self.at(&TokenKind::Keyword(Keyword::Struct)) {
+            let result = if self.at(&TokenKind::Keyword(Keyword::Use)) {
+                self.parse_import().and_then(|import| {
+                    if imported_names.insert(import.name.text.clone()) {
+                        imports.push(import);
+                        Ok(())
+                    } else {
+                        Err(Diagnostic::error("duplicate import", import.span))
+                    }
+                })
+            } else if self.at(&TokenKind::Keyword(Keyword::Struct)) {
                 self.parse_struct()
                     .map(|declaration| structs.push(declaration))
             } else if self.at(&TokenKind::Keyword(Keyword::Enum)) {
@@ -49,6 +61,7 @@ impl Parser {
         let span = Span::new(file, start, self.peek().span.end);
         if self.diagnostics.is_empty() {
             Ok(Module {
+                imports,
                 structs,
                 enums,
                 functions,
@@ -57,6 +70,22 @@ impl Parser {
         } else {
             Err(self.diagnostics)
         }
+    }
+
+    fn parse_import(&mut self) -> Result<Import, Diagnostic> {
+        let start = self.advance().span;
+        let mut name = self.expect_identifier("expected module name after `use`")?;
+        while self.consume(&TokenKind::Dot) {
+            let component = self.expect_identifier("expected module name after `.`")?;
+            name.text.push('.');
+            name.text.push_str(&component.text);
+            name.span = name.span.join(component.span);
+        }
+        let end = self.expect(TokenKind::Semicolon, "expected `;` after import")?;
+        Ok(Import {
+            name,
+            span: start.join(end.span),
+        })
     }
 
     fn parse_struct(&mut self) -> Result<StructDeclaration, Diagnostic> {
@@ -107,9 +136,9 @@ impl Parser {
         let visibility = match visibility_token.kind {
             TokenKind::Keyword(Keyword::Public) => Visibility::Public,
             TokenKind::Keyword(Keyword::Private) => Visibility::Private,
-            TokenKind::Keyword(Keyword::Use | Keyword::Using) => {
+            TokenKind::Keyword(Keyword::Using) => {
                 return Err(Diagnostic::error(
-                    "`use`/`using` grammar is not specified; imports cannot be parsed yet",
+                    "`using` is reserved; use `use module;` for imports",
                     visibility_token.span,
                 ));
             }
@@ -187,6 +216,7 @@ impl Parser {
         let token = self.advance().clone();
         let mut ty = match token.kind {
             TokenKind::Keyword(Keyword::Int) => Type::Int,
+            TokenKind::Keyword(Keyword::Byte) => Type::Byte,
             TokenKind::Keyword(Keyword::Float) => Type::Float,
             TokenKind::Keyword(Keyword::Bool) => Type::Bool,
             TokenKind::Keyword(Keyword::Char) => Type::Char,
@@ -537,6 +567,48 @@ impl Parser {
                 }),
                 span: token.span,
             },
+            TokenKind::Keyword(Keyword::Int) => Expression {
+                kind: ExpressionKind::Identifier(Name {
+                    text: "int".into(),
+                    span: token.span,
+                }),
+                span: token.span,
+            },
+            TokenKind::Keyword(Keyword::Byte) => Expression {
+                kind: ExpressionKind::Identifier(Name {
+                    text: "byte".into(),
+                    span: token.span,
+                }),
+                span: token.span,
+            },
+            TokenKind::Keyword(Keyword::Char) => Expression {
+                kind: ExpressionKind::Identifier(Name {
+                    text: "char".into(),
+                    span: token.span,
+                }),
+                span: token.span,
+            },
+            TokenKind::Keyword(Keyword::String) => Expression {
+                kind: ExpressionKind::Identifier(Name {
+                    text: "string".into(),
+                    span: token.span,
+                }),
+                span: token.span,
+            },
+            TokenKind::Keyword(Keyword::Bool) => Expression {
+                kind: ExpressionKind::Identifier(Name {
+                    text: "bool".into(),
+                    span: token.span,
+                }),
+                span: token.span,
+            },
+            TokenKind::Keyword(Keyword::Float) => Expression {
+                kind: ExpressionKind::Identifier(Name {
+                    text: "float".into(),
+                    span: token.span,
+                }),
+                span: token.span,
+            },
             TokenKind::LeftBracket => {
                 let mut values = Vec::new();
                 if !self.at(&TokenKind::RightBracket) {
@@ -689,6 +761,7 @@ impl Parser {
             TokenKind::Keyword(
                 Keyword::List
                     | Keyword::Int
+                    | Keyword::Byte
                     | Keyword::Float
                     | Keyword::Bool
                     | Keyword::Char
@@ -705,6 +778,10 @@ impl Parser {
         match token.kind {
             TokenKind::Identifier(text) => Ok(Name {
                 text,
+                span: token.span,
+            }),
+            TokenKind::Keyword(Keyword::Byte) => Ok(Name {
+                text: "byte".into(),
                 span: token.span,
             }),
             _ => Err(Diagnostic::error(message, token.span)),
@@ -754,7 +831,11 @@ impl Parser {
             if matches!(
                 self.peek().kind,
                 TokenKind::Keyword(
-                    Keyword::Public | Keyword::Private | Keyword::Struct | Keyword::Enum
+                    Keyword::Public
+                        | Keyword::Private
+                        | Keyword::Struct
+                        | Keyword::Enum
+                        | Keyword::Use
                 )
             ) {
                 return;
@@ -805,13 +886,11 @@ mod tests {
     }
 
     #[test]
-    fn reports_unspecified_import_grammar() {
+    fn parses_module_import() {
         let tokens = lex(FileId(0), "use thing;").unwrap();
-        assert!(
-            parse(tokens).unwrap_err()[0]
-                .message
-                .contains("not specified")
-        );
+        let module = parse(tokens).unwrap();
+        assert_eq!(module.imports.len(), 1);
+        assert_eq!(module.imports[0].name.text, "thing");
     }
 
     #[test]

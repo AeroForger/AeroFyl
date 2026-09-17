@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -123,6 +124,27 @@ pub fn compile(
             diagnostics,
             sources: sources.clone(),
         })?;
+    if let Some(import) = ast
+        .imports
+        .iter()
+        .find(|import| !matches!(import.name.text.as_str(), "std.io" | "std.fs"))
+    {
+        return Err(CompileError::Frontend {
+            diagnostics: vec![Diagnostic::error(
+                "imports require file-backed compilation",
+                import.span,
+            )],
+            sources,
+        });
+    }
+    compile_ast(ast, sources, options)
+}
+
+fn compile_ast(
+    ast: crate::frontend::ast::Module,
+    sources: SourceMap,
+    options: CompileOptions,
+) -> Result<CompileOutput, CompileError> {
     let hir =
         crate::frontend::semantic::analyze(&ast).map_err(|diagnostics| CompileError::Frontend {
             diagnostics,
@@ -161,8 +183,120 @@ pub fn compile(
 }
 
 pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutput, CompileError> {
-    let source = load_source(path).map_err(CompileError::Load)?;
-    compile(&source, path, options)
+    let mut sources = SourceMap::new();
+    let mut modules = Vec::new();
+    let mut active = Vec::new();
+    let mut loaded = HashSet::new();
+    load_module(path, &mut sources, &mut modules, &mut active, &mut loaded).map_err(|error| {
+        match error {
+            ModuleLoadError::Load(error) => CompileError::Load(error),
+            ModuleLoadError::Frontend(diagnostics) => CompileError::Frontend {
+                diagnostics,
+                sources: sources.clone(),
+            },
+        }
+    })?;
+    let root_span = modules
+        .last()
+        .map(|module| module.span)
+        .expect("the root module was loaded");
+    let mut merged = crate::frontend::ast::Module {
+        imports: Vec::new(),
+        structs: Vec::new(),
+        enums: Vec::new(),
+        functions: Vec::new(),
+        span: root_span,
+    };
+    for module in modules {
+        merged.imports.extend(
+            module
+                .imports
+                .iter()
+                .filter(|import| import.name.text.starts_with("std."))
+                .cloned(),
+        );
+        merged.structs.extend(module.structs);
+        merged.enums.extend(module.enums);
+        merged.functions.extend(module.functions);
+    }
+    compile_ast(merged, sources, options)
+}
+
+enum ModuleLoadError {
+    Load(LoadError),
+    Frontend(Vec<Diagnostic>),
+}
+
+fn load_module(
+    path: &Path,
+    sources: &mut SourceMap,
+    modules: &mut Vec<crate::frontend::ast::Module>,
+    active: &mut Vec<PathBuf>,
+    loaded: &mut HashSet<PathBuf>,
+) -> Result<(), ModuleLoadError> {
+    let source = load_source(path).map_err(ModuleLoadError::Load)?;
+    let canonical = fs::canonicalize(path).map_err(|source| {
+        ModuleLoadError::Load(LoadError::Io {
+            path: path.to_owned(),
+            source,
+        })
+    })?;
+    if loaded.contains(&canonical) {
+        return Ok(());
+    }
+    let file = sources.add(&canonical, &source);
+    let tokens = crate::frontend::lexer::lex(file, &source).map_err(ModuleLoadError::Frontend)?;
+    let module = crate::frontend::parser::parse(tokens).map_err(ModuleLoadError::Frontend)?;
+
+    active.push(canonical.clone());
+    let parent = canonical
+        .parent()
+        .expect("source file has a parent directory");
+    for import in &module.imports {
+        if matches!(import.name.text.as_str(), "std.io" | "std.fs") {
+            continue;
+        }
+        if import.name.text.starts_with("std.") {
+            return Err(ModuleLoadError::Frontend(vec![Diagnostic::error(
+                format!("unknown standard-library module `{}`", import.name.text),
+                import.span,
+            )]));
+        }
+        if import.name.text.contains('.') {
+            return Err(ModuleLoadError::Frontend(vec![Diagnostic::error(
+                "qualified user-module imports are not supported",
+                import.span,
+            )]));
+        }
+        let imported_path = parent.join(format!("{}.fyl", import.name.text));
+        let imported_canonical = fs::canonicalize(&imported_path).map_err(|source| {
+            ModuleLoadError::Load(LoadError::Io {
+                path: imported_path.clone(),
+                source,
+            })
+        })?;
+        if let Some(cycle_start) = active.iter().position(|item| item == &imported_canonical) {
+            let mut cycle: Vec<_> = active[cycle_start..]
+                .iter()
+                .map(|item| {
+                    item.file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            cycle.push(import.name.text.clone());
+            return Err(ModuleLoadError::Frontend(vec![Diagnostic::error(
+                format!("circular import: {}", cycle.join(" -> ")),
+                import.span,
+            )]));
+        }
+        load_module(&imported_canonical, sources, modules, active, loaded)?;
+    }
+    active.pop();
+    loaded.insert(canonical);
+    modules.push(module);
+    Ok(())
 }
 
 /// Compiles one source file and writes a directly executable bootstrap artifact.
@@ -201,6 +335,21 @@ mod tests {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     static NATIVE_EXECUTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn write_project(files: &[(&str, &str)]) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_PROJECT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "aerofyl-module-test-{}-{}",
+            std::process::id(),
+            NEXT_PROJECT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        for (name, source) in files {
+            fs::write(directory.join(name), source).unwrap();
+        }
+        directory
+    }
+
     #[test]
     fn check_pipeline_reaches_ir() {
         let output = compile(
@@ -233,6 +382,94 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.render().contains("memory.fyl:1:"));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn imports_public_functions_from_relative_modules() {
+        use std::process::Command;
+        let directory = write_project(&[
+            (
+                "main.fyl",
+                "use lexer; public void main() { exit(tokenWidth()); }",
+            ),
+            (
+                "lexer.fyl",
+                "private int hidden() { return 2; } public int tokenWidth() { return hidden() + 17; }",
+            ),
+        ]);
+        let output = directory.join("program");
+        compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
+        assert_eq!(Command::new(&output).status().unwrap().code(), Some(19));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_cross_module_private_function_access() {
+        let directory = write_project(&[
+            ("main.fyl", "use lexer; public void main() { hidden(); }"),
+            ("lexer.fyl", "private void hidden() {}"),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(error.render().contains("private function `hidden`"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn imported_module_diagnostics_retain_file_line_and_column() {
+        let directory = write_project(&[
+            ("main.fyl", "use lexer; public void main() {}"),
+            (
+                "lexer.fyl",
+                "public int scan()\n{\n    return missing;\n}\n",
+            ),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        let rendered = error.render();
+        assert!(rendered.contains("lexer.fyl:3:12"), "{rendered}");
+        assert!(rendered.contains("unknown identifier `missing`"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_and_circular_imports() {
+        let duplicate = write_project(&[
+            ("main.fyl", "use lexer; use lexer; public void main() {}"),
+            ("lexer.fyl", "public void scan() {}"),
+        ]);
+        let error = compile_file(&duplicate.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(error.render().contains("duplicate import"));
+        fs::remove_dir_all(duplicate).unwrap();
+
+        let circular = write_project(&[
+            ("main.fyl", "use lexer; public void main() {}"),
+            ("lexer.fyl", "use parser; public void scan() {}"),
+            ("parser.fyl", "use lexer; public void parseTokens() {}"),
+        ]);
+        let error = compile_file(&circular.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("circular import: lexer -> parser -> lexer")
+        );
+        fs::remove_dir_all(circular).unwrap();
+    }
+
+    #[test]
+    fn reports_missing_modules_and_imported_symbol_collisions() {
+        let missing = write_project(&[("main.fyl", "use absent; public void main() {}")]);
+        let error = compile_file(&missing.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(error.to_string().contains("absent.fyl"));
+        fs::remove_dir_all(missing).unwrap();
+
+        let collision = write_project(&[
+            ("main.fyl", "use lexer; use parser; public void main() {}"),
+            ("lexer.fyl", "public int build() { return 1; }"),
+            ("parser.fyl", "public int build() { return 2; }"),
+        ]);
+        let error = compile_file(&collision.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(error.render().contains("duplicate declaration of `build`"));
+        fs::remove_dir_all(collision).unwrap();
     }
 
     #[test]
@@ -473,6 +710,82 @@ mod tests {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
+    fn executes_string_list_growth_and_pop() {
+        let source = "public int test() { list string words = [\"zero\", \"one\", \"two\", \"three\"]; words.push(\"four\"); string last = words.pop(); if (words[0] == \"zero\" && last == \"four\") { return words.length; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 4);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn functions_return_owned_lists_and_read_them_through_parameters() {
+        let source = "private list string makeWords() { list string words = [\"zero\", \"one\", \"two\", \"three\"]; words.push(\"grown\"); return words; } private int count(list string words) { return words.length; } public int test() { list string words = makeWords(); if (count(words) == 5 && words[4] == \"grown\") { return 1; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 1);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn character_literals_are_ergonomic_in_byte_expressions() {
+        let source = "public int test() { string text = \"7 \"; char newline = '\\n'; char tab = '\\t'; if (text.byte(0) >= '0' && text.byte(0) <= '9' && text.byte(1) == ' ' && newline == '\\n' && tab == '\\t') { return text.byte(0) - '0'; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 7);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn explicit_exit_terminates_with_requested_status() {
+        assert_eq!(
+            run_main_with_arguments("public void main() { exit(23); }", &[]),
+            23
+        );
+        assert_eq!(
+            run_main_with_arguments("public void main() { exit(300); }", &[]),
+            44
+        );
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn explicit_integer_character_and_enum_conversions_execute() {
+        let source = "enum Kind { first, second } public int test() { char value = char(65); int scalar = int(value); int discriminant = int(Kind.second); if (value == 'A' && scalar == 65 && discriminant == 1 && int(7) == 7 && char(value) == 'A') { return 1; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 1);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn invalid_integer_to_character_conversions_fail_predictably() {
+        for value in ["-1", "55296", "1114112"] {
+            let source = format!("public void main() {{ char invalid = char({value}); }}");
+            assert_eq!(run_main_with_arguments(&source, &[]), 70);
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn integer_arithmetic_wraps_and_signed_division_truncates() {
+        let source = "public int test() { int maximum = 9223372036854775807; int minimum = maximum + 1; if (minimum < 0 && -minimum == minimum && minimum - 1 == maximum && maximum * 2 == -2 && -7 / 3 == -2 && 7 / -3 == -2 && -7 / -3 == 2) { return 1; } return 0; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 1);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn invalid_integer_division_uses_runtime_failure_status() {
+        let zero = "public void main() { int invalid = 1 / 0; }";
+        let overflow = "public void main() { int minimum = -9223372036854775808; int invalid = minimum / -1; }";
+        assert_eq!(run_main_with_arguments(zero, &[]), 70);
+        assert_eq!(run_main_with_arguments(overflow, &[]), 70);
+    }
+
+    #[test]
+    fn exit_is_a_valid_terminal_path_for_value_functions() {
+        compile(
+            "private int fail() { exit(70); } public void main() {}",
+            "exit.fyl",
+            CompileOptions::check(),
+        )
+        .unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
     fn executes_string_equality_acceptance_program() {
         let source = "public int test() { string a = \"aero\"; string b = \"aero\"; if (a == b && a != \"other\") { return 1; } return 0; } public void main() { int result = test(); }";
         assert_eq!(run_helper_as_exit_status(source, "test"), 1);
@@ -481,7 +794,7 @@ mod tests {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn executes_string_concat_acceptance_program() {
-        let source = "public int test() { string a = \"Aero\"; string b = \"fyl\"; string c = a + b; if (c == \"Aerofyl\") { return c.length; } return 0; } public void main() { int result = test(); }";
+        let source = "public int test() { string a = \"Aero\"; string b = \"fyl\"; string c = a + b; string leftEmpty = \"\" + c; string rightEmpty = c + \"\"; if (c == \"Aerofyl\" && leftEmpty == c && rightEmpty == c && a == \"Aero\" && b == \"fyl\") { return c.length; } return 0; } public void main() { int result = test(); }";
         assert_eq!(run_helper_as_exit_status(source, "test"), 7);
     }
 
@@ -584,15 +897,15 @@ mod tests {
         fs::write(&empty, b"").unwrap();
         fs::set_permissions(&fixture, fs::Permissions::from_mode(0o444)).unwrap();
         let success = format!(
-            "public int test() {{ string source = readFile(\"{}\"); return source.byte(0) + source.length; }} public void main() {{}}",
+            "use std.fs; public int test() {{ string source = readFile(\"{}\"); return source.byte(0) + source.length; }} public void main() {{}}",
             fixture.display()
         );
         let empty_source = format!(
-            "public int test() {{ string source = readFile(\"{}\"); return source.length; }} public void main() {{}}",
+            "use std.fs; public int test() {{ string source = readFile(\"{}\"); return source.length; }} public void main() {{}}",
             empty.display()
         );
         let multiple = format!(
-            "public int test() {{ string a = readFile(\"{}\"); string b = readFile(\"{}\"); return a.length + b.length; }} public void main() {{}}",
+            "use std.fs; public int test() {{ string a = readFile(\"{}\"); string b = readFile(\"{}\"); return a.length + b.length; }} public void main() {{}}",
             fixture.display(),
             fixture.display()
         );
@@ -604,11 +917,45 @@ mod tests {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
+    fn writes_truncates_and_reads_files() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "aerofyl-write-test-{}-{}",
+            std::process::id(),
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, "old contents that must be truncated").unwrap();
+        let source = "use std.fs; public void main(string[] args) { writeFile(args[0], \"new bytes\"); string result = readFile(args[0]); if (result != \"new bytes\") { exit(69); } writeFile(args[0], \"\"); string empty = readFile(args[0]); if (empty.length != 0) { exit(68); } writeFile(args[0], \"new bytes\"); }";
+        assert_eq!(
+            run_main_with_arguments(source, &[path.to_str().unwrap()]),
+            0
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"new bytes");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn write_file_failure_uses_runtime_failure_status() {
+        let missing = std::env::temp_dir()
+            .join(format!("aerofyl-missing-parent-{}", std::process::id()))
+            .join("output");
+        let source =
+            "use std.fs; public void main(string[] args) { writeFile(args[0], \"data\"); }";
+        assert_eq!(
+            run_main_with_arguments(source, &[missing.to_str().unwrap()]),
+            70
+        );
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
     fn missing_file_fails_with_status_70() {
         let path =
             std::env::temp_dir().join(format!("aerofyl-definitely-missing-{}", std::process::id()));
         let source = format!(
-            "public int test() {{ string source = readFile(\"{}\"); return source.length; }} public void main() {{}}",
+            "use std.fs; public int test() {{ string source = readFile(\"{}\"); return source.length; }} public void main() {{}}",
             path.display()
         );
         assert_eq!(run_helper_as_exit_status(&source, "test"), 70);
@@ -622,7 +969,7 @@ mod tests {
             std::process::id()
         ));
         fs::write(&fixture, b"abc").unwrap();
-        let source = "public void main(string[] args) { int[1] trap = [0]; string source = readFile(args[0]); if (args.length != 1 || source.length != 3 || source.byte(0) != 97) { int fail = trap[1]; } }";
+        let source = "use std.fs; public void main(string[] args) { int[1] trap = [0]; string source = readFile(args[0]); if (args.length != 1 || source.length != 3 || source.byte(0) != 97) { int fail = trap[1]; } }";
         assert_eq!(
             run_main_with_arguments(source, &[fixture.to_str().unwrap()]),
             0

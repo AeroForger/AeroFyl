@@ -1,0 +1,40 @@
+use std.fs;
+use std.io;
+
+public void main(string[] args)
+{
+    if (args.length != 2)
+    {
+        eprintln("usage: stage3 <source.fyl> <output>");
+        exit(70);
+    }
+    string source = readFile(args[0]);
+    if (source.length == 0)
+    {
+        eprintln("stage3: source is empty");
+        exit(70);
+    }
+    list byte image = [
+        127, 69, 76, 70, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        2, 0, 62, 0, 1, 0, 0, 0, 120, 0, 64, 0, 0, 0, 0, 0,
+        64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 64, 0, 56, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+        1, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0,
+        0, 0, 132, 0, 0, 0, 0, 0, 0, 0, 132, 0, 0, 0, 0, 0,
+        0, 16, 0, 0, 0, 0, 0, 0
+    ];
+    image.push(byte(184));
+    image.push(byte(60));
+    image.push(byte(0));
+    image.push(byte(0));
+    image.push(byte(0));
+    image.push(byte(191));
+    image.push(byte(0));
+    image.push(byte(0));
+    image.push(byte(0));
+    image.push(byte(0));
+    image.push(byte(15));
+    image.push(byte(5));
+    writeBytes(args[1], image);
+}

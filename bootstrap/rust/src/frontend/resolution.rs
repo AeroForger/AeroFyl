@@ -32,6 +32,7 @@ pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
     pub declaration: Option<Span>,
+    pub visibility: Option<super::ast::Visibility>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -54,7 +55,7 @@ impl Resolution {
 }
 
 pub fn resolve(module: &Module) -> Result<Resolution, Vec<Diagnostic>> {
-    Resolver::new().resolve(module)
+    Resolver::new(module).resolve(module)
 }
 
 struct Resolver {
@@ -65,16 +66,35 @@ struct Resolver {
 }
 
 impl Resolver {
-    fn new() -> Self {
+    fn new(module: &Module) -> Self {
         let mut resolver = Self {
             resolution: Resolution::default(),
             scopes: vec![HashMap::new()],
             diagnostics: Vec::new(),
             type_names: HashMap::new(),
         };
-        resolver.define_builtin("print");
-        resolver.define_builtin("input");
-        resolver.define_builtin("readFile");
+        if module
+            .imports
+            .iter()
+            .any(|import| import.name.text == "std.io")
+        {
+            for name in ["print", "println", "eprint", "eprintln", "input"] {
+                resolver.define_builtin(name);
+            }
+        }
+        if module
+            .imports
+            .iter()
+            .any(|import| import.name.text == "std.fs")
+        {
+            for name in ["readFile", "writeFile", "readBytes", "writeBytes", "exists"] {
+                resolver.define_builtin(name);
+            }
+        }
+        resolver.define_builtin("exit");
+        resolver.define_builtin("int");
+        resolver.define_builtin("char");
+        resolver.define_builtin("byte");
         resolver
     }
 
@@ -107,7 +127,7 @@ impl Resolver {
             self.check_member_names(declaration.variants.iter(), "enum variant");
         }
         for function in &module.functions {
-            self.define(
+            self.define_with_visibility(
                 &function.name.text,
                 SymbolKind::Function {
                     parameters: function
@@ -118,6 +138,7 @@ impl Resolver {
                     return_type: function.return_type.kind.clone(),
                 },
                 function.name.span,
+                function.visibility,
             );
         }
 
@@ -195,6 +216,18 @@ impl Resolver {
             ExpressionKind::Call { callee, arguments } => {
                 self.resolve_name(&callee.text, callee.span);
                 for argument in arguments {
+                    if callee.text == "input"
+                        && matches!(
+                            &argument.kind,
+                            ExpressionKind::Identifier(name)
+                                if matches!(
+                                    name.text.as_str(),
+                                    "string" | "int" | "bool" | "char" | "float"
+                                )
+                        )
+                    {
+                        continue;
+                    }
                     self.resolve_expression(argument);
                 }
             }
@@ -263,6 +296,23 @@ impl Resolver {
             .find_map(|scope| scope.get(name))
             .copied();
         if let Some(symbol) = symbol {
+            let declaration = self
+                .resolution
+                .symbol(symbol)
+                .and_then(|item| item.declaration);
+            let visibility = self
+                .resolution
+                .symbol(symbol)
+                .and_then(|item| item.visibility);
+            if visibility == Some(super::ast::Visibility::Private)
+                && declaration.is_some_and(|declaration| declaration.file != span.file)
+            {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("private function `{name}` is not visible outside its module"),
+                    span,
+                ));
+                return;
+            }
             self.resolution.references.insert(span, symbol);
         } else {
             self.diagnostics.push(Diagnostic::error(
@@ -273,11 +323,31 @@ impl Resolver {
     }
 
     fn define_builtin(&mut self, name: &str) {
-        let id = self.push_symbol(name, SymbolKind::Builtin, None);
+        let id = self.push_symbol(name, SymbolKind::Builtin, None, None);
         self.scopes[0].insert(name.to_owned(), id);
     }
 
     fn define(&mut self, name: &str, kind: SymbolKind, span: Span) {
+        self.define_inner(name, kind, span, None);
+    }
+
+    fn define_with_visibility(
+        &mut self,
+        name: &str,
+        kind: SymbolKind,
+        span: Span,
+        visibility: super::ast::Visibility,
+    ) {
+        self.define_inner(name, kind, span, Some(visibility));
+    }
+
+    fn define_inner(
+        &mut self,
+        name: &str,
+        kind: SymbolKind,
+        span: Span,
+        visibility: Option<super::ast::Visibility>,
+    ) {
         let scope = self.scopes.last_mut().expect("resolver always has a scope");
         if scope.contains_key(name) {
             self.diagnostics.push(Diagnostic::error(
@@ -286,18 +356,25 @@ impl Resolver {
             ));
             return;
         }
-        let id = self.push_symbol(name, kind, Some(span));
+        let id = self.push_symbol(name, kind, Some(span), visibility);
         self.scopes.last_mut().unwrap().insert(name.to_owned(), id);
         self.resolution.declarations.insert(span, id);
     }
 
-    fn push_symbol(&mut self, name: &str, kind: SymbolKind, declaration: Option<Span>) -> SymbolId {
+    fn push_symbol(
+        &mut self,
+        name: &str,
+        kind: SymbolKind,
+        declaration: Option<Span>,
+        visibility: Option<super::ast::Visibility>,
+    ) -> SymbolId {
         let id = SymbolId(self.resolution.symbols.len() as u32);
         self.resolution.symbols.push(Symbol {
             id,
             name: name.to_owned(),
             kind,
             declaration,
+            visibility,
         });
         id
     }

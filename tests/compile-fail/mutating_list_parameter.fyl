@@ -1,0 +1,8 @@
+private void append(list int values)
+{
+    values.push(1);
+}
+
+public void main()
+{
+}

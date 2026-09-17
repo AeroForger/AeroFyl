@@ -11,5 +11,7 @@
 - [Arrays](arrays.md)
 - [Lists](lists.md)
 - [Strings](strings.md)
+- [Standard library I/O](standard-library-io.md)
+- [Standard library filesystem](standard-library-fs.md)
 - [Bootstrap Compiler](bootstrap.md)
 - [Current Limitations](limitations.md)

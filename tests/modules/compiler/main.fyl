@@ -1,0 +1,12 @@
+use lexer;
+use parser;
+
+public void main()
+{
+    list Token tokens = scan("name");
+    int count = countTokens(tokens);
+    if (count != 1)
+    {
+        exit(70);
+    }
+}

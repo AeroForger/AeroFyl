@@ -1,3 +1,10 @@
 # Runtime fixtures
 
-Runtime execution coverage currently lives in `bootstrap/rust/src/driver.rs`, including bounds failures, list growth, strings, file reads, and command-line arguments. Add file-based fixtures here when the runner can express expected exit status and input files without duplicating those tests.
+The test runner compiles and executes the fixtures in this directory. It checks
+normal execution of compiler-oriented strings, structs, enums, and growing
+lists; integer wrapping and checked division; command-line mapping; file
+writing; text and binary filesystem round trips; standard output/error, line
+input and typed input failures; explicit conversions; and the observable status
+from `exit(23)`.
+More detailed boundary and failure coverage lives in
+`bootstrap/rust/src/driver.rs`.

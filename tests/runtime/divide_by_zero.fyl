@@ -1,0 +1,4 @@
+public void main()
+{
+    int invalid = 1 / 0;
+}

@@ -1,0 +1,35 @@
+enum TokenKind
+{
+    identifier,
+    integer,
+    eof
+}
+
+struct Token
+{
+    TokenKind kind;
+    string lexeme;
+    int offset;
+}
+
+private bool isDigit(string source, int offset)
+{
+    return source.byte(offset) >= '0' && source.byte(offset) <= '9';
+}
+
+public void main()
+{
+    string source = "42";
+    list Token tokens = [];
+    Token token = Token {
+        kind: TokenKind.integer,
+        lexeme: source.slice(0, source.length),
+        offset: 0
+    };
+    tokens.push(token);
+    bool digit = isDigit(source, 0);
+    char newline = '\n';
+    char tab = '\t';
+    bool escapes = newline != tab;
+    Token result = tokens.pop();
+}

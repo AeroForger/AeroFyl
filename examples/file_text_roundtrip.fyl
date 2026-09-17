@@ -1,0 +1,13 @@
+use std.fs;
+
+public void main(string[] args)
+{
+    string original = "AeroFyl filesystem example\n";
+    writeFile(args[0], original);
+
+    string restored = readFile(args[0]);
+    if (restored != original)
+    {
+        exit(1);
+    }
+}

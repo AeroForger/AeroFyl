@@ -13,6 +13,12 @@ enum State
 State state = State.running;
 ```
 
-Variants are qualified by their enum name. The bootstrap supports equality and inequality between values of the same enum. It assigns zero-based discriminants in declaration order, but that mapping is not a stable language ABI.
+Variants are qualified by their enum name. Variant names must be unique.
+Values copy by value and support equality and inequality with the same enum
+type. Different enum types do not compare. `int(value)` exposes a stable
+zero-based discriminant assigned in declaration order. This source-level
+mapping does not make the in-memory representation a stable external ABI. Enum
+declarations currently have no visibility modifier and are available through
+the loaded import graph.
 
 Payloads, explicit discriminants, unqualified variants, methods, and ordering comparisons are not specified yet.

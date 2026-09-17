@@ -1,0 +1,6 @@
+use std.fs;
+
+public void main()
+{
+    writeFile("output.bin", 42);
+}

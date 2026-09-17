@@ -1,0 +1,24 @@
+use std.fs;
+
+public void main(string[] args)
+{
+    writeFile(args[0], "first");
+    if (!exists(args[0]) || exists(args[1]) || !exists(args[2]))
+    {
+        exit(61);
+    }
+
+    writeFile(args[0], "replacement");
+    string text = readFile(args[0]);
+    if (text != "replacement")
+    {
+        exit(62);
+    }
+
+    writeFile(args[0], "");
+    string empty = readFile(args[0]);
+    if (empty.length != 0)
+    {
+        exit(63);
+    }
+}

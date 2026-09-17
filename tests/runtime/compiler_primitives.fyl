@@ -1,0 +1,34 @@
+enum TokenKind
+{
+    identifier,
+    eof
+}
+
+struct Token
+{
+    TokenKind kind;
+    string lexeme;
+    int offset;
+}
+
+public void main()
+{
+    string source = "name";
+    list Token tokens = [];
+    int index = 0;
+    while (index < 20)
+    {
+        Token token = Token {
+            kind: TokenKind.identifier,
+            lexeme: source.slice(0, source.length),
+            offset: index
+        };
+        tokens.push(token);
+        index = index + 1;
+    }
+    Token last = tokens.pop();
+    if (tokens.length != 19 || last.offset != 19 || last.lexeme != "name" || source.byte(0) != 'n')
+    {
+        exit(70);
+    }
+}

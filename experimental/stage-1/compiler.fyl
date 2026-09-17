@@ -1,0 +1,360 @@
+private bool isDigit(int byte)
+{
+    return byte >= 48 && byte <= 57;
+}
+
+private bool isSpace(int byte)
+{
+    return byte == 32 || byte == 9 || byte == 10 || byte == 13;
+}
+
+private int precedence(int kind)
+{
+    if (kind == 3 || kind == 4)
+    {
+        return 1;
+    }
+    if (kind == 5 || kind == 6)
+    {
+        return 2;
+    }
+    return 0;
+}
+
+private int opcode(int kind)
+{
+    if (kind == 3)
+    {
+        return 2;
+    }
+    if (kind == 4)
+    {
+        return 3;
+    }
+    if (kind == 5)
+    {
+        return 4;
+    }
+    return 5;
+}
+
+public void main(string[] args)
+{
+    int[1] trap = [0];
+    if (args.length != 1)
+    {
+        int failed = trap[1];
+    }
+
+    string source = readFile(args[0]);
+    list int kinds = [];
+    list int values = [];
+    int cursor = 0;
+    bool valid = true;
+
+    while (cursor < source.length)
+    {
+        int byte = source.byte(cursor);
+        if (isSpace(byte))
+        {
+            cursor = cursor + 1;
+        }
+        else
+        {
+            if (isDigit(byte))
+            {
+                int value = 0;
+                while (cursor < source.length && isDigit(source.byte(cursor)))
+                {
+                    value = value * 10 + source.byte(cursor) - 48;
+                    cursor = cursor + 1;
+                }
+                kinds.push(2);
+                values.push(value);
+            }
+            else
+            {
+                if (byte == 43)
+                {
+                    kinds.push(3);
+                    values.push(0);
+                    cursor = cursor + 1;
+                }
+                else
+                {
+                    if (byte == 45)
+                    {
+                        kinds.push(4);
+                        values.push(0);
+                        cursor = cursor + 1;
+                    }
+                    else
+                    {
+                        if (byte == 42)
+                        {
+                            kinds.push(5);
+                            values.push(0);
+                            cursor = cursor + 1;
+                        }
+                        else
+                        {
+                            if (byte == 47)
+                            {
+                                kinds.push(6);
+                                values.push(0);
+                                cursor = cursor + 1;
+                            }
+                            else
+                            {
+                                if (byte == 40)
+                                {
+                                    kinds.push(7);
+                                    values.push(0);
+                                    cursor = cursor + 1;
+                                }
+                                else
+                                {
+                                    if (byte == 41)
+                                    {
+                                        kinds.push(8);
+                                        values.push(0);
+                                        cursor = cursor + 1;
+                                    }
+                                    else
+                                    {
+                                        if (byte == 59)
+                                        {
+                                            kinds.push(9);
+                                            values.push(0);
+                                            cursor = cursor + 1;
+                                        }
+                                        else
+                                        {
+                                            if ((byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122))
+                                            {
+                                                int start = cursor;
+                                                while (cursor < source.length && ((source.byte(cursor) >= 65 && source.byte(cursor) <= 90) || (source.byte(cursor) >= 97 && source.byte(cursor) <= 122)))
+                                                {
+                                                    cursor = cursor + 1;
+                                                }
+                                                string word = source.slice(start, cursor);
+                                                if (word == "return")
+                                                {
+                                                    kinds.push(10);
+                                                    values.push(0);
+                                                }
+                                                else
+                                                {
+                                                    if (word == "expect")
+                                                    {
+                                                        kinds.push(11);
+                                                        values.push(0);
+                                                    }
+                                                    else
+                                                    {
+                                                        valid = false;
+                                                    }
+                                                }
+                                            }
+                                            else
+                                            {
+                                                valid = false;
+                                                cursor = cursor + 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    kinds.push(0);
+    values.push(0);
+
+    list int code = [];
+    list int operands = [];
+    list int operators = [];
+    int token = 0;
+    bool needValue = true;
+
+    if (kinds[token] != 10)
+    {
+        valid = false;
+    }
+    else
+    {
+        token = token + 1;
+    }
+
+    while (valid && kinds[token] != 9)
+    {
+        int kind = kinds[token];
+        if (needValue)
+        {
+            if (kind == 2)
+            {
+                code.push(1);
+                operands.push(values[token]);
+                needValue = false;
+            }
+            else
+            {
+                if (kind == 7)
+                {
+                    operators.push(kind);
+                }
+                else
+                {
+                    valid = false;
+                }
+            }
+        }
+        else
+        {
+            if (kind >= 3 && kind <= 6)
+            {
+                while (operators.length > 0 && operators[operators.length - 1] != 7 && precedence(operators[operators.length - 1]) >= precedence(kind))
+                {
+                    code.push(opcode(operators.pop()));
+                    operands.push(0);
+                }
+                operators.push(kind);
+                needValue = true;
+            }
+            else
+            {
+                if (kind == 8)
+                {
+                    bool foundOpen = false;
+                    while (operators.length > 0 && !foundOpen)
+                    {
+                        int top = operators.pop();
+                        if (top == 7)
+                        {
+                            foundOpen = true;
+                        }
+                        else
+                        {
+                            code.push(opcode(top));
+                            operands.push(0);
+                        }
+                    }
+                    if (!foundOpen)
+                    {
+                        valid = false;
+                    }
+                }
+                else
+                {
+                    valid = false;
+                }
+            }
+        }
+        token = token + 1;
+    }
+
+    if (needValue)
+    {
+        valid = false;
+    }
+    while (operators.length > 0)
+    {
+        int top = operators.pop();
+        if (top == 7)
+        {
+            valid = false;
+        }
+        else
+        {
+            code.push(opcode(top));
+            operands.push(0);
+        }
+    }
+
+    if (kinds[token] != 9)
+    {
+        valid = false;
+    }
+    else
+    {
+        token = token + 1;
+    }
+    if (kinds[token] != 11)
+    {
+        valid = false;
+    }
+    else
+    {
+        token = token + 1;
+    }
+    int expected = 0;
+    if (kinds[token] != 2)
+    {
+        valid = false;
+    }
+    else
+    {
+        expected = values[token];
+        token = token + 1;
+    }
+    if (kinds[token] != 9 || kinds[token + 1] != 0)
+    {
+        valid = false;
+    }
+
+    list int stack = [];
+    int instruction = 0;
+    while (valid && instruction < code.length)
+    {
+        int operation = code[instruction];
+        if (operation == 1)
+        {
+            stack.push(operands[instruction]);
+        }
+        else
+        {
+            if (stack.length < 2)
+            {
+                valid = false;
+            }
+            else
+            {
+                int right = stack.pop();
+                int left = stack.pop();
+                if (operation == 2)
+                {
+                    stack.push(left + right);
+                }
+                if (operation == 3)
+                {
+                    stack.push(left - right);
+                }
+                if (operation == 4)
+                {
+                    stack.push(left * right);
+                }
+                if (operation == 5)
+                {
+                    if (right == 0)
+                    {
+                        valid = false;
+                    }
+                    else
+                    {
+                        stack.push(left / right);
+                    }
+                }
+            }
+        }
+        instruction = instruction + 1;
+    }
+
+    if (!valid || stack.length != 1 || stack[0] != expected)
+    {
+        int failed = trap[1];
+    }
+}
+

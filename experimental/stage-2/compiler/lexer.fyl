@@ -1,0 +1,67 @@
+use token;
+
+private bool isWhitespace(int current)
+{
+    return current == int(' ')
+        || current == int('\n')
+        || current == int('\r')
+        || current == int('\t');
+}
+
+private bool isLetter(int current)
+{
+    return (current >= int('a') && current <= int('z'))
+        || (current >= int('A') && current <= int('Z'))
+        || current == int('_');
+}
+
+private bool isDigit(int current)
+{
+    return current >= int('0') && current <= int('9');
+}
+
+public list Token lex(string source)
+{
+    list Token tokens = [];
+    int offset = 0;
+    int line_count = 1;
+
+    while (offset < source.length)
+    {
+        int current = source.byte(offset);
+
+        if (current == int('\n'))
+        {
+            line_count = line_count + 1;
+        }
+
+        if (isWhitespace(current))
+        {
+            offset = offset + 1;
+            continue;
+        }
+
+        if (isLetter(current))
+        {
+            int start = offset;
+
+            while (
+                offset < source.length
+                && (isLetter(source.byte(offset)) || isDigit(source.byte(offset)))
+            )
+            {
+                offset = offset + 1;
+            }
+
+            string word = source.slice(start, offset);
+
+            println(word);
+
+            continue;
+        }
+
+        offset = offset + 1;
+    }
+
+    return tokens;
+}

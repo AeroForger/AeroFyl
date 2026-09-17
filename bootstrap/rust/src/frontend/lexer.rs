@@ -186,14 +186,40 @@ impl<'source> Lexer<'source> {
 
     fn lex_char(&mut self, start: usize) {
         self.bump();
-        let Some(value) = self.bump() else {
+        let Some(first) = self.bump() else {
             self.diagnostics.push(Diagnostic::error(
                 "unterminated character literal",
                 Span::new(self.file, start, self.offset),
             ));
             return;
         };
-        if value == '\n' || value == '\r' || self.peek() != Some('\'') {
+        let value = if first == '\\' {
+            let Some(escape) = self.bump() else {
+                self.diagnostics.push(Diagnostic::error(
+                    "unterminated character escape",
+                    Span::new(self.file, start, self.offset),
+                ));
+                return;
+            };
+            match escape {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '0' => '\0',
+                '\\' => '\\',
+                '\'' => '\'',
+                _ => {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("unsupported character escape `\\{escape}`"),
+                        Span::new(self.file, start, self.offset),
+                    ));
+                    return;
+                }
+            }
+        } else {
+            first
+        };
+        if (first != '\\' && (value == '\n' || value == '\r')) || self.peek() != Some('\'') {
             while self.peek().is_some_and(|character| {
                 character != '\'' && character != '\n' && character != '\r'
             }) {
@@ -203,7 +229,7 @@ impl<'source> Lexer<'source> {
                 self.bump();
             }
             self.diagnostics.push(Diagnostic::error(
-                "character literals must contain exactly one character; escape syntax is not specified",
+                "character literals must contain exactly one character",
                 Span::new(self.file, start, self.offset),
             ));
             return;
@@ -309,5 +335,21 @@ mod tests {
     #[test]
     fn lexes_unicode_char_literal() {
         assert_eq!(kinds("'λ'"), vec![TokenKind::Char('λ'), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn lexes_required_character_escapes() {
+        assert_eq!(
+            kinds("'\\n' '\\t' '\\r' '\\0' '\\\\' '\\\''"),
+            vec![
+                TokenKind::Char('\n'),
+                TokenKind::Char('\t'),
+                TokenKind::Char('\r'),
+                TokenKind::Char('\0'),
+                TokenKind::Char('\\'),
+                TokenKind::Char('\''),
+                TokenKind::Eof,
+            ]
+        );
     }
 }

@@ -1,0 +1,4 @@
+private int helper()
+{
+    return 1;
+}

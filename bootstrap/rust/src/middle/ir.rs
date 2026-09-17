@@ -66,6 +66,7 @@ pub struct IrBlock {
 #[derive(Clone, Debug, PartialEq)]
 pub enum IrTerminator {
     Return(Option<ValueId>),
+    Exit(ValueId),
     Jump(BlockId),
     Branch {
         condition: ValueId,
@@ -197,6 +198,30 @@ pub enum IrInstructionKind {
         end: ValueId,
     },
     ReadFile(ValueId),
+    ReadBytes(ValueId),
+    WriteFile {
+        path: ValueId,
+        data: ValueId,
+    },
+    WriteBytes {
+        path: ValueId,
+        data: ValueId,
+    },
+    Exists(ValueId),
+    Print {
+        value: ValueId,
+        value_type: Type,
+        stderr: bool,
+        newline: bool,
+    },
+    Input {
+        target: Type,
+    },
+    Convert {
+        value: ValueId,
+        from: Type,
+        to: Type,
+    },
     Copy(ValueId),
     Call {
         function: SymbolId,
@@ -217,6 +242,7 @@ pub enum IrInstructionKind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum IrConstant {
     Integer(String),
+    Byte(String),
     Float(String),
     String(String),
     Char(char),

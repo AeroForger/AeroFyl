@@ -1,0 +1,4 @@
+public void main()
+{
+    byte value = byte(256);
+}

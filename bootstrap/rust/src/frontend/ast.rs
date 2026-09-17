@@ -3,9 +3,16 @@ use super::types::Type;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Module {
+    pub imports: Vec<Import>,
     pub structs: Vec<StructDeclaration>,
     pub enums: Vec<EnumDeclaration>,
     pub functions: Vec<Function>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Import {
+    pub name: Name,
     pub span: Span,
 }
 

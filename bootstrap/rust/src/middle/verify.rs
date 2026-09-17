@@ -580,6 +580,25 @@ fn validate_instructions(
                         IrVerificationErrorKind::UnknownValue(*condition),
                     ),
                 },
+                IrTerminator::Exit(code) => match values.get(code) {
+                    Some(Type::Int) => {}
+                    Some(found) => push_error(
+                        errors,
+                        function,
+                        Some(block.id),
+                        IrVerificationErrorKind::TypeMismatch {
+                            context: "exit code",
+                            expected: Type::Int,
+                            found: found.clone(),
+                        },
+                    ),
+                    None => push_error(
+                        errors,
+                        function,
+                        Some(block.id),
+                        IrVerificationErrorKind::UnknownValue(*code),
+                    ),
+                },
                 IrTerminator::Jump(_) => {}
             }
         }
@@ -1185,6 +1204,181 @@ fn validate_instruction(
                 errors,
             );
         }
+        IrInstructionKind::ReadBytes(path) => {
+            check_value_type(
+                function,
+                block,
+                *path,
+                &Type::String,
+                "readBytes path",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::List(Box::new(Type::Byte)),
+                "readBytes result",
+                errors,
+            );
+        }
+        IrInstructionKind::WriteFile { path, data } => {
+            for (value, context) in [(*path, "writeFile path"), (*data, "writeFile data")] {
+                check_value_type(
+                    function,
+                    block,
+                    value,
+                    &Type::String,
+                    context,
+                    values,
+                    errors,
+                );
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Void,
+                "writeFile result",
+                errors,
+            );
+        }
+        IrInstructionKind::WriteBytes { path, data } => {
+            check_value_type(
+                function,
+                block,
+                *path,
+                &Type::String,
+                "writeBytes path",
+                values,
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *data,
+                &Type::List(Box::new(Type::Byte)),
+                "writeBytes data",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Void,
+                "writeBytes result",
+                errors,
+            );
+        }
+        IrInstructionKind::Exists(path) => {
+            check_value_type(
+                function,
+                block,
+                *path,
+                &Type::String,
+                "exists path",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Bool,
+                "exists result",
+                errors,
+            );
+        }
+        IrInstructionKind::Print {
+            value, value_type, ..
+        } => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                value_type,
+                "std.io output value",
+                values,
+                errors,
+            );
+            if !matches!(
+                value_type,
+                Type::String | Type::Char | Type::Int | Type::Bool
+            ) {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation("unsupported std.io output type"),
+                );
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Void,
+                "std.io output result",
+                errors,
+            );
+        }
+        IrInstructionKind::Input { target } => {
+            if !matches!(target, Type::String | Type::Char | Type::Int | Type::Bool) {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation("unsupported std.io input type"),
+                );
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                target,
+                "std.io input result",
+                errors,
+            );
+        }
+        IrInstructionKind::Convert { value, from, to } => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                from,
+                "conversion operand",
+                values,
+                errors,
+            );
+            let valid = matches!(
+                (from, to),
+                (Type::Int, Type::Int)
+                    | (Type::Char, Type::Char)
+                    | (Type::Char, Type::Int)
+                    | (Type::Byte, Type::Byte)
+                    | (Type::Byte, Type::Int)
+                    | (Type::Enum(_), Type::Int)
+                    | (Type::Int, Type::Char)
+                    | (Type::Int, Type::Byte)
+            );
+            if !valid {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation("invalid explicit conversion"),
+                );
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                to,
+                "conversion result",
+                errors,
+            );
+        }
         IrInstructionKind::Copy(value) => {
             if let Some(ty) = values.get(value) {
                 check_result_type(function, block, result_type, ty, "copy result", errors);
@@ -1495,24 +1689,34 @@ fn validate_binary(
         | BinaryOperator::LessEqual
         | BinaryOperator::Greater
         | BinaryOperator::GreaterEqual => {
-            check_value_type(
-                function,
-                block,
-                left,
-                &Type::Int,
-                "comparison operand",
-                values,
-                errors,
-            );
-            check_value_type(
-                function,
-                block,
-                right,
-                &Type::Int,
-                "comparison operand",
-                values,
-                errors,
-            );
+            let operand_type = values.get(&left);
+            match operand_type {
+                Some(Type::Int | Type::Byte) => {
+                    check_value_type(
+                        function,
+                        block,
+                        right,
+                        operand_type.expect("known comparison operand"),
+                        "comparison operand",
+                        values,
+                        errors,
+                    );
+                }
+                Some(_) => push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation(
+                        "ordering operands must be matching int or byte values",
+                    ),
+                ),
+                None => push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::UnknownValue(left),
+                ),
+            }
             check_result_type(
                 function,
                 block,
@@ -1527,14 +1731,17 @@ fn validate_binary(
             let right_type = values.get(&right);
             if let (Some(left_type), Some(right_type)) = (left_type, right_type) {
                 if left_type != right_type
-                    || !matches!(left_type, Type::Int | Type::Bool | Type::Enum(_))
+                    || !matches!(
+                        left_type,
+                        Type::Int | Type::Byte | Type::Bool | Type::Char | Type::Enum(_)
+                    )
                 {
                     push_error(
                         errors,
                         function,
                         Some(block),
                         IrVerificationErrorKind::InvalidOperation(
-                            "equality operands must be matching int or bool values",
+                            "equality operands must be matching int, byte, bool, char, or enum values",
                         ),
                     );
                 }
@@ -1800,6 +2007,7 @@ fn check_result_type(
 fn constant_type(constant: &IrConstant) -> Type {
     match constant {
         IrConstant::Integer(_) => Type::Int,
+        IrConstant::Byte(_) => Type::Byte,
         IrConstant::Float(_) => Type::Float,
         IrConstant::String(_) => Type::String,
         IrConstant::Char(_) => Type::Char,
@@ -1817,7 +2025,8 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
         | IrInstructionKind::ListPop { .. }
         | IrInstructionKind::ListLength { .. }
         | IrInstructionKind::CliArgsLength { .. }
-        | IrInstructionKind::StringConstant(_) => Vec::new(),
+        | IrInstructionKind::StringConstant(_)
+        | IrInstructionKind::Input { .. } => Vec::new(),
         IrInstructionKind::BindLocal { value, .. } | IrInstructionKind::Copy(value) => vec![*value],
         IrInstructionKind::Call { arguments, .. } | IrInstructionKind::Aggregate(arguments) => {
             arguments.clone()
@@ -1839,10 +2048,23 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
         | IrInstructionKind::ListStore { index, value, .. } => vec![*index, *value],
         IrInstructionKind::ListPush { value, .. } => vec![*value],
         IrInstructionKind::StringConcat { left, right }
-        | IrInstructionKind::StringEqual { left, right, .. } => vec![*left, *right],
-        IrInstructionKind::StringLength(value) | IrInstructionKind::ReadFile(value) => vec![*value],
+        | IrInstructionKind::StringEqual { left, right, .. }
+        | IrInstructionKind::WriteFile {
+            path: left,
+            data: right,
+        }
+        | IrInstructionKind::WriteBytes {
+            path: left,
+            data: right,
+        } => vec![*left, *right],
+        IrInstructionKind::StringLength(value)
+        | IrInstructionKind::ReadFile(value)
+        | IrInstructionKind::ReadBytes(value)
+        | IrInstructionKind::Exists(value)
+        | IrInstructionKind::Print { value, .. } => vec![*value],
         IrInstructionKind::StringByte { value, index } => vec![*value, *index],
         IrInstructionKind::StringSlice { value, start, end } => vec![*value, *start, *end],
+        IrInstructionKind::Convert { value, .. } => vec![*value],
         IrInstructionKind::Unary { operand, .. } => vec![*operand],
         IrInstructionKind::Binary { left, right, .. } => vec![*left, *right],
     }
@@ -1851,6 +2073,7 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
 fn terminator_uses(terminator: &IrTerminator) -> Vec<ValueId> {
     match terminator {
         IrTerminator::Return(Some(value)) => vec![*value],
+        IrTerminator::Exit(value) => vec![*value],
         IrTerminator::Branch { condition, .. } => vec![*condition],
         IrTerminator::Return(None) | IrTerminator::Jump(_) => Vec::new(),
     }
@@ -1864,7 +2087,7 @@ fn terminator_targets(terminator: &IrTerminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        IrTerminator::Return(_) => Vec::new(),
+        IrTerminator::Return(_) | IrTerminator::Exit(_) => Vec::new(),
     }
 }
 
@@ -2573,7 +2796,7 @@ mod tests {
     #[test]
     fn verifies_source_ingestion_ir_types_and_cli_handoff() {
         let valid = lower_source(
-            "private int scan(string path) { string source = readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+            "use std.fs; private int scan(string path) { string source = readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
         );
         assert!(verify_module(&valid).is_ok());
         let mut invalid_cli = valid.clone();
@@ -2633,7 +2856,8 @@ mod tests {
             )
         });
 
-        let mut read = lower_source("private string f() { return readFile(\"file\"); }");
+        let mut read =
+            lower_source("use std.fs; private string f() { return readFile(\"file\"); }");
         let path_value = read.functions[0].blocks[0]
             .instructions
             .iter()

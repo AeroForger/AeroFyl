@@ -1,0 +1,7 @@
+public void main(string[] args)
+{
+    if (args.length != 2 || args[0] != "source.fyl" || args[1] != "output.bin")
+    {
+        exit(69);
+    }
+}
