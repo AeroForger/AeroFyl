@@ -1,0 +1,24 @@
+struct Left
+{
+    int value;
+}
+
+struct Right
+{
+    int value;
+}
+
+private Left wrongReturn()
+{
+    return Right { value: 1 };
+}
+
+private void consume(Left value)
+{
+}
+
+public void main()
+{
+    Right value = Right { value: 1 };
+    consume(value);
+}

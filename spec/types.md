@@ -11,7 +11,9 @@ Known basic type names are:
 - `void`
 - `dynamic`
 
-Named structs and enums are types. Fixed arrays use `T[N]`; lists use `list T`. The bootstrap reserves `string[]` only for the sole parameter of `public void main`.
+Named structs and enums are types. Fixed arrays use `T[N]`; lists use `list T`;
+optional values use `optional T`. The bootstrap reserves `string[]` only for
+the sole parameter of `public void main`.
 
 The bootstrap requires exact type matches except that a character literal may
 be used where an `int` is expected; its integer value is its Unicode scalar
@@ -31,4 +33,4 @@ defined in [conversions.md](conversions.md). Type alignments, a stable ABI, and
 floating-point execution remain unspecified; binary64 remains only the
 reserved bootstrap representation for `float`.
 
-General generics, pointers, references, ownership, and tuple values are not specified yet.
+General generics, user-visible pointers, references, and tuple values are not specified yet.

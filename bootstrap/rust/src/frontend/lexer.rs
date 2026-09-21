@@ -51,10 +51,12 @@ impl<'source> Lexer<'source> {
                 '>' => self.one_or_two('=', TokenKind::GreaterEqual, TokenKind::Greater),
                 '&' if self.peek_next() == Some('&') => self.double(TokenKind::AmpersandAmpersand),
                 '|' if self.peek_next() == Some('|') => self.double(TokenKind::PipePipe),
-                '+' => self.single(TokenKind::Plus),
-                '-' => self.single(TokenKind::Minus),
-                '*' => self.single(TokenKind::Star),
-                '/' => self.single(TokenKind::Slash),
+                '+' => self.one_or_two('=', TokenKind::PlusEqual, TokenKind::Plus),
+                '-' => self.one_or_two('=', TokenKind::MinusEqual, TokenKind::Minus),
+                '*' => self.one_or_two('=', TokenKind::StarEqual, TokenKind::Star),
+                '/' if self.peek_next() == Some('/') => self.lex_line_comment(),
+                '/' if self.peek_next() == Some('*') => self.lex_block_comment(start),
+                '/' => self.one_or_two('=', TokenKind::SlashEqual, TokenKind::Slash),
                 _ => {
                     self.bump();
                     self.diagnostics.push(Diagnostic::error(
@@ -114,6 +116,32 @@ impl<'source> Lexer<'source> {
         }
     }
 
+    fn lex_line_comment(&mut self) {
+        self.bump();
+        self.bump();
+        while self
+            .peek()
+            .is_some_and(|character| character != '\n' && character != '\r')
+        {
+            self.bump();
+        }
+    }
+
+    fn lex_block_comment(&mut self, start: usize) {
+        self.bump();
+        self.bump();
+        while let Some(character) = self.bump() {
+            if character == '*' && self.peek() == Some('/') {
+                self.bump();
+                return;
+            }
+        }
+        self.diagnostics.push(Diagnostic::error(
+            "unterminated block comment; expected `*/`",
+            Span::new(self.file, start, self.offset),
+        ));
+    }
+
     fn lex_identifier(&mut self, start: usize) {
         self.bump();
         while self.peek().is_some_and(is_identifier_continue) {
@@ -161,10 +189,9 @@ impl<'source> Lexer<'source> {
 
     fn lex_string(&mut self, start: usize) {
         self.bump();
-        let contents_start = self.offset;
+        let mut value = String::new();
         while let Some(character) = self.peek() {
             if character == '"' {
-                let value = self.source[contents_start..self.offset].to_owned();
                 self.bump();
                 self.tokens.push(Token::new(
                     TokenKind::String(value),
@@ -175,11 +202,33 @@ impl<'source> Lexer<'source> {
             if character == '\n' || character == '\r' {
                 break;
             }
-            // Escape syntax is not specified. A backslash is therefore ordinary text.
             self.bump();
+            if character != '\\' {
+                value.push(character);
+                continue;
+            }
+            let Some(escape) = self.bump() else {
+                break;
+            };
+            let escaped = match escape {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '0' => '\0',
+                '\\' => '\\',
+                '"' => '"',
+                _ => {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("unsupported string escape `\\{escape}`"),
+                        Span::new(self.file, self.offset - escape.len_utf8() - 1, self.offset),
+                    ));
+                    continue;
+                }
+            };
+            value.push(escaped);
         }
         self.diagnostics.push(Diagnostic::error(
-            "unterminated string literal (escape syntax is not specified)",
+            "unterminated string literal",
             Span::new(self.file, start, self.offset),
         ));
     }
@@ -351,5 +400,33 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn skips_line_and_block_comments() {
+        assert_eq!(
+            kinds("int // line\n/* block\ncomment */ value"),
+            vec![
+                TokenKind::Keyword(Keyword::Int),
+                TokenKind::Identifier("value".into()),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn decodes_required_string_escapes() {
+        assert_eq!(
+            kinds("\"a\\n\\r\\t\\0\\\\\\\"b\""),
+            vec![TokenKind::String("a\n\r\t\0\\\"b".into()), TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn diagnoses_unterminated_block_comments_and_unknown_string_escapes() {
+        let comment = lex(FileId(0), "/* missing").unwrap_err();
+        assert!(comment[0].message.contains("unterminated block comment"));
+        let escape = lex(FileId(0), "\"bad\\q\"").unwrap_err();
+        assert!(escape[0].message.contains("unsupported string escape"));
     }
 }

@@ -1,0 +1,5 @@
+public void main()
+{
+    optional int value = none();
+    int invalid = value.value;
+}

@@ -118,7 +118,7 @@ point.x = point.x + 1;
 
 Every field must appear exactly once in a literal and field types match exactly.
 The bootstrap layout preserves declaration order, aligns the struct to eight
-bytes, and gives each supported `int`, `bool`, `char`, enum, or `string` field
+bytes, and gives each supported scalar, enum, string, collection, or optional field
 one eight-byte slot. Field zero has byte offset zero, field one offset eight,
 and so on. Locals hold pointers to process-lifetime heap records using this one
 reusable layout. This is an internal bootstrap representation, not a permanent
@@ -128,8 +128,11 @@ Whole-struct initialization and assignment require the exact same struct type
 and copy every field slot into a fresh record. Mutating the destination therefore
 does not mutate the source. A copied string field shares its pointer to immutable
 string storage; the bytes do not need to be duplicated for each struct copy.
-Nested struct, list, array, float, dynamic, or other aggregate fields remain
-unsupported, as do struct parameters and returns. There are no references,
+List, array, and optional fields occupy handle slots. Their underlying storage
+is shared when a struct record is copied; no collection clone is implied.
+Supported structs may be passed and returned through explicit record copies.
+Direct nested structs, float, dynamic, and other unsupported fields remain
+rejected. There are no user-visible references,
 aliases, field visibility, user-defined methods, inheritance, interfaces,
 generics, or default/omitted fields.
 
@@ -154,9 +157,8 @@ explicit discriminants, unqualified variants, methods, tagged unions, and enum
 ordering comparisons are unsupported. Enums can be stored in struct fields.
 
 Executable lowering currently supports integer, byte, Boolean, character, enum,
-string, fixed-array, and list values, supported struct values, integer
-arithmetic, and calls. Struct and fixed-array parameters and
-returns are not supported. An executable must have exactly one
+string, fixed-array, list, optional, and supported struct values, integer
+arithmetic, and calls. Fixed-array parameters and returns are not supported. An executable must have exactly one
 root-module `public void main()` or `public void main(string[] args)`. Linux startup calls it
 and then exits with status zero through the x86-64 `exit` syscall.
 `exit(code)` invokes that syscall immediately with the supplied integer; Linux
@@ -179,12 +181,14 @@ Integer-to-enum and unrelated conversions are rejected.
 
 ## Bootstrap arrays, lists, and strings
 
-Fixed arrays are stack-local contiguous eight-byte slots. Their length is part
+Fixed arrays are heap-backed contiguous eight-byte slots behind an internal
+one-word handle. Their length is part
 of the type and must exactly match the literal. Index expressions must have type
 `int`; both indexed reads and writes perform signed runtime bounds checks, so a
 negative index or an index greater than or equal to the length terminates the
 process with bootstrap failure status 70. `.length` is the compile-time array
-length. Whole-array copies and fixed-array function ABI values are unsupported.
+length. This handle representation permits nested arrays and array-valued
+struct fields. Whole-array copies and fixed-array function ABI values are unsupported.
 
 Lists are heap-backed and represented internally by a pointer to a header
 containing eight-byte length, capacity, and element stride fields, followed by
@@ -222,10 +226,9 @@ slice may contain arbitrary bytes rather than valid UTF-8. This operation is
 byte-oriented intentionally for compiler source processing; it does not provide
 character or grapheme slicing.
 
-Array elements remain restricted to `int`, `bool`, `char`, or a payload-free
-enum. Lists additionally accept strings and structs whose fields all satisfy
-the bootstrap layout restrictions above. Lists of lists, lists of arrays, and lists of
-unsupported structs remain rejected. Collection literals require an expected
+Arrays and lists accept supported nested collections, strings, optionals,
+payload-free enums, scalars, and structs whose fields satisfy the bootstrap
+layout restrictions above. Collection literals require an expected
 array/list type; standalone inference remains intentionally unspecified. The
 dependency-free runtime obtains storage directly with Linux `mmap`; it uses no libc, assembler,
 linker, or external compiler.
@@ -274,12 +277,13 @@ ABI, not Aerofyl's final command-line or collection representation.
 ## Bootstrap memory boundary
 
 Scalars and payload-free enums copy by value. Strings are immutable handles and
-may share read-only byte storage. Supported local structs copy every field slot;
-string fields may share immutable storage. Lists have one owner, may be returned
+may share read-only byte storage. Supported structs copy every field slot when
+assigned, passed, or returned; string and collection handle fields share their
+underlying storage. Standalone list locals have one owner and may be returned
 to transfer that owned handle, and are read-only through function parameters.
 List growth may relocate storage and updates the owning local. Fixed arrays are
-stack-local and cannot be copied or passed. Nested aggregate fields and struct
-function ABI values remain unsupported. All heap and file-buffer allocations
+heap-backed handles and cannot be copied or passed as function ABI values.
+Optionals use tagged two-slot heap records. All heap and file-buffer allocations
 live until process exit; the bootstrap performs no reclamation.
 
 The deliberately simple backend gives every parameter, local, and IR temporary
@@ -301,11 +305,12 @@ forward and backward branches with signed rel32 fixups.
 
 Integer return analysis recognizes direct returns and `if`/`else` where both
 branches return. It is deliberately conservative for loops because Aerofyl has
-not specified unreachable-code or infinite-loop rules. There is no `else if`
-shorthand, `for`, `foreach`, `switch`, or compound assignment in this milestone.
+not specified unreachable-code or infinite-loop rules. Chained `else if` and
+`+=`, `-=`, `*=`, and `/=` are supported. There is no `for`, `foreach`, or
+`switch` in this milestone.
 
-A backslash in a string is ordinary text because string escape processing is
-not specified. Character literals contain one Unicode scalar value or one of
+Strings support `\n`, `\r`, `\t`, `\0`, `\\`, and `\"` while preserving
+byte-oriented storage. Character literals contain one Unicode scalar value or one of
 `\n`, `\r`, `\t`, `\0`, `\\`, and `\'`. A character literal used in an `int`
 context contributes its Unicode scalar value, allowing byte-oriented code such
 as `source.byte(i) == '0'` while keeping `char` distinct from `int` elsewhere.
@@ -316,10 +321,9 @@ The following decisions are intentionally not made by the bootstrap:
 
 - the exact identifier alphabet (the lexer currently uses a minimal Unicode
   alphabetic/underscore convention, marked with a source TODO)
-- comment syntax
 - alternate integer spellings
 - floating-point code generation and runtime representation
-- string escapes and additional character escapes
+- additional string and character escapes
 - module paths, aliases, qualification, packages, and `using`
 - tuple value syntax
 - standalone collection inference and the eventual stable collection ABI
@@ -330,8 +334,8 @@ The following decisions are intentionally not made by the bootstrap:
 - project manifest file name and TOML key schema
 
 Unsupported constructs retain their frontend/IR interfaces but executable
-lowering returns structured diagnostics or backend errors. Assignment is a
-statement targeting an existing variable; compound assignments are unsupported.
+lowering returns structured diagnostics or backend errors. Assignment and the
+four arithmetic compound assignments target existing assignable values.
 
 Check a source file without emitting an executable:
 

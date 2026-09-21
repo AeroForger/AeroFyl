@@ -1,3 +1,5 @@
+use std.fs;
+
 private bool isDigit(int byte)
 {
     return byte >= 48 && byte <= 57;
@@ -357,4 +359,3 @@ public void main(string[] args)
         int failed = trap[1];
     }
 }
-

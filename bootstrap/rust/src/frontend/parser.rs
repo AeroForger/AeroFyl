@@ -190,6 +190,13 @@ impl Parser {
                 span: start.join(element.span),
             });
         }
+        if self.consume_keyword(Keyword::Optional) {
+            let element = self.parse_type()?;
+            return Ok(TypeNode {
+                kind: Type::Optional(Box::new(element.kind)),
+                span: start.join(element.span),
+            });
+        }
         if self.consume(&TokenKind::LeftParen) {
             let mut elements = Vec::new();
             if self.at(&TokenKind::RightParen) {
@@ -284,24 +291,7 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Statement, Diagnostic> {
         let start = self.peek().span;
         if self.consume_keyword(Keyword::If) {
-            self.expect(TokenKind::LeftParen, "expected `(` after `if`")?;
-            let condition = self.parse_expression()?;
-            self.expect(TokenKind::RightParen, "expected `)` after `if` condition")?;
-            let then_block = self.parse_block()?;
-            let else_block = if self.consume_keyword(Keyword::Else) {
-                Some(self.parse_block()?)
-            } else {
-                None
-            };
-            let end = else_block.as_ref().unwrap_or(&then_block).span;
-            return Ok(Statement {
-                kind: StatementKind::If {
-                    condition,
-                    then_block,
-                    else_block,
-                },
-                span: start.join(end),
-            });
+            return self.parse_if_statement(start);
         }
         if self.consume_keyword(Keyword::While) {
             self.expect(TokenKind::LeftParen, "expected `(` after `while`")?;
@@ -362,9 +352,34 @@ impl Parser {
             });
         }
         let expression = self.parse_expression()?;
-        if self.consume(&TokenKind::Equal) {
+        let assignment_operator = if self.consume(&TokenKind::Equal) {
+            Some(None)
+        } else if self.consume(&TokenKind::PlusEqual) {
+            Some(Some(BinaryOperator::Add))
+        } else if self.consume(&TokenKind::MinusEqual) {
+            Some(Some(BinaryOperator::Subtract))
+        } else if self.consume(&TokenKind::StarEqual) {
+            Some(Some(BinaryOperator::Multiply))
+        } else if self.consume(&TokenKind::SlashEqual) {
+            Some(Some(BinaryOperator::Divide))
+        } else {
+            None
+        };
+        if let Some(operator) = assignment_operator {
             let value = self.parse_expression()?;
             let end = self.expect(TokenKind::Semicolon, "expected `;` after assignment")?;
+            let value = if let Some(operator) = operator {
+                Expression {
+                    span: expression.span.join(value.span),
+                    kind: ExpressionKind::Binary {
+                        operator,
+                        left: Box::new(expression.clone()),
+                        right: Box::new(value),
+                    },
+                }
+            } else {
+                value
+            };
             return Ok(Statement {
                 kind: StatementKind::Assignment(Assignment {
                     target: expression,
@@ -377,6 +392,36 @@ impl Parser {
         Ok(Statement {
             kind: StatementKind::Expression(expression),
             span: start.join(end.span),
+        })
+    }
+
+    fn parse_if_statement(&mut self, start: Span) -> Result<Statement, Diagnostic> {
+        self.expect(TokenKind::LeftParen, "expected `(` after `if`")?;
+        let condition = self.parse_expression()?;
+        self.expect(TokenKind::RightParen, "expected `)` after `if` condition")?;
+        let then_block = self.parse_block()?;
+        let else_block = if self.consume_keyword(Keyword::Else) {
+            if self.consume_keyword(Keyword::If) {
+                let nested_start = self.tokens[self.current - 1].span;
+                let nested = self.parse_if_statement(nested_start)?;
+                Some(Block {
+                    span: nested.span,
+                    statements: vec![nested],
+                })
+            } else {
+                Some(self.parse_block()?)
+            }
+        } else {
+            None
+        };
+        let end = else_block.as_ref().unwrap_or(&then_block).span;
+        Ok(Statement {
+            kind: StatementKind::If {
+                condition,
+                then_block,
+                else_block,
+            },
+            span: start.join(end),
         })
     }
 
@@ -760,6 +805,7 @@ impl Parser {
             self.peek().kind,
             TokenKind::Keyword(
                 Keyword::List
+                    | Keyword::Optional
                     | Keyword::Int
                     | Keyword::Byte
                     | Keyword::Float
@@ -939,6 +985,39 @@ mod tests {
         assert!(matches!(
             else_block.as_ref().unwrap().statements[1].kind,
             StatementKind::Continue
+        ));
+    }
+
+    #[test]
+    fn parses_else_if_compound_assignment_and_optional_types() {
+        let module = parse_source(
+            "private optional int f(int x) { optional int result = none(); if (x == 1) { x += 1; } else if (x == 2) { x *= 2; } return result; }",
+        );
+        assert_eq!(
+            module.functions[0].return_type.kind,
+            Type::Optional(Box::new(Type::Int))
+        );
+        let StatementKind::If {
+            then_block,
+            else_block,
+            ..
+        } = &module.functions[0].body.statements[1].kind
+        else {
+            panic!("expected if statement");
+        };
+        assert!(matches!(
+            else_block.as_ref().unwrap().statements[0].kind,
+            StatementKind::If { .. }
+        ));
+        let StatementKind::Assignment(assignment) = &then_block.statements[0].kind else {
+            panic!("expected compound assignment to parse as assignment")
+        };
+        assert!(matches!(
+            assignment.value.kind,
+            ExpressionKind::Binary {
+                operator: BinaryOperator::Add,
+                ..
+            }
         ));
     }
 

@@ -24,6 +24,7 @@ pub enum Type {
         length: usize,
     },
     List(Box<Type>),
+    Optional(Box<Type>),
     Tuple(Vec<Type>),
 }
 
@@ -52,6 +53,7 @@ impl fmt::Display for Type {
             Self::Enum(id) => write!(formatter, "enum#{}", id.0),
             Self::Array { element, length } => write!(formatter, "{element}[{length}]"),
             Self::List(element) => write!(formatter, "list {element}"),
+            Self::Optional(element) => write!(formatter, "optional {element}"),
             Self::Tuple(elements) => {
                 formatter.write_str("(")?;
                 for (index, element) in elements.iter().enumerate() {

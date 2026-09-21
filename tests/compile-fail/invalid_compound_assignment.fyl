@@ -1,0 +1,5 @@
+public void main()
+{
+    bool value = true;
+    value += 1;
+}

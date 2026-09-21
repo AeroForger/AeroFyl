@@ -136,37 +136,6 @@ impl FunctionLowerer {
                         },
                         *span,
                     );
-                } else if let HirExpressionKind::ArrayLiteral(values) = &initializer.kind {
-                    let Type::Array { element, length } = ty else {
-                        unreachable!("array literal has array type")
-                    };
-                    let values = values.iter().map(|value| self.expression(value)).collect();
-                    self.emit(
-                        None,
-                        None,
-                        IrInstructionKind::ArrayInit {
-                            local: *symbol,
-                            element_type: (**element).clone(),
-                            length: *length,
-                            values,
-                        },
-                        *span,
-                    );
-                } else if let HirExpressionKind::ListLiteral(values) = &initializer.kind {
-                    let Type::List(element) = ty else {
-                        unreachable!("list literal has list type")
-                    };
-                    let values = values.iter().map(|value| self.expression(value)).collect();
-                    self.emit(
-                        None,
-                        None,
-                        IrInstructionKind::ListInit {
-                            local: *symbol,
-                            element_type: (**element).clone(),
-                            values,
-                        },
-                        *span,
-                    );
                 } else {
                     let value = self.expression(initializer);
                     self.emit(
@@ -217,24 +186,25 @@ impl FunctionLowerer {
                 );
             }
             HirStatement::IndexedAssignment {
-                local,
+                collection,
                 collection_type,
                 index,
                 value,
                 span,
             } => {
+                let collection = self.expression(collection);
                 let index = self.expression(index);
                 let value = self.expression(value);
                 let kind = match collection_type {
                     Type::Array { element, length } => IrInstructionKind::ArrayStore {
-                        local: *local,
+                        collection,
                         element_type: (**element).clone(),
                         length: *length,
                         index,
                         value,
                     },
                     Type::List(element) => IrInstructionKind::ListStore {
-                        local: *local,
+                        collection,
                         element_type: (**element).clone(),
                         index,
                         value,
@@ -242,6 +212,63 @@ impl FunctionLowerer {
                     _ => unreachable!("indexed assignment has collection type"),
                 };
                 self.emit(None, None, kind, *span);
+            }
+            HirStatement::CompoundIndexedAssignment {
+                collection,
+                collection_type,
+                index,
+                operator,
+                value,
+                span,
+            } => {
+                let collection_value = self.expression(collection);
+                let index_value = self.expression(index);
+                let element_type = match collection_type {
+                    Type::Array { element, .. } | Type::List(element) => (**element).clone(),
+                    _ => unreachable!("compound indexed assignment has collection type"),
+                };
+                let load = match collection_type {
+                    Type::Array { element, length } => IrInstructionKind::ArrayLoad {
+                        collection: collection_value,
+                        element_type: (**element).clone(),
+                        length: *length,
+                        index: index_value,
+                    },
+                    Type::List(element) => IrInstructionKind::ListLoad {
+                        collection: collection_value,
+                        element_type: (**element).clone(),
+                        index: index_value,
+                    },
+                    _ => unreachable!("compound indexed assignment has collection type"),
+                };
+                let left = self.emit_value(load, element_type.clone(), *span);
+                let right = self.expression(value);
+                let result = self.emit_value(
+                    IrInstructionKind::Binary {
+                        operator: *operator,
+                        left,
+                        right,
+                    },
+                    element_type.clone(),
+                    *span,
+                );
+                let store = match collection_type {
+                    Type::Array { element, length } => IrInstructionKind::ArrayStore {
+                        collection: collection_value,
+                        element_type: (**element).clone(),
+                        length: *length,
+                        index: index_value,
+                        value: result,
+                    },
+                    Type::List(element) => IrInstructionKind::ListStore {
+                        collection: collection_value,
+                        element_type: (**element).clone(),
+                        index: index_value,
+                        value: result,
+                    },
+                    _ => unreachable!("compound indexed assignment has collection type"),
+                };
+                self.emit(None, None, store, *span);
             }
             HirStatement::Return { value, .. } => {
                 let value = value.as_ref().map(|value| self.expression(value));
@@ -391,8 +418,24 @@ impl FunctionLowerer {
                 let values = values.iter().map(|value| self.expression(value)).collect();
                 IrInstructionKind::Aggregate(values)
             }
-            HirExpressionKind::ArrayLiteral(_) | HirExpressionKind::ListLiteral(_) => {
-                unreachable!("collection literals lower with their local declarations")
+            HirExpressionKind::ArrayLiteral(values) => {
+                let Type::Array { element, length } = &expression.ty else {
+                    unreachable!("array literal has array type")
+                };
+                IrInstructionKind::ArrayValue {
+                    element_type: (**element).clone(),
+                    length: *length,
+                    values: values.iter().map(|value| self.expression(value)).collect(),
+                }
+            }
+            HirExpressionKind::ListLiteral(values) => {
+                let Type::List(element) = &expression.ty else {
+                    unreachable!("list literal has list type")
+                };
+                IrInstructionKind::ListValue {
+                    element_type: (**element).clone(),
+                    values: values.iter().map(|value| self.expression(value)).collect(),
+                }
             }
             HirExpressionKind::StructLiteral { struct_id, fields } => {
                 IrInstructionKind::StructValue {
@@ -409,12 +452,36 @@ impl FunctionLowerer {
                     source: self.expression(source),
                 }
             }
+            HirExpressionKind::OptionalSome { value } => IrInstructionKind::OptionalSome {
+                value: self.expression(value),
+                value_type: value.ty.clone(),
+            },
+            HirExpressionKind::OptionalNone => {
+                let Type::Optional(value_type) = &expression.ty else {
+                    unreachable!("none expression has optional type")
+                };
+                IrInstructionKind::OptionalNone {
+                    value_type: (**value_type).clone(),
+                }
+            }
+            HirExpressionKind::OptionalHasValue { value } => {
+                IrInstructionKind::OptionalHasValue(self.expression(value))
+            }
+            HirExpressionKind::OptionalValue { value } => {
+                let Type::Optional(value_type) = &value.ty else {
+                    unreachable!("optional value receiver has optional type")
+                };
+                IrInstructionKind::OptionalValue {
+                    optional: self.expression(value),
+                    value_type: (**value_type).clone(),
+                }
+            }
             HirExpressionKind::FieldLoad {
-                local,
+                base,
                 struct_id,
                 field,
             } => IrInstructionKind::FieldLoad {
-                local: *local,
+                base: self.expression(base),
                 struct_id: *struct_id,
                 field: *field,
             },
@@ -422,35 +489,35 @@ impl FunctionLowerer {
                 enum_id: *enum_id,
                 variant: *variant,
             },
-            HirExpressionKind::ArrayLoad { local, index } => {
-                let Type::Array { element, length } = self.local_type(*local) else {
+            HirExpressionKind::ArrayLoad { collection, index } => {
+                let Type::Array { element, length } = &collection.ty else {
                     unreachable!("array load local has array type")
                 };
                 IrInstructionKind::ArrayLoad {
-                    local: *local,
-                    element_type: *element,
-                    length,
+                    collection: self.expression(collection),
+                    element_type: (**element).clone(),
+                    length: *length,
                     index: self.expression(index),
                 }
             }
             HirExpressionKind::ArrayLength { length } => IrInstructionKind::ArrayLength(*length),
-            HirExpressionKind::ListLoad { local, index } => {
-                let Type::List(element) = self.local_type(*local) else {
+            HirExpressionKind::ListLoad { collection, index } => {
+                let Type::List(element) = &collection.ty else {
                     unreachable!("list load local has list type")
                 };
                 IrInstructionKind::ListLoad {
-                    local: *local,
-                    element_type: *element,
+                    collection: self.expression(collection),
+                    element_type: (**element).clone(),
                     index: self.expression(index),
                 }
             }
-            HirExpressionKind::ListLength { local } => {
-                let Type::List(element) = self.local_type(*local) else {
+            HirExpressionKind::ListLength { collection } => {
+                let Type::List(element) = &collection.ty else {
                     unreachable!("list length local has list type")
                 };
                 IrInstructionKind::ListLength {
-                    local: *local,
-                    element_type: *element,
+                    collection: self.expression(collection),
+                    element_type: (**element).clone(),
                 }
             }
             HirExpressionKind::CliArgLoad { local, index } => IrInstructionKind::CliArgLoad {
@@ -470,6 +537,32 @@ impl FunctionLowerer {
                     value: self.expression(value),
                 }
             }
+            HirExpressionKind::ListPushField {
+                local,
+                struct_id,
+                field,
+                element_type,
+                value,
+            } => IrInstructionKind::ListPushField {
+                local: *local,
+                struct_id: *struct_id,
+                field: *field,
+                element_type: element_type.clone(),
+                value: self.expression(value),
+            },
+            HirExpressionKind::ListPushIndexed {
+                collection,
+                collection_type,
+                index,
+                element_type,
+                value,
+            } => IrInstructionKind::ListPushIndexed {
+                collection: self.expression(collection),
+                collection_type: collection_type.clone(),
+                index: self.expression(index),
+                element_type: element_type.clone(),
+                value: self.expression(value),
+            },
             HirExpressionKind::ListPop { local } => {
                 let Type::List(element) = self.local_type(*local) else {
                     unreachable!("list pop local has list type")
@@ -477,6 +570,15 @@ impl FunctionLowerer {
                 IrInstructionKind::ListPop {
                     local: *local,
                     element_type: *element,
+                }
+            }
+            HirExpressionKind::ListPopValue { collection } => {
+                let Type::List(element) = &collection.ty else {
+                    unreachable!("list pop receiver has list type")
+                };
+                IrInstructionKind::ListPopValue {
+                    collection: self.expression(collection),
+                    element_type: (**element).clone(),
                 }
             }
             HirExpressionKind::StringLiteral(value) => {
@@ -753,7 +855,7 @@ mod tests {
         assert!(
             instructions
                 .iter()
-                .any(|kind| matches!(kind, IrInstructionKind::ArrayInit { .. }))
+                .any(|kind| matches!(kind, IrInstructionKind::ArrayValue { .. }))
         );
         assert!(
             instructions
@@ -773,7 +875,7 @@ mod tests {
         assert!(
             instructions
                 .iter()
-                .any(|kind| matches!(kind, IrInstructionKind::ListInit { .. }))
+                .any(|kind| matches!(kind, IrInstructionKind::ListValue { .. }))
         );
         assert!(
             instructions

@@ -11,4 +11,10 @@ public int add(int x, int y)
 
 Known visibility values are `public` and `private`. Parameters have explicit types. Calls use the function name followed by parenthesized arguments. Return statements and call-expression statements end with semicolons.
 
-Overloading, variadic functions, default arguments, nested functions, and stable calling conventions are not specified yet. The bootstrap does not lower every parsed type through its executable function ABI.
+Supported structs can be passed and returned. A call receives a copied struct
+record, and a returned local struct is copied before control leaves the
+function. No implicit conversion is performed at either boundary.
+
+Overloading, variadic functions, default arguments, nested functions, and
+stable calling conventions are not specified yet. The bootstrap does not lower
+every parsed type through its executable function ABI.

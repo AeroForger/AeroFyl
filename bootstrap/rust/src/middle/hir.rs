@@ -77,9 +77,17 @@ pub enum HirStatement {
         span: Span,
     },
     IndexedAssignment {
-        local: SymbolId,
+        collection: HirExpression,
         collection_type: Type,
         index: HirExpression,
+        value: HirExpression,
+        span: Span,
+    },
+    CompoundIndexedAssignment {
+        collection: HirExpression,
+        collection_type: Type,
+        index: HirExpression,
+        operator: BinaryOperator,
         value: HirExpression,
         span: Span,
     },
@@ -138,8 +146,18 @@ pub enum HirExpressionKind {
         struct_id: TypeId,
         source: Box<HirExpression>,
     },
+    OptionalSome {
+        value: Box<HirExpression>,
+    },
+    OptionalNone,
+    OptionalHasValue {
+        value: Box<HirExpression>,
+    },
+    OptionalValue {
+        value: Box<HirExpression>,
+    },
     FieldLoad {
-        local: SymbolId,
+        base: Box<HirExpression>,
         struct_id: TypeId,
         field: u32,
     },
@@ -148,18 +166,18 @@ pub enum HirExpressionKind {
         variant: u32,
     },
     ArrayLoad {
-        local: SymbolId,
+        collection: Box<HirExpression>,
         index: Box<HirExpression>,
     },
     ArrayLength {
         length: usize,
     },
     ListLoad {
-        local: SymbolId,
+        collection: Box<HirExpression>,
         index: Box<HirExpression>,
     },
     ListLength {
-        local: SymbolId,
+        collection: Box<HirExpression>,
     },
     CliArgLoad {
         local: SymbolId,
@@ -172,8 +190,25 @@ pub enum HirExpressionKind {
         local: SymbolId,
         value: Box<HirExpression>,
     },
+    ListPushField {
+        local: SymbolId,
+        struct_id: TypeId,
+        field: u32,
+        element_type: Type,
+        value: Box<HirExpression>,
+    },
+    ListPushIndexed {
+        collection: Box<HirExpression>,
+        collection_type: Type,
+        index: Box<HirExpression>,
+        element_type: Type,
+        value: Box<HirExpression>,
+    },
     ListPop {
         local: SymbolId,
+    },
+    ListPopValue {
+        collection: Box<HirExpression>,
     },
     StringLiteral(String),
     StringLength {

@@ -106,8 +106,20 @@ pub enum IrInstructionKind {
         struct_id: TypeId,
         source: ValueId,
     },
+    OptionalSome {
+        value: ValueId,
+        value_type: Type,
+    },
+    OptionalNone {
+        value_type: Type,
+    },
+    OptionalHasValue(ValueId),
+    OptionalValue {
+        optional: ValueId,
+        value_type: Type,
+    },
     FieldLoad {
-        local: SymbolId,
+        base: ValueId,
         struct_id: TypeId,
         field: u32,
     },
@@ -127,14 +139,19 @@ pub enum IrInstructionKind {
         length: usize,
         values: Vec<ValueId>,
     },
+    ArrayValue {
+        element_type: Type,
+        length: usize,
+        values: Vec<ValueId>,
+    },
     ArrayLoad {
-        local: SymbolId,
+        collection: ValueId,
         element_type: Type,
         length: usize,
         index: ValueId,
     },
     ArrayStore {
-        local: SymbolId,
+        collection: ValueId,
         element_type: Type,
         length: usize,
         index: ValueId,
@@ -146,13 +163,17 @@ pub enum IrInstructionKind {
         element_type: Type,
         values: Vec<ValueId>,
     },
+    ListValue {
+        element_type: Type,
+        values: Vec<ValueId>,
+    },
     ListLoad {
-        local: SymbolId,
+        collection: ValueId,
         element_type: Type,
         index: ValueId,
     },
     ListStore {
-        local: SymbolId,
+        collection: ValueId,
         element_type: Type,
         index: ValueId,
         value: ValueId,
@@ -162,12 +183,30 @@ pub enum IrInstructionKind {
         element_type: Type,
         value: ValueId,
     },
+    ListPushField {
+        local: SymbolId,
+        struct_id: TypeId,
+        field: u32,
+        element_type: Type,
+        value: ValueId,
+    },
+    ListPushIndexed {
+        collection: ValueId,
+        collection_type: Type,
+        index: ValueId,
+        element_type: Type,
+        value: ValueId,
+    },
     ListPop {
         local: SymbolId,
         element_type: Type,
     },
+    ListPopValue {
+        collection: ValueId,
+        element_type: Type,
+    },
     ListLength {
-        local: SymbolId,
+        collection: ValueId,
         element_type: Type,
     },
     CliArgLoad {

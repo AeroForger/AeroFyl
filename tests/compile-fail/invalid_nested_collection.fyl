@@ -1,0 +1,4 @@
+public void main()
+{
+    list list int values = [[1], [true]];
+}

@@ -95,6 +95,8 @@ impl Resolver {
         resolver.define_builtin("int");
         resolver.define_builtin("char");
         resolver.define_builtin("byte");
+        resolver.define_builtin("some");
+        resolver.define_builtin("none");
         resolver
     }
 

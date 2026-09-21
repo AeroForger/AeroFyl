@@ -110,12 +110,9 @@ impl Analyzer<'_> {
                             "nested struct fields are not supported by the bootstrap layout",
                             field.ty.span,
                         ));
-                    } else if !matches!(
-                        ty,
-                        Type::Int | Type::Bool | Type::Char | Type::String | Type::Enum(_)
-                    ) {
+                    } else if !self.is_supported_value_type(&ty) {
                         self.diagnostics.push(Diagnostic::error(
-                            "bootstrap struct fields support only int, bool, char, string, and enum types",
+                            "bootstrap struct fields do not support this type",
                             field.ty.span,
                         ));
                     }
@@ -265,7 +262,10 @@ impl Analyzer<'_> {
                 }
                 StatementKind::Return(value) => {
                     let value = match value {
-                        Some(value) => Some(self.check_expression(value, Some(return_type))),
+                        Some(value) => {
+                            let value = self.check_expression(value, Some(return_type));
+                            Some(self.struct_copy_if_symbol(value))
+                        }
                         None => {
                             if *return_type != Type::Void {
                                 self.diagnostics.push(Diagnostic::error(
@@ -431,7 +431,12 @@ impl Analyzer<'_> {
                             .iter()
                             .enumerate()
                             .map(|(index, argument)| {
-                                self.check_expression(argument, parameters.get(index))
+                                let value = self.check_expression(argument, parameters.get(index));
+                                if matches!(value.ty, Type::Struct(_)) {
+                                    self.struct_copy(value)
+                                } else {
+                                    value
+                                }
                             })
                             .collect();
                         (
@@ -443,7 +448,72 @@ impl Analyzer<'_> {
                         )
                     }
                     SymbolKind::Builtin => {
-                        if matches!(
+                        if callee.text == "some" {
+                            let element = match expected {
+                                Some(Type::Optional(element)) => (**element).clone(),
+                                _ => {
+                                    self.diagnostics.push(Diagnostic::error(
+                                        "`some` requires an `optional T` type context",
+                                        expression.span,
+                                    ));
+                                    Type::Dynamic
+                                }
+                            };
+                            if arguments.len() != 1 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`some` expects exactly one argument, found {}",
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let value = arguments
+                                .first()
+                                .map(|argument| self.check_expression(argument, Some(&element)))
+                                .unwrap_or(HirExpression {
+                                    kind: HirExpressionKind::Collection(Vec::new()),
+                                    ty: Type::Dynamic,
+                                    span: expression.span,
+                                });
+                            let value = self.struct_copy_if_symbol(value);
+                            for argument in arguments.iter().skip(1) {
+                                self.check_expression(argument, None);
+                            }
+                            (
+                                HirExpressionKind::OptionalSome {
+                                    value: Box::new(value),
+                                },
+                                Type::Optional(Box::new(element)),
+                            )
+                        } else if callee.text == "none" {
+                            let element = match expected {
+                                Some(Type::Optional(element)) => (**element).clone(),
+                                _ => {
+                                    self.diagnostics.push(Diagnostic::error(
+                                        "`none` requires an `optional T` type context",
+                                        expression.span,
+                                    ));
+                                    Type::Dynamic
+                                }
+                            };
+                            if !arguments.is_empty() {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`none` expects no arguments, found {}",
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                                for argument in arguments {
+                                    self.check_expression(argument, None);
+                                }
+                            }
+                            (
+                                HirExpressionKind::OptionalNone,
+                                Type::Optional(Box::new(element)),
+                            )
+                        } else if matches!(
                             callee.text.as_str(),
                             "print" | "println" | "eprint" | "eprintln"
                         ) {
@@ -1052,13 +1122,14 @@ impl Analyzer<'_> {
             }
             ExpressionKind::Index { base, index } => {
                 let index = self.check_expression(index, Some(&Type::Int));
-                let Some((local, collection_type)) =
-                    self.local_expression_type(base, "indexed access")
-                else {
-                    return HirStatement::Expression(self.check_expression(value, None));
-                };
+                let collection = self.check_expression(base, None);
+                let collection_type = collection.ty.clone();
                 if matches!(collection_type, Type::List(_))
-                    && matches!(self.symbol(local).kind, SymbolKind::Parameter { .. })
+                    && matches!(
+                        &collection.kind,
+                        HirExpressionKind::Symbol(local)
+                            if matches!(self.symbol(*local).kind, SymbolKind::Parameter { .. })
+                    )
                 {
                     self.diagnostics.push(Diagnostic::error(
                         "list parameters are read-only",
@@ -1089,8 +1160,28 @@ impl Analyzer<'_> {
                         Type::Dynamic
                     }
                 };
+                if let ExpressionKind::Binary {
+                    operator,
+                    left,
+                    right: _,
+                } = &value.kind
+                    && left.as_ref() == target
+                {
+                    let checked = self.check_expression(value, Some(&element_type));
+                    let HirExpressionKind::Binary { right, .. } = checked.kind else {
+                        unreachable!("checked compound assignment remains binary")
+                    };
+                    return HirStatement::CompoundIndexedAssignment {
+                        collection,
+                        collection_type,
+                        index,
+                        operator: *operator,
+                        value: *right,
+                        span,
+                    };
+                }
                 HirStatement::IndexedAssignment {
-                    local,
+                    collection,
                     collection_type,
                     index,
                     value: self.check_expression(value, Some(&element_type)),
@@ -1276,7 +1367,11 @@ impl Analyzer<'_> {
             ));
             return (
                 HirExpressionKind::FieldLoad {
-                    local: SymbolId(u32::MAX),
+                    base: Box::new(HirExpression {
+                        kind: HirExpressionKind::Collection(Vec::new()),
+                        ty: Type::Dynamic,
+                        span,
+                    }),
                     struct_id: TypeId(u32::MAX),
                     field: u32::MAX,
                 },
@@ -1285,6 +1380,29 @@ impl Analyzer<'_> {
         }
 
         let checked_base = self.check_expression(base, None);
+        if let Type::Optional(element) = checked_base.ty.clone() {
+            return match name.text.as_str() {
+                "hasValue" => (
+                    HirExpressionKind::OptionalHasValue {
+                        value: Box::new(checked_base),
+                    },
+                    Type::Bool,
+                ),
+                "value" => (
+                    HirExpressionKind::OptionalValue {
+                        value: Box::new(checked_base),
+                    },
+                    *element,
+                ),
+                _ => {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("unknown optional property `{}`", name.text),
+                        name.span,
+                    ));
+                    (HirExpressionKind::Collection(Vec::new()), Type::Dynamic)
+                }
+            };
+        }
         if name.text == "length" {
             match &checked_base.ty {
                 Type::Array { length, .. } => {
@@ -1294,9 +1412,12 @@ impl Analyzer<'_> {
                     );
                 }
                 Type::List(_) => {
-                    if let HirExpressionKind::Symbol(local) = checked_base.kind {
-                        return (HirExpressionKind::ListLength { local }, Type::Int);
-                    }
+                    return (
+                        HirExpressionKind::ListLength {
+                            collection: Box::new(checked_base),
+                        },
+                        Type::Int,
+                    );
                 }
                 Type::String => {
                     return (
@@ -1314,29 +1435,15 @@ impl Analyzer<'_> {
                 _ => {}
             }
         }
-        let Type::Struct(struct_id) = checked_base.ty else {
+        let Type::Struct(struct_id) = checked_base.ty.clone() else {
             self.diagnostics.push(Diagnostic::error(
                 "field access requires a struct value",
                 span,
             ));
             return (
                 HirExpressionKind::FieldLoad {
-                    local: SymbolId(u32::MAX),
+                    base: Box::new(checked_base),
                     struct_id: TypeId(u32::MAX),
-                    field: u32::MAX,
-                },
-                Type::Dynamic,
-            );
-        };
-        let HirExpressionKind::Symbol(local) = checked_base.kind else {
-            self.diagnostics.push(Diagnostic::error(
-                "field access currently requires a local struct variable",
-                span,
-            ));
-            return (
-                HirExpressionKind::FieldLoad {
-                    local: SymbolId(u32::MAX),
-                    struct_id,
                     field: u32::MAX,
                 },
                 Type::Dynamic,
@@ -1349,7 +1456,7 @@ impl Analyzer<'_> {
             ));
             return (
                 HirExpressionKind::FieldLoad {
-                    local,
+                    base: Box::new(checked_base),
                     struct_id,
                     field: u32::MAX,
                 },
@@ -1358,7 +1465,7 @@ impl Analyzer<'_> {
         };
         (
             HirExpressionKind::FieldLoad {
-                local,
+                base: Box::new(checked_base),
                 struct_id,
                 field,
             },
@@ -1373,31 +1480,39 @@ impl Analyzer<'_> {
         span: super::source::Span,
     ) -> (HirExpressionKind, Type) {
         let index = self.check_expression(index, Some(&Type::Int));
-        let Some((local, ty)) = self.local_expression_type(base, "indexed access") else {
-            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
-        };
+        let collection = self.check_expression(base, None);
+        let ty = collection.ty.clone();
         match ty {
             Type::Array { element, .. } => (
                 HirExpressionKind::ArrayLoad {
-                    local,
+                    collection: Box::new(collection),
                     index: Box::new(index),
                 },
                 *element,
             ),
             Type::List(element) => (
                 HirExpressionKind::ListLoad {
-                    local,
+                    collection: Box::new(collection),
                     index: Box::new(index),
                 },
                 *element,
             ),
-            Type::CliArgs => (
-                HirExpressionKind::CliArgLoad {
-                    local,
-                    index: Box::new(index),
-                },
-                Type::String,
-            ),
+            Type::CliArgs => {
+                let HirExpressionKind::Symbol(local) = collection.kind else {
+                    self.diagnostics.push(Diagnostic::error(
+                        "command-line argument access requires the main parameter",
+                        span,
+                    ));
+                    return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+                };
+                (
+                    HirExpressionKind::CliArgLoad {
+                        local,
+                        index: Box::new(index),
+                    },
+                    Type::String,
+                )
+            }
             Type::String => {
                 self.diagnostics.push(Diagnostic::error(
                     "string indexing is not supported; use `.length` for UTF-8 byte length",
@@ -1506,18 +1621,22 @@ impl Analyzer<'_> {
                 Type::String,
             );
         }
-        let Some((local, ty)) = self.local_expression_type(receiver, "list method call") else {
-            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
-        };
-        let Type::List(element) = ty else {
+        let checked_receiver = self.check_expression(receiver, None);
+        let Type::List(element) = checked_receiver.ty.clone() else {
             self.diagnostics.push(Diagnostic::error(
                 "method calls are supported only for `list` values",
                 span,
             ));
             return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
         };
+        let local = match &checked_receiver.kind {
+            HirExpressionKind::Symbol(local) => Some(*local),
+            _ => None,
+        };
         if matches!(method.text.as_str(), "push" | "pop")
-            && matches!(self.symbol(local).kind, SymbolKind::Parameter { .. })
+            && local.is_some_and(|local| {
+                matches!(self.symbol(local).kind, SymbolKind::Parameter { .. })
+            })
         {
             self.diagnostics.push(Diagnostic::error(
                 "list parameters are read-only",
@@ -1540,13 +1659,49 @@ impl Analyzer<'_> {
                         ty: Type::Dynamic,
                         span,
                     });
-                (
-                    HirExpressionKind::ListPush {
-                        local,
+                let kind = match &checked_receiver.kind {
+                    HirExpressionKind::Symbol(local) => HirExpressionKind::ListPush {
+                        local: *local,
                         value: Box::new(value),
                     },
-                    Type::Void,
-                )
+                    HirExpressionKind::FieldLoad {
+                        base,
+                        struct_id,
+                        field,
+                    } => {
+                        let HirExpressionKind::Symbol(local) = base.kind else {
+                            self.diagnostics.push(Diagnostic::error(
+                                "list `push` requires an assignable receiver",
+                                receiver.span,
+                            ));
+                            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+                        };
+                        HirExpressionKind::ListPushField {
+                            local,
+                            struct_id: *struct_id,
+                            field: *field,
+                            element_type: (*element).clone(),
+                            value: Box::new(value),
+                        }
+                    }
+                    HirExpressionKind::ListLoad { collection, index } => {
+                        HirExpressionKind::ListPushIndexed {
+                            collection: collection.clone(),
+                            collection_type: collection.ty.clone(),
+                            index: index.clone(),
+                            element_type: (*element).clone(),
+                            value: Box::new(value),
+                        }
+                    }
+                    _ => {
+                        self.diagnostics.push(Diagnostic::error(
+                            "list `push` requires an assignable receiver",
+                            receiver.span,
+                        ));
+                        HirExpressionKind::Collection(Vec::new())
+                    }
+                };
+                (kind, Type::Void)
             }
             "pop" => {
                 if !arguments.is_empty() {
@@ -1556,7 +1711,14 @@ impl Analyzer<'_> {
                         self.check_expression(argument, None);
                     }
                 }
-                (HirExpressionKind::ListPop { local }, *element)
+                let kind = if let Some(local) = local {
+                    HirExpressionKind::ListPop { local }
+                } else {
+                    HirExpressionKind::ListPopValue {
+                        collection: Box::new(checked_receiver),
+                    }
+                };
+                (kind, *element)
             }
             _ => {
                 self.diagnostics.push(Diagnostic::error(
@@ -1569,36 +1731,6 @@ impl Analyzer<'_> {
                 (HirExpressionKind::Collection(Vec::new()), Type::Dynamic)
             }
         }
-    }
-
-    fn local_expression_type(
-        &mut self,
-        expression: &Expression,
-        operation: &str,
-    ) -> Option<(SymbolId, Type)> {
-        let ExpressionKind::Identifier(name) = &expression.kind else {
-            self.diagnostics.push(Diagnostic::error(
-                format!("{operation} currently requires a local variable"),
-                expression.span,
-            ));
-            self.check_expression(expression, None);
-            return None;
-        };
-        let symbol = self.reference_id(name.span);
-        let kind = self.symbol(symbol).kind.clone();
-        let ty = match kind {
-            SymbolKind::Variable { ty } | SymbolKind::Parameter { ty } => {
-                self.resolve_type(&ty, name.span)
-            }
-            _ => {
-                self.diagnostics.push(Diagnostic::error(
-                    format!("{operation} requires a local variable"),
-                    name.span,
-                ));
-                Type::Dynamic
-            }
-        };
-        Some((symbol, ty))
     }
 
     fn struct_field(&self, id: TypeId, name: &str) -> Option<(u32, Type)> {
@@ -1624,6 +1756,7 @@ impl Analyzer<'_> {
                 length: *length,
             },
             Type::List(element) => Type::List(Box::new(self.resolve_type(element, span))),
+            Type::Optional(element) => Type::Optional(Box::new(self.resolve_type(element, span))),
             Type::Tuple(elements) => Type::Tuple(
                 elements
                     .iter()
@@ -1639,23 +1772,8 @@ impl Analyzer<'_> {
             Type::Array { element, .. } | Type::List(element) => element,
             _ => return,
         };
-        let supported = match (&**element, ty) {
-            (Type::Byte, Type::List(_)) => true,
-            (Type::Int | Type::Bool | Type::Char | Type::String | Type::Enum(_), _) => true,
-            (Type::Struct(id), _) => self
-                .structs
-                .iter()
-                .find(|definition| definition.id == *id)
-                .is_some_and(|definition| {
-                    definition.fields.iter().all(|field| {
-                        matches!(
-                            field.ty,
-                            Type::Int | Type::Bool | Type::Char | Type::String | Type::Enum(_)
-                        )
-                    })
-                }),
-            _ => false,
-        };
+        let supported = self.is_supported_value_type(element)
+            && (!matches!(&**element, Type::Byte) || matches!(ty, Type::List(_)));
         if !supported {
             self.diagnostics.push(Diagnostic::error(
                 format!(
@@ -1672,7 +1790,10 @@ impl Analyzer<'_> {
             return expression;
         };
         let struct_id = *struct_id;
-        if !matches!(&expression.kind, HirExpressionKind::Symbol(_)) {
+        if !matches!(
+            &expression.kind,
+            HirExpressionKind::Symbol(_) | HirExpressionKind::OptionalValue { .. }
+        ) {
             return expression;
         }
         HirExpression {
@@ -1682,6 +1803,51 @@ impl Analyzer<'_> {
                 struct_id,
                 source: Box::new(expression),
             },
+        }
+    }
+
+    fn struct_copy(&self, expression: HirExpression) -> HirExpression {
+        let Type::Struct(struct_id) = expression.ty else {
+            return expression;
+        };
+        HirExpression {
+            span: expression.span,
+            ty: Type::Struct(struct_id),
+            kind: HirExpressionKind::StructCopy {
+                struct_id,
+                source: Box::new(expression),
+            },
+        }
+    }
+
+    fn is_supported_value_type(&self, ty: &Type) -> bool {
+        self.is_supported_value_type_inner(ty, &mut HashSet::new())
+    }
+
+    fn is_supported_value_type_inner(&self, ty: &Type, visiting: &mut HashSet<TypeId>) -> bool {
+        match ty {
+            Type::Int | Type::Byte | Type::Bool | Type::Char | Type::String | Type::Enum(_) => true,
+            Type::Struct(id) => {
+                if !visiting.insert(*id) {
+                    return true;
+                }
+                let supported =
+                    self.structs
+                        .iter()
+                        .find(|definition| definition.id == *id)
+                        .is_none_or(|definition| {
+                            definition.fields.iter().all(|field| {
+                                self.is_supported_value_type_inner(&field.ty, visiting)
+                            })
+                        });
+                visiting.remove(id);
+                supported
+            }
+            Type::Array { element, .. } | Type::List(element) => {
+                self.is_supported_value_type_inner(element, visiting)
+            }
+            Type::Optional(element) => self.is_supported_value_type_inner(element, visiting),
+            _ => false,
         }
     }
 
@@ -2038,12 +2204,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|message| message.contains("struct fields support only"))
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|message| message.contains("collections do not support element type"))
+                .any(|message| message.contains("struct fields do not support"))
         );
     }
 
@@ -2126,6 +2287,36 @@ mod tests {
     }
 
     #[test]
+    fn accepts_stage_one_aggregate_and_optional_interactions() {
+        analyze_source(
+            "struct Data { list list int rows; int[2] fixed; optional string name; } private Data make() { return Data { rows: [[1], [2, 3]], fixed: [4, 5], name: some(\"x\") }; } private int read(Data data) { data.rows[1][0] += 4; if (data.name.hasValue) { return data.fixed[0] + data.rows[1][0]; } else if (false) { return 1; } return 0; } public void main() { Data data = make(); int value = read(data); optional int absent = none(); }",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_optional_context_and_payload_mismatches() {
+        let errors = messages(
+            "private void f() { optional int a = some(\"x\"); int b = none(); optional int c = none(1); }",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expected `int`, found `string`"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("requires an `optional T` type context"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("expects no arguments"))
+        );
+    }
+
+    #[test]
     fn rejects_array_length_and_element_mismatches() {
         let errors = messages("private void f() { int[2] a = [1]; int[1] b = [true]; }");
         assert!(
@@ -2199,15 +2390,16 @@ mod tests {
     #[test]
     fn rejects_unsupported_collection_element_types() {
         let errors = messages(
-            "struct Item { float value; } private void f() { float[1] fs = [1.0]; int[1][1] nested = [[1]]; list Item items = []; }",
+            "struct Item { float value; } private void f() { float[1] fs = [1.0]; list Item items = []; int[1][1] nested = [[1]]; }",
         );
         assert!(
             errors
                 .iter()
                 .filter(|message| message.contains("collections do not support element type"))
                 .count()
-                >= 3
+                >= 2
         );
+        assert!(!errors.iter().any(|message| message.contains("int[1]")));
     }
 
     #[test]

@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 experiment_tmp="$(mktemp -d)"
 trap 'rm -rf "$experiment_tmp"' EXIT
 compiler="$experiment_tmp/aerofyl-stage1-experiment"
 bootstrap=(cargo run --quiet -p aerofyl-bootstrap --)
 
-"${bootstrap[@]}" compile "$repository_root/experimental/compiler.fyl" -o "$compiler"
+"${bootstrap[@]}" compile "$repository_root/experimental/stage-1/compiler.fyl" -o "$compiler"
 
-"$compiler" "$repository_root/experimental/fixtures/precedence.afx"
-"$compiler" "$repository_root/experimental/fixtures/parentheses.afx"
+"$compiler" "$repository_root/experimental/stage-1/fixtures/precedence.afx"
+"$compiler" "$repository_root/experimental/stage-1/fixtures/parentheses.afx"
 
 for rejected in invalid.afx wrong-result.afx; do
     set +e
-    "$compiler" "$repository_root/experimental/fixtures/$rejected"
+    "$compiler" "$repository_root/experimental/stage-1/fixtures/$rejected"
     status=$?
     set -e
     if [[ $status -ne 70 ]]; then

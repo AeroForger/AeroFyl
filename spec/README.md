@@ -5,6 +5,7 @@ This directory records language rules that are explicitly known. It separates la
 - [Lexical structure](lexical.md)
 - [Grammar](grammar.md)
 - [Types](types.md)
+- [Optional values](optionals.md)
 - [Explicit conversions](conversions.md)
 - [Integers](integers.md)
 - [Semantics](semantics.md)

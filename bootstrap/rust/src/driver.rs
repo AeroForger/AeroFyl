@@ -633,6 +633,34 @@ mod tests {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
+    fn executes_nested_collections_struct_abi_and_optionals() {
+        let source = "struct Data { list list int rows; int[2] fixed; optional int extra; } private Data make() { return Data { rows: [[1], [2, 3]], fixed: [4, 5], extra: some(6) }; } private int inspect(Data data) { data.rows[1][0] += 7; data.fixed[1] *= 2; if (data.extra.hasValue) { return data.rows[1][0] + data.fixed[1] + data.extra.value; } else if (false) { return 1; } return 0; } public int test() { Data data = make(); return inspect(data); } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 25);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn compound_index_assignment_evaluates_the_target_once() {
+        let source = "public int test() { list int values = [10]; list int indexes = [0, 0]; values[indexes.pop()] += 5; return values[0] + indexes.length; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 16);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn executes_recursive_struct_collection_layout() {
+        let source = "struct Node { int value; list Node children; } public int test() { Node leaf = Node { value: 7, children: [] }; Node root = Node { value: 1, children: [leaf] }; root.children.push(Node { value: 8, children: [] }); root.children.push(Node { value: 9, children: [] }); root.children.push(Node { value: 10, children: [] }); root.children.push(Node { value: 11, children: [] }); Node last = root.children.pop(); return root.children[0].value + last.value; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 18);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn missing_optional_value_fails_predictably() {
+        let source = "public int test() { optional int value = none(); return value.value; } public void main() {}";
+        assert_eq!(run_helper_as_exit_status(source, "test"), 70);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
     fn executes_enum_acceptance_program() {
         let source = "enum State { idle, running, stopped } public int test() { State state = State.running; if (state == State.running) { return 1; } return 0; } public void main() { int result = test(); }";
         assert_eq!(run_helper_as_exit_status(source, "test"), 1);

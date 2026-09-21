@@ -12,4 +12,8 @@ while (condition)
 }
 ```
 
-`if` and `while` conditions have type `bool` in the bootstrap. `break` and `continue` are accepted only inside a loop. `else if`, `for`, `foreach`, `switch`, and unreachable-code rules are not specified yet.
+`if` and `while` conditions have type `bool` in the bootstrap. `else if` chains
+are parsed as an `if` nested in the preceding `else`, with the same behavior as
+an explicitly nested form. `break` and `continue` are accepted only inside a
+loop. `for`, `foreach`, `switch`, and unreachable-code rules are not specified
+yet.

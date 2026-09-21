@@ -16,6 +16,7 @@ parameter       = type identifier ;
 type            = basic-type
                 | identifier
                 | "list" type
+                | "optional" type
                 | type "[" integer-literal "]"
                 | "string" "[" "]"
                 | "(" type { "," type } ")" ;
@@ -24,10 +25,10 @@ basic-type      = "int" | "byte" | "float" | "bool" | "char"
 
 block           = "{" { statement } "}" ;
 statement       = type identifier "=" expression ";"
-                | assignable "=" expression ";"
+                | assignable ( "=" | "+=" | "-=" | "*=" | "/=" ) expression ";"
                 | "return" [ expression ] ";"
                 | expression ";"
-                | "if" "(" expression ")" block [ "else" block ]
+                | "if" "(" expression ")" block [ "else" ( block | if-statement ) ]
                 | "while" "(" expression ")" block
                 | "break" ";"
                 | "continue" ";" ;
@@ -46,6 +47,7 @@ member          = "." identifier [ "(" [ arguments ] ")" ] ;
 index           = "[" expression "]" ;
 arguments       = expression { "," expression } ;
 assignable      = identifier { member | index } ;
+if-statement    = "if" "(" expression ")" block [ "else" ( block | if-statement ) ] ;
 ```
 
 Primary expressions currently include identifiers, known literals, parenthesized expressions, collection literals, and named struct literals. Qualified enum variants use `EnumName.variant`.
@@ -53,4 +55,6 @@ Primary expressions currently include identifiers, known literals, parenthesized
 `int(expression)` and `char(expression)` use ordinary call-shaped syntax but
 are checked as explicit conversions rather than function calls.
 
-Tuple return types are parsed, but tuple value syntax is not specified yet. `using` remains reserved and has no grammar. An `else if` shorthand is not currently accepted; nested `if` inside `else` can express the same control shape.
+`some(expression)` and `none()` construct optional values in an `optional T`
+type context. Tuple return types are parsed, but tuple value syntax is not
+specified yet. `using` remains reserved and has no grammar.

@@ -33,6 +33,19 @@ done
 "${compiler[@]}" compile "$repository_root/tests/runtime/compiler_primitives.fyl" -o "$runtime_directory/compiler-primitives" >/dev/null
 "$runtime_directory/compiler-primitives"
 
+"${compiler[@]}" compile "$repository_root/tests/runtime/stage1_features.fyl" -o "$runtime_directory/stage1-features" >/dev/null
+"$runtime_directory/stage1-features"
+
+"${compiler[@]}" compile "$repository_root/tests/runtime/optional_missing_value.fyl" -o "$runtime_directory/optional-missing-value" >/dev/null
+set +e
+"$runtime_directory/optional-missing-value"
+status=$?
+set -e
+if [[ $status -ne 70 ]]; then
+    printf 'expected missing optional value access to fail with status 70, got %s\n' "$status" >&2
+    exit 1
+fi
+
 "${compiler[@]}" compile "$repository_root/tests/runtime/integer_boundaries.fyl" -o "$runtime_directory/integer-boundaries" >/dev/null
 "$runtime_directory/integer-boundaries"
 

@@ -8,4 +8,8 @@ int[4] nums = [1, 2, 3, 4];
 
 The literal element count must match the declared length in the bootstrap. Indexes have type `int`; indexed reads, indexed writes, and `.length` are supported. Runtime bounds checks terminate with the defined failure status 70.
 
-Whole-array copying, array type inference, multidimensional arrays, supported element types beyond the bootstrap subset, and language-level bounds failure behavior are not specified yet.
+Arrays may contain supported arrays, lists, structs, optionals, and scalar
+values. Nested indexing is supported. The bootstrap represents an array value
+as an owned process-lifetime handle so it can be stored in a struct or another
+collection. Whole-array copying, array type inference, array parameters and
+returns, reclamation, and a stable representation remain unspecified.

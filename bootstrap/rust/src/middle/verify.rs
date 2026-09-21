@@ -240,7 +240,15 @@ pub fn verify_module(module: &IrModule) -> Result<VerifiedIrModule<'_>, Vec<IrVe
             validate_known_type(&field.ty, &structs, &enums, None, &mut errors);
             if !matches!(
                 field.ty,
-                Type::Int | Type::Bool | Type::Char | Type::String | Type::Enum(_)
+                Type::Int
+                    | Type::Byte
+                    | Type::Bool
+                    | Type::Char
+                    | Type::String
+                    | Type::Enum(_)
+                    | Type::Array { .. }
+                    | Type::List(_)
+                    | Type::Optional(_)
             ) {
                 errors.push(module_error(IrVerificationErrorKind::InvalidOperation(
                     "struct field has an unsupported bootstrap layout",
@@ -693,19 +701,89 @@ fn validate_instruction(
                 errors,
             );
         }
-        IrInstructionKind::FieldLoad {
-            local,
-            struct_id,
-            field,
-        } => validate_field_operation(
-            &context,
-            *local,
-            *struct_id,
-            *field,
-            None,
+        IrInstructionKind::OptionalSome { value, value_type } => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                value_type,
+                "optional value",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Optional(Box::new(value_type.clone())),
+                "some result",
+                errors,
+            );
+        }
+        IrInstructionKind::OptionalNone { value_type } => check_result_type(
+            function,
+            block,
             result_type,
+            &Type::Optional(Box::new(value_type.clone())),
+            "none result",
             errors,
         ),
+        IrInstructionKind::OptionalHasValue(optional) => {
+            if !matches!(values.get(optional), Some(Type::Optional(_))) {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation("hasValue requires an optional"),
+                );
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Bool,
+                "hasValue result",
+                errors,
+            );
+        }
+        IrInstructionKind::OptionalValue {
+            optional,
+            value_type,
+        } => {
+            check_value_type(
+                function,
+                block,
+                *optional,
+                &Type::Optional(Box::new(value_type.clone())),
+                "optional value receiver",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                value_type,
+                "optional value result",
+                errors,
+            );
+        }
+        IrInstructionKind::FieldLoad {
+            base,
+            struct_id,
+            field,
+        } => {
+            check_value_type(
+                function,
+                block,
+                *base,
+                &Type::Struct(*struct_id),
+                "field load base",
+                values,
+                errors,
+            );
+            validate_field_metadata(&context, *struct_id, *field, None, result_type, errors);
+        }
         IrInstructionKind::FieldStore {
             local,
             struct_id,
@@ -785,19 +863,61 @@ fn validate_instruction(
                 );
             }
         }
+        IrInstructionKind::ArrayValue {
+            element_type,
+            length,
+            values: items,
+        } => {
+            let array_type = Type::Array {
+                element: Box::new(element_type.clone()),
+                length: *length,
+            };
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &array_type,
+                "array value",
+                errors,
+            );
+            if items.len() != *length {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation(
+                        "array value length does not match array type",
+                    ),
+                );
+            }
+            for value in items {
+                check_value_type(
+                    function,
+                    block,
+                    *value,
+                    element_type,
+                    "array value",
+                    values,
+                    errors,
+                );
+            }
+        }
         IrInstructionKind::ArrayLoad {
-            local,
+            collection,
             element_type,
             length,
             index,
         } => {
-            check_collection_local(
-                &context,
-                *local,
-                Type::Array {
+            check_value_type(
+                function,
+                block,
+                *collection,
+                &Type::Array {
                     element: Box::new(element_type.clone()),
                     length: *length,
                 },
+                "array load collection",
+                values,
                 errors,
             );
             check_value_type(
@@ -819,19 +939,22 @@ fn validate_instruction(
             );
         }
         IrInstructionKind::ArrayStore {
-            local,
+            collection,
             element_type,
             length,
             index,
             value,
         } => {
-            check_collection_local(
-                &context,
-                *local,
-                Type::Array {
+            check_value_type(
+                function,
+                block,
+                *collection,
+                &Type::Array {
                     element: Box::new(element_type.clone()),
                     length: *length,
                 },
+                "array store collection",
+                values,
                 errors,
             );
             check_value_type(
@@ -884,15 +1007,42 @@ fn validate_instruction(
                 );
             }
         }
+        IrInstructionKind::ListValue {
+            element_type,
+            values: items,
+        } => {
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::List(Box::new(element_type.clone())),
+                "list value",
+                errors,
+            );
+            for value in items {
+                check_value_type(
+                    function,
+                    block,
+                    *value,
+                    element_type,
+                    "list value",
+                    values,
+                    errors,
+                );
+            }
+        }
         IrInstructionKind::ListLoad {
-            local,
+            collection,
             element_type,
             index,
         } => {
-            check_collection_local(
-                &context,
-                *local,
-                Type::List(Box::new(element_type.clone())),
+            check_value_type(
+                function,
+                block,
+                *collection,
+                &Type::List(Box::new(element_type.clone())),
+                "list load collection",
+                values,
                 errors,
             );
             check_value_type(
@@ -914,15 +1064,18 @@ fn validate_instruction(
             );
         }
         IrInstructionKind::ListStore {
-            local,
+            collection,
             element_type,
             index,
             value,
         } => {
-            check_collection_local(
-                &context,
-                *local,
-                Type::List(Box::new(element_type.clone())),
+            check_value_type(
+                function,
+                block,
+                *collection,
+                &Type::List(Box::new(element_type.clone())),
+                "list store collection",
+                values,
                 errors,
             );
             check_value_type(
@@ -973,6 +1126,116 @@ fn validate_instruction(
                 errors,
             );
         }
+        IrInstructionKind::ListPushField {
+            local,
+            struct_id,
+            field,
+            element_type,
+            value,
+        } => {
+            check_local_type(&context, *local, &Type::Struct(*struct_id), errors);
+            let expected = Type::List(Box::new(element_type.clone()));
+            match structs
+                .get(struct_id)
+                .and_then(|definition| definition.fields.get(*field as usize))
+            {
+                Some(metadata) if metadata.ty == expected => {}
+                Some(metadata) => push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::TypeMismatch {
+                        context: "list push field",
+                        expected,
+                        found: metadata.ty.clone(),
+                    },
+                ),
+                None => push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidField {
+                        struct_id: *struct_id,
+                        field: *field,
+                    },
+                ),
+            }
+            check_value_type(
+                function,
+                block,
+                *value,
+                element_type,
+                "list push",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Void,
+                "list push",
+                errors,
+            );
+        }
+        IrInstructionKind::ListPushIndexed {
+            collection,
+            collection_type,
+            index,
+            element_type,
+            value,
+        } => {
+            check_value_type(
+                function,
+                block,
+                *collection,
+                collection_type,
+                "nested list push collection",
+                values,
+                errors,
+            );
+            let nested = Type::List(Box::new(element_type.clone()));
+            let valid_collection = match collection_type {
+                Type::List(element) | Type::Array { element, .. } => **element == nested,
+                _ => false,
+            };
+            if !valid_collection {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation(
+                        "nested list push requires a collection of lists",
+                    ),
+                );
+            }
+            check_value_type(
+                function,
+                block,
+                *index,
+                &Type::Int,
+                "list index",
+                values,
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *value,
+                element_type,
+                "list push",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Void,
+                "list push",
+                errors,
+            );
+        }
         IrInstructionKind::ListPop {
             local,
             element_type,
@@ -992,14 +1255,39 @@ fn validate_instruction(
                 errors,
             );
         }
-        IrInstructionKind::ListLength {
-            local,
+        IrInstructionKind::ListPopValue {
+            collection,
             element_type,
         } => {
-            check_collection_local(
-                &context,
-                *local,
-                Type::List(Box::new(element_type.clone())),
+            check_value_type(
+                function,
+                block,
+                *collection,
+                &Type::List(Box::new(element_type.clone())),
+                "list pop collection",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                element_type,
+                "list pop",
+                errors,
+            );
+        }
+        IrInstructionKind::ListLength {
+            collection,
+            element_type,
+        } => {
+            check_value_type(
+                function,
+                block,
+                *collection,
+                &Type::List(Box::new(element_type.clone())),
+                "list length collection",
+                values,
                 errors,
             );
             check_result_type(
@@ -1566,6 +1854,17 @@ fn validate_field_operation(
     errors: &mut Vec<IrVerificationError>,
 ) {
     check_local_type(context, local, &Type::Struct(struct_id), errors);
+    validate_field_metadata(context, struct_id, field, stored_value, result, errors);
+}
+
+fn validate_field_metadata(
+    context: &InstructionContext<'_>,
+    struct_id: TypeId,
+    field: u32,
+    stored_value: Option<ValueId>,
+    result: Option<&Type>,
+    errors: &mut Vec<IrVerificationError>,
+) {
     let Some(definition) = context.structs.get(&struct_id) else {
         push_error(
             errors,
@@ -2019,12 +2318,11 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
     match kind {
         IrInstructionKind::Constant(_)
         | IrInstructionKind::LoadLocal(_)
-        | IrInstructionKind::FieldLoad { .. }
         | IrInstructionKind::EnumConstant { .. }
         | IrInstructionKind::ArrayLength(_)
         | IrInstructionKind::ListPop { .. }
-        | IrInstructionKind::ListLength { .. }
         | IrInstructionKind::CliArgsLength { .. }
+        | IrInstructionKind::OptionalNone { .. }
         | IrInstructionKind::StringConstant(_)
         | IrInstructionKind::Input { .. } => Vec::new(),
         IrInstructionKind::BindLocal { value, .. } | IrInstructionKind::Copy(value) => vec![*value],
@@ -2035,18 +2333,47 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
         | IrInstructionKind::StructValue { fields, .. } => {
             fields.iter().map(|(_, value)| *value).collect()
         }
+        IrInstructionKind::FieldLoad { base, .. } => vec![*base],
         IrInstructionKind::FieldStore { value, .. } => vec![*value],
         IrInstructionKind::AggregateCopy { source, .. } => vec![*source],
+        IrInstructionKind::OptionalSome { value, .. } => vec![*value],
+        IrInstructionKind::OptionalHasValue(value) => vec![*value],
+        IrInstructionKind::OptionalValue { optional, .. } => vec![*optional],
         IrInstructionKind::ArrayInit { values, .. }
-        | IrInstructionKind::ListInit { values, .. } => values.clone(),
-        IrInstructionKind::ArrayLoad { index, .. }
-        | IrInstructionKind::ListLoad { index, .. }
-        | IrInstructionKind::CliArgLoad { index, .. } => {
-            vec![*index]
+        | IrInstructionKind::ListInit { values, .. }
+        | IrInstructionKind::ArrayValue { values, .. }
+        | IrInstructionKind::ListValue { values, .. } => values.clone(),
+        IrInstructionKind::ArrayLoad {
+            collection, index, ..
         }
-        IrInstructionKind::ArrayStore { index, value, .. }
-        | IrInstructionKind::ListStore { index, value, .. } => vec![*index, *value],
-        IrInstructionKind::ListPush { value, .. } => vec![*value],
+        | IrInstructionKind::ListLoad {
+            collection, index, ..
+        } => vec![*collection, *index],
+        IrInstructionKind::CliArgLoad { index, .. } => vec![*index],
+        IrInstructionKind::ArrayStore {
+            collection,
+            index,
+            value,
+            ..
+        }
+        | IrInstructionKind::ListStore {
+            collection,
+            index,
+            value,
+            ..
+        } => {
+            vec![*collection, *index, *value]
+        }
+        IrInstructionKind::ListPush { value, .. }
+        | IrInstructionKind::ListPushField { value, .. } => vec![*value],
+        IrInstructionKind::ListPushIndexed {
+            collection,
+            index,
+            value,
+            ..
+        } => vec![*collection, *index, *value],
+        IrInstructionKind::ListPopValue { collection, .. } => vec![*collection],
+        IrInstructionKind::ListLength { collection, .. } => vec![*collection],
         IrInstructionKind::StringConcat { left, right }
         | IrInstructionKind::StringEqual { left, right, .. }
         | IrInstructionKind::WriteFile {
@@ -2162,7 +2489,7 @@ fn validate_known_type(
         Type::Struct(id) => structs.contains_key(id),
         Type::Enum(id) => enums.contains_key(id),
         Type::Named(_) => false,
-        Type::Array { element, .. } | Type::List(element) => {
+        Type::Array { element, .. } | Type::List(element) | Type::Optional(element) => {
             validate_known_type(element, structs, enums, function, errors);
             true
         }
@@ -2734,11 +3061,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_aggregate_layout_metadata() {
+    fn accepts_collection_struct_field_layout_metadata_and_rejects_float() {
         let mut module = lower_source(
-            "struct Token { int line; } private void f() { Token value = Token { line: 1 }; }",
+            "struct Token { list int values; } private void f() { Token value = Token { values: [1] }; }",
         );
-        module.structs[0].fields[0].ty = Type::List(Box::new(Type::Int));
+        assert!(verify_module(&module).is_ok());
+        module.structs[0].fields[0].ty = Type::Float;
         assert_has_error(
             &module,
             |kind| matches!(kind, IrVerificationErrorKind::InvalidOperation(message) if message.contains("unsupported bootstrap layout")),
@@ -2770,9 +3098,9 @@ mod tests {
             .blocks
             .iter_mut()
             .flat_map(|block| &mut block.instructions)
-            .find(|instruction| matches!(instruction.kind, IrInstructionKind::ListInit { .. }))
+            .find(|instruction| matches!(instruction.kind, IrInstructionKind::ListValue { .. }))
             .unwrap();
-        let IrInstructionKind::ListInit { element_type, .. } = &mut init.kind else {
+        let IrInstructionKind::ListValue { element_type, .. } = &mut init.kind else {
             unreachable!()
         };
         *element_type = Type::Bool;

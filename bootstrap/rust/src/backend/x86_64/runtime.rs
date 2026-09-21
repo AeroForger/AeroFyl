@@ -34,6 +34,7 @@ pub const READ_BYTES: SymbolId = SymbolId(u32::MAX - 25);
 pub const WRITE_BYTES: SymbolId = SymbolId(u32::MAX - 26);
 pub const EXISTS: SymbolId = SymbolId(u32::MAX - 27);
 pub const FS_ERROR: SymbolId = SymbolId(u32::MAX - 28);
+pub const OPTIONAL_VALUE: SymbolId = SymbolId(u32::MAX - 29);
 
 pub fn functions_for(roots: &HashSet<SymbolId>) -> Vec<MachineFunction> {
     let functions = vec![
@@ -66,6 +67,7 @@ pub fn functions_for(roots: &HashSet<SymbolId>) -> Vec<MachineFunction> {
         write_bytes(),
         exists(),
         fs_error(),
+        optional_value(),
     ];
     let runtime_symbols: HashSet<_> = functions.iter().map(|function| function.symbol).collect();
     let mut reachable = HashSet::new();
@@ -91,6 +93,40 @@ pub fn functions_for(roots: &HashSet<SymbolId>) -> Vec<MachineFunction> {
         .into_iter()
         .filter(|function| reachable.contains(&function.symbol))
         .collect()
+}
+
+fn optional_value() -> MachineFunction {
+    MachineFunction {
+        symbol: OPTIONAL_VALUE,
+        name: "__aerofyl_optional_value".into(),
+        instructions: vec![
+            Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rdi,
+                displacement: 0,
+            },
+            Instruction::MoveImmediate64 {
+                destination: Register::Rcx,
+                value: 0,
+            },
+            Instruction::Compare {
+                left: Register::Rax,
+                right: Register::Rcx,
+            },
+            Instruction::JumpIf {
+                condition: Condition::NotEqual,
+                target: BlockId(1),
+            },
+            Instruction::ExitFailure,
+            Instruction::Label(BlockId(1)),
+            Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rdi,
+                displacement: 8,
+            },
+            Instruction::Return,
+        ],
+    }
 }
 
 fn increment(register: Register) -> [Instruction; 2] {
@@ -214,11 +250,16 @@ fn list_load() -> MachineFunction {
                 condition: Condition::GreaterEqual,
                 target: BlockId(1),
             },
+            Instruction::Load64 {
+                destination: Register::R10,
+                base: Register::Rdi,
+                displacement: 24,
+            },
             Instruction::IndexedLoad64 {
                 destination: Register::Rax,
-                base: Register::Rdi,
+                base: Register::R10,
                 index: Register::Rsi,
-                displacement: 24,
+                displacement: 0,
             },
             Instruction::Return,
             Instruction::Label(BlockId(1)),
@@ -257,10 +298,15 @@ fn list_store() -> MachineFunction {
                 condition: Condition::GreaterEqual,
                 target: BlockId(1),
             },
-            Instruction::IndexedStore64 {
+            Instruction::Load64 {
+                destination: Register::R10,
                 base: Register::Rdi,
-                index: Register::Rsi,
                 displacement: 24,
+            },
+            Instruction::IndexedStore64 {
+                base: Register::R10,
+                index: Register::Rsi,
+                displacement: 0,
                 source: Register::Rdx,
             },
             Instruction::MoveImmediate64 {
@@ -456,11 +502,16 @@ fn list_pop() -> MachineFunction {
                 displacement: 0,
                 source: Register::Rcx,
             },
+            Instruction::Load64 {
+                destination: Register::R10,
+                base: Register::Rdi,
+                displacement: 24,
+            },
             Instruction::IndexedLoad64 {
                 destination: Register::Rax,
-                base: Register::Rdi,
+                base: Register::R10,
                 index: Register::Rcx,
-                displacement: 24,
+                displacement: 0,
             },
             Instruction::Return,
             Instruction::Label(BlockId(1)),

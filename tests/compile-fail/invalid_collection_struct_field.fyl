@@ -1,0 +1,13 @@
+struct Values
+{
+    list int items;
+    int[1] fixed;
+}
+
+public void main()
+{
+    Values values = Values {
+        items: [true],
+        fixed: [false]
+    };
+}

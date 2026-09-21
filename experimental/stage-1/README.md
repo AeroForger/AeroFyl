@@ -19,11 +19,9 @@ exit with the bootstrap runtime failure status (70).
 Run the experiment from the repository root:
 
 ```bash
-./experimental/test.sh
+./experimental/stage-1/test.sh
 ```
 
 This is deliberately isolated from `compiler/`: it is evidence that Stage 1 can
-start, not the permanent compiler architecture. The current bootstrap has no
-write-file or diagnostic-output primitive, so this prototype compiles to an
+start, not the permanent compiler architecture. This prototype compiles to an
 in-memory bytecode list and reports success or failure through its exit status.
-

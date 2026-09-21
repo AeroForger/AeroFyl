@@ -1,0 +1,6 @@
+public void main()
+{
+    if (false) {
+    } else if (1) {
+    }
+}
