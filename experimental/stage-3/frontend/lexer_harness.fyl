@@ -3,6 +3,7 @@ use std.io;
 
 public void main() {
     list Token tokens = lex("lexer_fixture.fyl");
+    list Token malformed = lex("lexer_malformed_fixture.fyl");
 
 /*
     int i = 0;
@@ -15,6 +16,9 @@ public void main() {
     }
 */
     if (tokens.length != 49) {
+        exit(70);
+    }
+    if (malformed.length != 1 || !malformed[0].kind.is(TokenKind.Eof)) {
         exit(70);
     }
 

@@ -1,6 +1,6 @@
-use std.io;
 use token;
 use source;
+use diagnostics;
 
 private bool isWhitespace(int current) {
     return current == int(' ')
@@ -33,7 +33,7 @@ private Token makeToken(TokenKind kind, Source source, int start, int end) {
         span: span(source, start, end)
     };
 }
-
+//Thinking of moving this to token.fyl
 private TokenKind keywordOrIdentifier(string word) {
     if (word == "public") { return TokenKind.Keyword(Keyword.Public); }
     if (word == "private") { return TokenKind.Keyword(Keyword.Private); }
@@ -91,9 +91,6 @@ public list Token lex(string path) {
             }
             string word = source.slice(start, offset);
             TokenKind kind = keywordOrIdentifier(word);
-            if (kind.is(TokenKind.Keyword)) {
-                println(word);
-            }
             tokens.push(makeToken(kind, s, start, offset));
             continue;
         }
@@ -123,54 +120,93 @@ public list Token lex(string path) {
             }
             continue;
         }
+
         //multi line comment :D
         if (current == int('/') && offset + 1 < source.length && source.byte(offset + 1) == int('*')) {
             offset = offset + 2;
+
             while (offset + 1 < source.length
                 && !(source.byte(offset) == int('*') && source.byte(offset + 1) == int('/'))) {
                 offset = offset + 1;
             }
-            if (offset + 1 < source.length) {
-                offset = offset + 2;
+
+            if (offset + 1 >= source.length) {
+                Diagnostic diagnostic = error(LexicalError, "couldn't find closing */ at ", span(s, start, offset));
+                continue;
             }
+
+            offset = offset + 2;
             continue;
         }
+
         //escapes
         if (current == int('"')) {
             offset = offset + 1;
             string value = "";
             bool valid = true;
-            while (offset < source.length && source.byte(offset) != int('"')
-                && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) {
+            bool closed = false;
+
+            while (offset < source.length
+                && source.byte(offset) != int('\n')
+                && source.byte(offset) != int('\r')) {
+
+                if (source.byte(offset) == int('"')) {
+                    closed = true;
+                    offset = offset + 1;
+                    break;
+                }
+
                 if (source.byte(offset) == int('\\') && offset + 1 < source.length) {
                     offset = offset + 1;
                     int escape = source.byte(offset);
+
                     if (escape == int('n')) { value = value + "\n"; }
                     else if (escape == int('r')) { value = value + "\r"; }
                     else if (escape == int('t')) { value = value + "\t"; }
                     else if (escape == int('0')) { value = value + "\0"; }
                     else if (escape == int('\\')) { value = value + "\\"; }
                     else if (escape == int('"')) { value = value + "\""; }
-                    else { valid = false; }
+                    else {
+                        valid = false;
+                    }
+
                     offset = offset + 1;
                 } else {
                     value = value + source.slice(offset, offset + 1);
                     offset = offset + 1;
                 }
             }
-            if (valid && offset < source.length && source.byte(offset) == int('"')) {
-                offset = offset + 1;
+
+            if (!closed) {
+                Diagnostic diagnostic = error(LexicalError, "Couldnt find closing qoute", span(s, start, offset));
+            } else if (!valid) {
+                Diagnostic diagnostic = error(LexicalError, "malfored string", span(s, start, offset));
+            } else {
                 tokens.push(makeToken(TokenKind.String(value), s, start, offset));
             }
+
             continue;
         }
 
-        if (current == int('\'') && offset + 2 < source.length) {
+        if (current == int('\'')) {
             offset = offset + 1;
+            if (offset >= source.length
+                || source.byte(offset) == int('\n')
+                || source.byte(offset) == int('\r')) {
+                Diagnostic diagnostic = error(LexicalError, "unterminated char literal", span(s, start, offset))
+                continue;
+            }
+
             int value = source.byte(offset);
-            bool valid = value != int('\n') && value != int('\r');
-            if (value == int('\\') && offset + 1 < source.length) {
+            bool valid = true;
+            if (value == int('\\')) {
                 offset = offset + 1;
+                if (offset >= source.length
+                    || source.byte(offset) == int('\n')
+                    || source.byte(offset) == int('\r')) {
+                    Diagnostic diagnostic = error(LexicalError, "unterminated char escape at", span(s, start, offset))
+                    continue;
+                }
                 value = source.byte(offset);
                 if (value == int('n')) { value = int('\n'); }
                 else if (value == int('r')) { value = int('\r'); }
@@ -182,6 +218,20 @@ public list Token lex(string path) {
             if (valid && offset < source.length && source.byte(offset) == int('\'')) {
                 offset = offset + 1;
                 tokens.push(makeToken(TokenKind.Char(char(value)), s, start, offset));
+                continue;
+            }
+
+            while (offset < source.length
+                && source.byte(offset) != int('\'')
+                && source.byte(offset) != int('\n')
+                && source.byte(offset) != int('\r')) {
+                offset = offset + 1;
+            }
+            if (offset < source.length && source.byte(offset) == int('\'')) {
+                offset = offset + 1;
+                Diagnostic diagnostic = error(LexicalError, "malformed char literal", span(s, start, offset))
+            } else {
+                Diagnostic diagnostic = error(LexicalError, "unterminated char literal at", span(s, start, offset))
             }
             continue;
         }
@@ -230,7 +280,10 @@ public list Token lex(string path) {
             if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.SlashEqual, s, start, start + 2)); offset = offset + 1; }
             else { tokens.push(makeToken(TokenKind.Slash, s, start, start + 1)); }
         }
-        offset = offset + 1;
+        else{
+            Diagnostic diagnostic = error(LexicalError, "unexpected char", span(s, start, offset));
+            offset = offset + 1;
+        }
     }
     tokens.push(makeToken(TokenKind.Eof, s, offset, offset));
     return tokens;

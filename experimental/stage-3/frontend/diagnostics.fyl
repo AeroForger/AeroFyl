@@ -3,10 +3,60 @@
 use source;
 
 public enum DiagnosticLevel {
-    Error,
-    Warning,
+    Error(ErrorType),
+    Warning(WarningType),
     Note,
 }
+public enum ErrorType {
+    SyntaxError,
+    LexicalError,
+    TypeError,
+    ReferenceError,
+    CompilationError,
+    
+    RuntimeError,
+    NullPointerError,
+    IndexOutOfBoundsError,
+    DivisionByZeroError,
+    StackOverflowError,
+    OutOfMemoryError,
+    
+    LogicError,
+    SemanticError,
+    
+    FileReadError,
+    FileWriteError,
+    
+    DeadlockError,
+    RaceConditionError,
+
+    ValidationError,
+}
+public enum WarningType {
+    DeprecationWarning,
+    UnusedVariableWarning,
+    UnusedImportWarning,
+    DeadCodeWarning,
+    MagicNumberWarning,
+    
+    UncheckedCastWarning,
+    RawTypesWarning,
+    NullabilityWarning,
+    
+    StyleWarning,
+    NamingConventionWarning,
+    MissingOverrideWarning,
+    SerialVersionUIDWarning,
+    
+    SecurityWarning,
+    InsecureCryptoWarning,
+    HardcodedCredentialWarning,
+    
+    ConcurrencyWarning,
+    ThreadSafetyWarning,
+    VolatileUsageWarning
+}
+
 
 public struct Diagnostic {
     DiagnosticLevel level;
@@ -14,10 +64,23 @@ public struct Diagnostic {
     Span span;
 }
 
-public Diagnostic error(string message, Span span)
-{
+public Diagnostic error(ErrorType error, string message, Span span) {
     return Diagnostic {
-        level: DiagnosticLevel.Error,
+        level: DiagnosticLevel.Error(error),
+        message: message,
+        span: span
+    };
+}
+public Diagnostic warning(WarningType warning, string message, Span span){
+    return Diagnostic {
+        level: DiagnosticLevel.Warning(warning),
+        message: message,
+        span: span
+    };
+}
+public Diagnostic note(string message, Span span) {
+    return Diagnostic {
+        level: DiagnosticLevel.Note,
         message: message,
         span: span
     };
