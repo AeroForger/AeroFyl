@@ -1,3 +1,4 @@
+use std.io;
 use token;
 use source;
 
@@ -89,7 +90,11 @@ public list Token lex(string path) {
                 offset = offset + 1;
             }
             string word = source.slice(start, offset);
-            tokens.push(makeToken(keywordOrIdentifier(word), s, start, offset));
+            TokenKind kind = keywordOrIdentifier(word);
+            if (kind.is(TokenKind.Keyword)) {
+                println(word);
+            }
+            tokens.push(makeToken(kind, s, start, offset));
             continue;
         }
 

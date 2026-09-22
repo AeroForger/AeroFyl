@@ -1,7 +1,19 @@
 use lexer;
+use std.io;
 
 public void main() {
-    list Token tokens = lex("experimental/stage-3/frontend/lexer_fixture.fyl");
+    list Token tokens = lex("lexer_fixture.fyl");
+
+/*
+    int i = 0;
+    while (i < tokens.length) {
+        print(tokens[i].span.start);
+        print(",");
+        println(tokens[i].span.end);
+
+        i += 1;
+    }
+*/
     if (tokens.length != 49) {
         exit(70);
     }
