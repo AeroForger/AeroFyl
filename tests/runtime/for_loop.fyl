@@ -1,0 +1,19 @@
+use std.io;
+
+public void main()
+{
+    int total = 0;
+    for (int i = 0; i < 6; i += 1)
+    {
+        if (i == 2)
+        {
+            continue;
+        }
+        if (i == 5)
+        {
+            break;
+        }
+        total += i;
+    }
+    println(total);
+}

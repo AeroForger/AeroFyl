@@ -206,6 +206,8 @@ fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
             | Type::Struct(_)
             | Type::List(_)
             | Type::Optional(_)
+            | Type::Ref(_)
+            | Type::Array { .. }
             | Type::Void
     ) {
         return Err(BackendError::UnsupportedType {
@@ -226,6 +228,8 @@ fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
                 | Type::Struct(_)
                 | Type::List(_)
                 | Type::Optional(_)
+                | Type::Ref(_)
+                | Type::Array { .. }
         ) {
             return Err(BackendError::UnsupportedType {
                 function: function.name.clone(),
@@ -246,6 +250,7 @@ fn validate_signature(function: &IrFunction) -> Result<(), BackendError> {
                 | Type::Array { .. }
                 | Type::List(_)
                 | Type::Optional(_)
+                | Type::Ref(_)
                 | Type::CliArgs
         ) {
             return Err(BackendError::UnsupportedType {
@@ -604,6 +609,48 @@ fn lower_instruction(
             output.push(Instruction::Call(runtime::OPTIONAL_VALUE));
             store_result(instruction, slots, output)?;
         }
+        IrInstructionKind::Reference { value, .. } => {
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rdi,
+                value: 8,
+            });
+            output.push(Instruction::Call(runtime::ALLOC));
+            output.push(Instruction::MoveRegister {
+                destination: Register::R11,
+                source: Register::Rax,
+            });
+            load_value(output, slots, *value, Register::Rax)?;
+            output.push(Instruction::Store64 {
+                base: Register::R11,
+                displacement: 0,
+                source: Register::Rax,
+            });
+            output.push(Instruction::MoveRegister {
+                destination: Register::Rax,
+                source: Register::R11,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::ReferenceValue { reference, .. } => {
+            load_value(output, slots, *reference, Register::Rax)?;
+            output.push(Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rax,
+                displacement: 0,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::ReferenceStore {
+            reference, value, ..
+        } => {
+            load_value(output, slots, *reference, Register::Rax)?;
+            load_value(output, slots, *value, Register::Rcx)?;
+            output.push(Instruction::Store64 {
+                base: Register::Rax,
+                displacement: 0,
+                source: Register::Rcx,
+            });
+        }
         IrInstructionKind::FieldLoad {
             base,
             struct_id,
@@ -643,6 +690,73 @@ fn lower_instruction(
                 destination: Register::Rax,
                 value: u64::from(*variant),
             });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::EnumValue {
+            variant, payload, ..
+        } => {
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rdi,
+                value: 16,
+            });
+            output.push(Instruction::Call(runtime::ALLOC));
+            output.push(Instruction::MoveRegister {
+                destination: Register::R11,
+                source: Register::Rax,
+            });
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rax,
+                value: u64::from(*variant),
+            });
+            output.push(Instruction::Store64 {
+                base: Register::R11,
+                displacement: 0,
+                source: Register::Rax,
+            });
+            if let Some(payload) = payload {
+                load_value(output, slots, *payload, Register::Rax)?;
+            } else {
+                output.push(Instruction::MoveImmediate64 {
+                    destination: Register::Rax,
+                    value: 0,
+                });
+            }
+            output.push(Instruction::Store64 {
+                base: Register::R11,
+                displacement: 8,
+                source: Register::Rax,
+            });
+            output.push(Instruction::MoveRegister {
+                destination: Register::Rax,
+                source: Register::R11,
+            });
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::EnumIs { value, variant, .. } => {
+            load_value(output, slots, *value, Register::Rax)?;
+            output.push(Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rax,
+                displacement: 0,
+            });
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rcx,
+                value: u64::from(*variant),
+            });
+            output.push(Instruction::Compare {
+                left: Register::Rax,
+                right: Register::Rcx,
+            });
+            output.push(Instruction::MaterializeCondition(Condition::Equal));
+            store_result(instruction, slots, output)?;
+        }
+        IrInstructionKind::EnumPayload { value, variant, .. } => {
+            load_value(output, slots, *value, Register::Rdi)?;
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rsi,
+                value: u64::from(*variant),
+            });
+            output.push(Instruction::Call(runtime::ENUM_PAYLOAD));
             store_result(instruction, slots, output)?;
         }
         IrInstructionKind::ArrayInit { local, values, .. } => {

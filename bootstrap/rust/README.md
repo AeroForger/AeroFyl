@@ -118,7 +118,8 @@ point.x = point.x + 1;
 
 Every field must appear exactly once in a literal and field types match exactly.
 The bootstrap layout preserves declaration order, aligns the struct to eight
-bytes, and gives each supported scalar, enum, string, collection, or optional field
+bytes, and gives each supported scalar, enum, string, collection, reference,
+nested struct, or optional field
 one eight-byte slot. Field zero has byte offset zero, field one offset eight,
 and so on. Locals hold pointers to process-lifetime heap records using this one
 reusable layout. This is an internal bootstrap representation, not a permanent
@@ -128,15 +129,17 @@ Whole-struct initialization and assignment require the exact same struct type
 and copy every field slot into a fresh record. Mutating the destination therefore
 does not mutate the source. A copied string field shares its pointer to immutable
 string storage; the bytes do not need to be duplicated for each struct copy.
-List, array, and optional fields occupy handle slots. Their underlying storage
+List, array, reference, nested-struct, and optional fields occupy handle slots. Their underlying storage
 is shared when a struct record is copied; no collection clone is implied.
 Supported structs may be passed and returned through explicit record copies.
-Direct nested structs, float, dynamic, and other unsupported fields remain
-rejected. There are no user-visible references,
-aliases, field visibility, user-defined methods, inheritance, interfaces,
+Direct recursive value cycles, float, dynamic, and other unsupported fields
+remain rejected. Recursive edges use explicit non-null `ref T` values created
+with `reference(value)` and accessed or mutated through `.value`; nullability is
+`optional ref T`. There is no pointer arithmetic, manual reclamation, borrow
+checker, field visibility, user-defined methods, inheritance, interfaces,
 generics, or default/omitted fields.
 
-Enums are payload-free and use qualified values:
+Enums use qualified values and may carry one typed payload per variant:
 
 ```fyl
 enum State
@@ -150,15 +153,20 @@ State state = State.running;
 bool active = state != State.idle;
 ```
 
-The x86-64 bootstrap represents each enum as one eight-byte integer slot.
+The x86-64 bootstrap represents each payload-free enum as one eight-byte integer slot.
 Variants receive zero-based discriminants in declaration order, which are
-observable through `int(value)`. The memory layout is not a stable external ABI. Enum payloads,
-explicit discriminants, unqualified variants, methods, tagged unions, and enum
-ordering comparisons are unsupported. Enums can be stored in struct fields.
+observable through `int(value)`. An enum with payload variants uses a two-slot
+tagged allocation. `value.is(Enum.Variant)` discriminates it, and
+`value.payload(Enum.Variant)` checks the tag before returning the exact payload
+type. Mismatched extraction exits with status 70. The memory layout is not a
+stable external ABI. Explicit discriminants, unqualified variants,
+payload-enum equality, and enum ordering comparisons are unsupported. Enums can
+be stored in struct fields.
 
 Executable lowering currently supports integer, byte, Boolean, character, enum,
-string, fixed-array, list, optional, and supported struct values, integer
-arithmetic, and calls. Fixed-array parameters and returns are not supported. An executable must have exactly one
+string, fixed-array, list, reference, optional, payload-enum, and supported
+struct values, integer arithmetic, and calls. Fixed-array handles may be passed
+and returned. An executable must have exactly one
 root-module `public void main()` or `public void main(string[] args)`. Linux startup calls it
 and then exits with status zero through the x86-64 `exit` syscall.
 `exit(code)` invokes that syscall immediately with the supplied integer; Linux

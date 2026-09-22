@@ -228,10 +228,17 @@ pub fn verify_module(module: &IrModule) -> Result<VerifiedIrModule<'_>, Vec<IrVe
         }
         let mut names = HashSet::new();
         for variant in &item.variants {
-            if !names.insert(variant) {
+            if !names.insert(&variant.name) {
                 errors.push(module_error(IrVerificationErrorKind::InvalidOperation(
                     "enum metadata contains duplicate variant names",
                 )));
+            }
+        }
+    }
+    for item in &module.enums {
+        for variant in &item.variants {
+            if let Some(payload) = &variant.payload {
+                validate_known_type(payload, &structs, &enums, None, &mut errors);
             }
         }
     }
@@ -245,10 +252,12 @@ pub fn verify_module(module: &IrModule) -> Result<VerifiedIrModule<'_>, Vec<IrVe
                     | Type::Bool
                     | Type::Char
                     | Type::String
+                    | Type::Struct(_)
                     | Type::Enum(_)
                     | Type::Array { .. }
                     | Type::List(_)
                     | Type::Optional(_)
+                    | Type::Ref(_)
             ) {
                 errors.push(module_error(IrVerificationErrorKind::InvalidOperation(
                     "struct field has an unsupported bootstrap layout",
@@ -457,6 +466,7 @@ fn collect_definitions(
                     | IrInstructionKind::ArrayStore { .. }
                     | IrInstructionKind::ListInit { .. }
                     | IrInstructionKind::ListStore { .. }
+                    | IrInstructionKind::ReferenceStore { .. }
             );
             match (
                 instruction.result,
@@ -768,6 +778,81 @@ fn validate_instruction(
                 errors,
             );
         }
+        IrInstructionKind::Reference { value, value_type } => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                value_type,
+                "reference value",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Ref(Box::new(value_type.clone())),
+                "reference result",
+                errors,
+            );
+        }
+        IrInstructionKind::ReferenceValue {
+            reference,
+            value_type,
+        } => {
+            check_value_type(
+                function,
+                block,
+                *reference,
+                &Type::Ref(Box::new(value_type.clone())),
+                "reference receiver",
+                values,
+                errors,
+            );
+            check_result_type(
+                function,
+                block,
+                result_type,
+                value_type,
+                "dereference result",
+                errors,
+            );
+        }
+        IrInstructionKind::ReferenceStore {
+            reference,
+            value,
+            value_type,
+        } => {
+            check_value_type(
+                function,
+                block,
+                *reference,
+                &Type::Ref(Box::new(value_type.clone())),
+                "reference store receiver",
+                values,
+                errors,
+            );
+            check_value_type(
+                function,
+                block,
+                *value,
+                value_type,
+                "reference store value",
+                values,
+                errors,
+            );
+            if result_type.is_some() {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation(
+                        "reference store cannot produce a value",
+                    ),
+                );
+            }
+        }
         IrInstructionKind::FieldLoad {
             base,
             struct_id,
@@ -823,6 +908,122 @@ fn validate_instruction(
                 result_type,
                 &Type::Enum(*enum_id),
                 "enum constant result",
+                errors,
+            );
+        }
+        IrInstructionKind::EnumValue {
+            enum_id,
+            variant,
+            payload,
+        } => {
+            let expected_payload = enums
+                .get(enum_id)
+                .and_then(|definition| definition.variants.get(*variant as usize))
+                .and_then(|variant| variant.payload.as_ref());
+            match (expected_payload, payload) {
+                (Some(expected), Some(value)) => check_value_type(
+                    function,
+                    block,
+                    *value,
+                    expected,
+                    "enum payload",
+                    values,
+                    errors,
+                ),
+                (None, None)
+                    if enums.get(enum_id).is_some_and(|definition| {
+                        (*variant as usize) < definition.variants.len()
+                    }) => {}
+                _ => push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation(
+                        "enum payload does not match variant declaration",
+                    ),
+                ),
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Enum(*enum_id),
+                "enum value result",
+                errors,
+            );
+        }
+        IrInstructionKind::EnumIs {
+            value,
+            enum_id,
+            variant,
+        } => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                &Type::Enum(*enum_id),
+                "enum discrimination value",
+                values,
+                errors,
+            );
+            if !enums
+                .get(enum_id)
+                .is_some_and(|definition| (*variant as usize) < definition.variants.len())
+            {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidEnumVariant {
+                        enum_id: *enum_id,
+                        variant: *variant,
+                    },
+                );
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                &Type::Bool,
+                "enum discrimination result",
+                errors,
+            );
+        }
+        IrInstructionKind::EnumPayload {
+            value,
+            enum_id,
+            variant,
+            payload_type,
+        } => {
+            check_value_type(
+                function,
+                block,
+                *value,
+                &Type::Enum(*enum_id),
+                "enum payload value",
+                values,
+                errors,
+            );
+            let expected = enums
+                .get(enum_id)
+                .and_then(|definition| definition.variants.get(*variant as usize))
+                .and_then(|variant| variant.payload.as_ref());
+            if expected != Some(payload_type) {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation(
+                        "enum payload extraction type does not match metadata",
+                    ),
+                );
+            }
+            check_result_type(
+                function,
+                block,
+                result_type,
+                payload_type,
+                "enum payload result",
                 errors,
             );
         }
@@ -2339,6 +2540,15 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
         IrInstructionKind::OptionalSome { value, .. } => vec![*value],
         IrInstructionKind::OptionalHasValue(value) => vec![*value],
         IrInstructionKind::OptionalValue { optional, .. } => vec![*optional],
+        IrInstructionKind::Reference { value, .. } => vec![*value],
+        IrInstructionKind::ReferenceValue { reference, .. } => vec![*reference],
+        IrInstructionKind::ReferenceStore {
+            reference, value, ..
+        } => vec![*reference, *value],
+        IrInstructionKind::EnumValue { payload, .. } => payload.iter().copied().collect(),
+        IrInstructionKind::EnumIs { value, .. } | IrInstructionKind::EnumPayload { value, .. } => {
+            vec![*value]
+        }
         IrInstructionKind::ArrayInit { values, .. }
         | IrInstructionKind::ListInit { values, .. }
         | IrInstructionKind::ArrayValue { values, .. }
@@ -2489,7 +2699,10 @@ fn validate_known_type(
         Type::Struct(id) => structs.contains_key(id),
         Type::Enum(id) => enums.contains_key(id),
         Type::Named(_) => false,
-        Type::Array { element, .. } | Type::List(element) | Type::Optional(element) => {
+        Type::Array { element, .. }
+        | Type::List(element)
+        | Type::Optional(element)
+        | Type::Ref(element) => {
             validate_known_type(element, structs, enums, function, errors);
             true
         }

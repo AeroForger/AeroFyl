@@ -97,6 +97,7 @@ impl Resolver {
         resolver.define_builtin("byte");
         resolver.define_builtin("some");
         resolver.define_builtin("none");
+        resolver.define_builtin("reference");
         resolver
     }
 
@@ -126,7 +127,10 @@ impl Resolver {
             );
         }
         for declaration in &module.enums {
-            self.check_member_names(declaration.variants.iter(), "enum variant");
+            self.check_member_names(
+                declaration.variants.iter().map(|variant| &variant.name),
+                "enum variant",
+            );
         }
         for function in &module.functions {
             self.define_with_visibility(
@@ -171,44 +175,61 @@ impl Resolver {
             self.scopes.push(HashMap::new());
         }
         for statement in &block.statements {
-            match &statement.kind {
-                StatementKind::Variable(variable) => {
-                    self.resolve_expression(&variable.initializer);
-                    self.define(
-                        &variable.name.text,
-                        SymbolKind::Variable {
-                            ty: variable.ty.kind.clone(),
-                        },
-                        variable.name.span,
-                    );
-                }
-                StatementKind::Assignment(assignment) => {
-                    self.resolve_expression(&assignment.target);
-                    self.resolve_expression(&assignment.value);
-                }
-                StatementKind::Return(Some(value)) | StatementKind::Expression(value) => {
-                    self.resolve_expression(value);
-                }
-                StatementKind::If {
-                    condition,
-                    then_block,
-                    else_block,
-                } => {
-                    self.resolve_expression(condition);
-                    self.resolve_block(then_block, true);
-                    if let Some(else_block) = else_block {
-                        self.resolve_block(else_block, true);
-                    }
-                }
-                StatementKind::While { condition, body } => {
-                    self.resolve_expression(condition);
-                    self.resolve_block(body, true);
-                }
-                StatementKind::Return(None) | StatementKind::Break | StatementKind::Continue => {}
-            }
+            self.resolve_statement(statement, nested);
         }
         if nested {
             self.scopes.pop();
+        }
+    }
+
+    fn resolve_statement(&mut self, statement: &super::ast::Statement, _nested: bool) {
+        match &statement.kind {
+            StatementKind::Variable(variable) => {
+                self.resolve_expression(&variable.initializer);
+                self.define(
+                    &variable.name.text,
+                    SymbolKind::Variable {
+                        ty: variable.ty.kind.clone(),
+                    },
+                    variable.name.span,
+                );
+            }
+            StatementKind::Assignment(assignment) => {
+                self.resolve_expression(&assignment.target);
+                self.resolve_expression(&assignment.value);
+            }
+            StatementKind::Return(Some(value)) | StatementKind::Expression(value) => {
+                self.resolve_expression(value);
+            }
+            StatementKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.resolve_expression(condition);
+                self.resolve_block(then_block, true);
+                if let Some(else_block) = else_block {
+                    self.resolve_block(else_block, true);
+                }
+            }
+            StatementKind::While { condition, body } => {
+                self.resolve_expression(condition);
+                self.resolve_block(body, true);
+            }
+            StatementKind::For {
+                initializer,
+                condition,
+                increment,
+                body,
+            } => {
+                self.scopes.push(HashMap::new());
+                self.resolve_statement(initializer, false);
+                self.resolve_expression(condition);
+                self.resolve_statement(increment, false);
+                self.resolve_block(body, true);
+                self.scopes.pop();
+            }
+            StatementKind::Return(None) | StatementKind::Break | StatementKind::Continue => {}
         }
     }
 
@@ -265,7 +286,12 @@ impl Resolver {
                 arguments,
                 ..
             } => {
-                self.resolve_expression(receiver);
+                if !matches!(
+                    &receiver.kind,
+                    ExpressionKind::Identifier(name) if self.type_names.contains_key(&name.text)
+                ) {
+                    self.resolve_expression(receiver);
+                }
                 for argument in arguments {
                     self.resolve_expression(argument);
                 }

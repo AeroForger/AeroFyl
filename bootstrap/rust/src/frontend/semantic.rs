@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use super::ast::{Expression, ExpressionKind, Literal, Module, StatementKind, Visibility};
+use super::ast::{
+    Expression, ExpressionKind, Literal, Module, Statement, StatementKind, Visibility,
+};
 use super::diagnostics::Diagnostic;
 use super::resolution::{Resolution, SymbolId, SymbolKind, resolve};
 use super::types::{Type, TypeId};
@@ -105,12 +107,7 @@ impl Analyzer<'_> {
                 .enumerate()
                 .map(|(index, field)| {
                     let ty = self.resolve_type(&field.ty.kind, field.ty.span);
-                    if matches!(ty, Type::Struct(_)) {
-                        self.diagnostics.push(Diagnostic::error(
-                            "nested struct fields are not supported by the bootstrap layout",
-                            field.ty.span,
-                        ));
-                    } else if !self.is_supported_value_type(&ty) {
+                    if !self.is_supported_value_type(&ty) {
                         self.diagnostics.push(Diagnostic::error(
                             "bootstrap struct fields do not support this type",
                             field.ty.span,
@@ -133,16 +130,78 @@ impl Analyzer<'_> {
             let Some(Type::Enum(id)) = self.type_names.get(&declaration.name.text).cloned() else {
                 continue;
             };
+            let variants = declaration
+                .variants
+                .iter()
+                .map(|variant| crate::middle::hir::HirEnumVariant {
+                    name: variant.name.text.clone(),
+                    payload: variant
+                        .payload
+                        .as_ref()
+                        .map(|payload| self.resolve_type(&payload.kind, payload.span)),
+                })
+                .collect();
             self.enums.push(HirEnum {
                 id,
                 name: declaration.name.text.clone(),
-                variants: declaration
-                    .variants
-                    .iter()
-                    .map(|variant| variant.text.clone())
-                    .collect(),
+                variants,
             });
         }
+        for declaration in &module.enums {
+            for variant in &declaration.variants {
+                if let Some(payload) = &variant.payload {
+                    let ty = self.resolve_type(&payload.kind, payload.span);
+                    if !self.is_supported_value_type(&ty) {
+                        self.diagnostics.push(Diagnostic::error(
+                            "payload enum variants require a supported value type",
+                            payload.span,
+                        ));
+                    }
+                }
+            }
+        }
+        for declaration in &module.structs {
+            let Some(Type::Struct(owner)) = self.type_names.get(&declaration.name.text).cloned()
+            else {
+                continue;
+            };
+            for field in &declaration.fields {
+                let field_type = self.resolve_type(&field.ty.kind, field.ty.span);
+                if let Type::Struct(nested) = field_type
+                    && self.direct_struct_reaches(nested, owner, &mut HashSet::new())
+                {
+                    self.diagnostics.push(Diagnostic::error(
+                        "recursive struct fields require explicit indirection such as `ref T`, `optional ref T`, or a collection",
+                        field.ty.span,
+                    ));
+                }
+            }
+        }
+    }
+
+    fn direct_struct_reaches(
+        &self,
+        current: TypeId,
+        target: TypeId,
+        visiting: &mut HashSet<TypeId>,
+    ) -> bool {
+        if current == target {
+            return true;
+        }
+        if !visiting.insert(current) {
+            return false;
+        }
+        let reaches = self
+            .structs
+            .iter()
+            .find(|item| item.id == current)
+            .is_some_and(|item| {
+                item.fields.iter().any(|field| {
+                    matches!(field.ty, Type::Struct(next) if self.direct_struct_reaches(next, target, visiting))
+                })
+            });
+        visiting.remove(&current);
+        reaches
     }
 
     fn analyze_module(mut self, module: &Module) -> Result<HirModule, Vec<Diagnostic>> {
@@ -229,14 +288,6 @@ impl Analyzer<'_> {
                             variable.ty.span,
                         ));
                     }
-                    if matches!(ty, Type::Array { .. })
-                        && !matches!(variable.initializer.kind, ExpressionKind::Collection(_))
-                    {
-                        self.diagnostics.push(Diagnostic::error(
-                            "whole-array values and copies are not supported",
-                            variable.initializer.span,
-                        ));
-                    }
                     if matches!(ty, Type::List(_))
                         && !matches!(
                             variable.initializer.kind,
@@ -310,6 +361,24 @@ impl Analyzer<'_> {
                         span: statement.span,
                     }
                 }
+                StatementKind::For {
+                    initializer,
+                    condition,
+                    increment,
+                    body,
+                } => {
+                    let initializer = self.analyze_for_clause(initializer);
+                    let condition = self.check_expression(condition, Some(&Type::Bool));
+                    let increment = self.analyze_for_clause(increment);
+                    let body = self.analyze_block(body, return_type, loop_depth + 1);
+                    HirStatement::For {
+                        initializer: Box::new(initializer),
+                        condition,
+                        increment: Box::new(increment),
+                        body,
+                        span: statement.span,
+                    }
+                }
                 StatementKind::Break => {
                     if loop_depth == 0 {
                         self.diagnostics.push(Diagnostic::error(
@@ -334,6 +403,26 @@ impl Analyzer<'_> {
         HirBlock {
             statements,
             span: block.span,
+        }
+    }
+
+    fn analyze_for_clause(&mut self, statement: &Statement) -> HirStatement {
+        match &statement.kind {
+            StatementKind::Variable(variable) => {
+                let ty = self.resolve_type(&variable.ty.kind, variable.ty.span);
+                self.validate_collection_type(&ty, variable.ty.span);
+                let initializer = self.check_expression(&variable.initializer, Some(&ty));
+                HirStatement::Variable {
+                    symbol: self.declaration_id(variable.name.span),
+                    ty,
+                    initializer: self.struct_copy_if_symbol(initializer),
+                    span: statement.span,
+                }
+            }
+            StatementKind::Assignment(assignment) => {
+                self.check_assignment(&assignment.target, &assignment.value, statement.span)
+            }
+            _ => unreachable!("parser only permits declarations and assignments in for clauses"),
         }
     }
 
@@ -448,7 +537,35 @@ impl Analyzer<'_> {
                         )
                     }
                     SymbolKind::Builtin => {
-                        if callee.text == "some" {
+                        if callee.text == "reference" {
+                            if arguments.len() != 1 {
+                                self.diagnostics.push(Diagnostic::error(
+                                    format!(
+                                        "`reference` expects exactly one argument, found {}",
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                ));
+                            }
+                            let value = arguments
+                                .first()
+                                .map(|argument| self.check_expression(argument, None))
+                                .unwrap_or(HirExpression {
+                                    kind: HirExpressionKind::Collection(Vec::new()),
+                                    ty: Type::Dynamic,
+                                    span: expression.span,
+                                });
+                            for argument in arguments.iter().skip(1) {
+                                self.check_expression(argument, None);
+                            }
+                            let ty = value.ty.clone();
+                            (
+                                HirExpressionKind::Reference {
+                                    value: Box::new(value),
+                                },
+                                Type::Ref(Box::new(ty)),
+                            )
+                        } else if callee.text == "some" {
                             let element = match expected {
                                 Some(Type::Optional(element)) => (**element).clone(),
                                 _ => {
@@ -778,9 +895,17 @@ impl Analyzer<'_> {
                                 | (Type::Char, Type::Int)
                                 | (Type::Byte, Type::Byte)
                                 | (Type::Byte, Type::Int)
-                                | (Type::Enum(_), Type::Int)
                                 | (Type::Int, Type::Char)
                                 | (Type::Int, Type::Byte) => true,
+                                (Type::Enum(enum_id), Type::Int) => self
+                                    .enums
+                                    .iter()
+                                    .find(|item| item.id == *enum_id)
+                                    .is_some_and(|item| {
+                                        item.variants
+                                            .iter()
+                                            .all(|variant| variant.payload.is_none())
+                                    }),
                                 _ => false,
                             };
                             if !valid {
@@ -936,6 +1061,22 @@ impl Analyzer<'_> {
                                 },
                                 Type::Bool,
                             );
+                        }
+                        if let Type::Enum(enum_id) = left.ty
+                            && self
+                                .enums
+                                .iter()
+                                .find(|item| item.id == enum_id)
+                                .is_some_and(|item| {
+                                    item.variants
+                                        .iter()
+                                        .any(|variant| variant.payload.is_some())
+                                })
+                        {
+                            self.diagnostics.push(Diagnostic::error(
+                                "payload enums must be discriminated with `.is(Enum.Variant)`",
+                                expression.span,
+                            ));
                         }
                         if left.ty != right.ty
                             || !matches!(
@@ -1099,12 +1240,6 @@ impl Analyzer<'_> {
                         Type::Dynamic
                     }
                 };
-                if matches!(target_type, Type::Array { .. }) {
-                    self.diagnostics.push(Diagnostic::error(
-                        "whole-array assignment is not supported",
-                        target.span,
-                    ));
-                }
                 if matches!(target_type, Type::List(_)) {
                     self.diagnostics.push(Diagnostic::error(
                         "whole-list assignment/cloning is not supported",
@@ -1189,6 +1324,21 @@ impl Analyzer<'_> {
                 }
             }
             ExpressionKind::Member { base, name } => {
+                let checked_base = self.check_expression(base, None);
+                if let Type::Ref(value_type) = checked_base.ty.clone() {
+                    if name.text != "value" {
+                        self.diagnostics.push(Diagnostic::error(
+                            "reference assignment requires the `.value` property",
+                            name.span,
+                        ));
+                    }
+                    return HirStatement::ReferenceAssignment {
+                        reference: checked_base,
+                        value: self.check_expression(value, Some(&value_type)),
+                        value_type: *value_type,
+                        span,
+                    };
+                }
                 let ExpressionKind::Identifier(base_name) = &base.kind else {
                     self.diagnostics.push(Diagnostic::error(
                         "field assignment currently requires a local struct variable",
@@ -1332,12 +1482,26 @@ impl Analyzer<'_> {
             if let Some(variant) = definition
                 .variants
                 .iter()
-                .position(|variant| variant == &name.text)
+                .position(|variant| variant.name == name.text)
             {
+                if definition.variants[variant].payload.is_some() {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!(
+                            "payload enum variant `{}` must be constructed with a value",
+                            name.text
+                        ),
+                        name.span,
+                    ));
+                }
                 return (
                     HirExpressionKind::EnumValue {
                         enum_id,
                         variant: variant as u32,
+                        payload: None,
+                        boxed: definition
+                            .variants
+                            .iter()
+                            .any(|variant| variant.payload.is_some()),
                     },
                     Type::Enum(enum_id),
                 );
@@ -1353,6 +1517,11 @@ impl Analyzer<'_> {
                 HirExpressionKind::EnumValue {
                     enum_id,
                     variant: u32::MAX,
+                    payload: None,
+                    boxed: definition
+                        .variants
+                        .iter()
+                        .any(|variant| variant.payload.is_some()),
                 },
                 Type::Enum(enum_id),
             );
@@ -1401,6 +1570,22 @@ impl Analyzer<'_> {
                     ));
                     (HirExpressionKind::Collection(Vec::new()), Type::Dynamic)
                 }
+            };
+        }
+        if let Type::Ref(element) = checked_base.ty.clone() {
+            return if name.text == "value" {
+                (
+                    HirExpressionKind::ReferenceValue {
+                        value: Box::new(checked_base),
+                    },
+                    *element,
+                )
+            } else {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("unknown reference property `{}`", name.text),
+                    name.span,
+                ));
+                (HirExpressionKind::Collection(Vec::new()), Type::Dynamic)
             };
         }
         if name.text == "length" {
@@ -1537,6 +1722,134 @@ impl Analyzer<'_> {
         arguments: &[Expression],
         span: super::source::Span,
     ) -> (HirExpressionKind, Type) {
+        if let ExpressionKind::Identifier(type_name) = &receiver.kind
+            && let Some(Type::Enum(enum_id)) = self.type_names.get(&type_name.text).cloned()
+        {
+            let definition = self
+                .enums
+                .iter()
+                .find(|item| item.id == enum_id)
+                .cloned()
+                .expect("resolved enum has HIR metadata");
+            if let Some((variant, metadata)) = definition
+                .variants
+                .iter()
+                .enumerate()
+                .find(|(_, variant)| variant.name == method.text)
+            {
+                let Some(payload_type) = metadata.payload.clone() else {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("enum variant `{}` does not take a payload", method.text),
+                        span,
+                    ));
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                    return (
+                        HirExpressionKind::EnumValue {
+                            enum_id,
+                            variant: variant as u32,
+                            payload: None,
+                            boxed: true,
+                        },
+                        Type::Enum(enum_id),
+                    );
+                };
+                if arguments.len() != 1 {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("enum variant `{}` expects one payload", method.text),
+                        span,
+                    ));
+                }
+                let payload = arguments
+                    .first()
+                    .map(|argument| Box::new(self.check_expression(argument, Some(&payload_type))));
+                for argument in arguments.iter().skip(1) {
+                    self.check_expression(argument, None);
+                }
+                return (
+                    HirExpressionKind::EnumValue {
+                        enum_id,
+                        variant: variant as u32,
+                        payload,
+                        boxed: true,
+                    },
+                    Type::Enum(enum_id),
+                );
+            }
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "unknown variant `{}` for enum `{}`",
+                    method.text, type_name.text
+                ),
+                method.span,
+            ));
+            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+        }
+
+        if matches!(method.text.as_str(), "is" | "payload") {
+            let checked_receiver = self.check_expression(receiver, None);
+            let Type::Enum(enum_id) = checked_receiver.ty else {
+                self.diagnostics.push(Diagnostic::error(
+                    "enum inspection requires an enum receiver",
+                    receiver.span,
+                ));
+                return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+            };
+            let selector = arguments.first().and_then(|argument| {
+                let ExpressionKind::Member { base, name } = &argument.kind else {
+                    return None;
+                };
+                let ExpressionKind::Identifier(type_name) = &base.kind else {
+                    return None;
+                };
+                (self.type_names.get(&type_name.text) == Some(&Type::Enum(enum_id))).then_some(name)
+            });
+            let definition = self.enums.iter().find(|item| item.id == enum_id).cloned();
+            let variant = selector.and_then(|name| {
+                definition
+                    .as_ref()?
+                    .variants
+                    .iter()
+                    .position(|item| item.name == name.text)
+            });
+            if arguments.len() != 1 || variant.is_none() {
+                self.diagnostics.push(Diagnostic::error(
+                    "enum inspection expects one matching `Enum.Variant` selector",
+                    span,
+                ));
+            }
+            let variant = variant.unwrap_or(usize::MAX);
+            if method.text == "is" {
+                return (
+                    HirExpressionKind::EnumIs {
+                        value: Box::new(checked_receiver),
+                        enum_id,
+                        variant: variant as u32,
+                    },
+                    Type::Bool,
+                );
+            }
+            let payload_type = definition
+                .and_then(|item| item.variants.get(variant).cloned())
+                .and_then(|variant| variant.payload);
+            let Some(payload_type) = payload_type else {
+                self.diagnostics.push(Diagnostic::error(
+                    "selected enum variant has no payload",
+                    span,
+                ));
+                return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+            };
+            return (
+                HirExpressionKind::EnumPayload {
+                    value: Box::new(checked_receiver),
+                    enum_id,
+                    variant: variant as u32,
+                    payload_type: payload_type.clone(),
+                },
+                payload_type,
+            );
+        }
         if method.text == "byte" {
             let value = self.check_expression(receiver, None);
             if value.ty != Type::String {
@@ -1757,6 +2070,7 @@ impl Analyzer<'_> {
             },
             Type::List(element) => Type::List(Box::new(self.resolve_type(element, span))),
             Type::Optional(element) => Type::Optional(Box::new(self.resolve_type(element, span))),
+            Type::Ref(element) => Type::Ref(Box::new(self.resolve_type(element, span))),
             Type::Tuple(elements) => Type::Tuple(
                 elements
                     .iter()
@@ -1792,7 +2106,10 @@ impl Analyzer<'_> {
         let struct_id = *struct_id;
         if !matches!(
             &expression.kind,
-            HirExpressionKind::Symbol(_) | HirExpressionKind::OptionalValue { .. }
+            HirExpressionKind::Symbol(_)
+                | HirExpressionKind::OptionalValue { .. }
+                | HirExpressionKind::ReferenceValue { .. }
+                | HirExpressionKind::EnumPayload { .. }
         ) {
             return expression;
         }
@@ -1827,6 +2144,7 @@ impl Analyzer<'_> {
     fn is_supported_value_type_inner(&self, ty: &Type, visiting: &mut HashSet<TypeId>) -> bool {
         match ty {
             Type::Int | Type::Byte | Type::Bool | Type::Char | Type::String | Type::Enum(_) => true,
+            Type::Ref(element) => self.is_supported_value_type_inner(element, visiting),
             Type::Struct(id) => {
                 if !visiting.insert(*id) {
                     return true;
@@ -2169,11 +2487,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nested_struct_layout() {
+    fn accepts_nested_struct_layout_and_rejects_direct_recursion() {
+        analyze_source("struct Inner { int x; } struct Outer { Inner inner; }").unwrap();
         assert!(
-            messages("struct Inner { int x; } struct Outer { Inner inner; }")
+            messages("struct Node { Node next; }")
                 .iter()
-                .any(|message| message.contains("nested struct fields are not supported"))
+                .any(|message| message.contains("explicit indirection"))
         );
     }
 
@@ -2403,11 +2722,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_whole_collection_copies() {
+    fn permits_array_handle_copies_and_rejects_list_copies() {
         let errors = messages(
             "private void f() { int[1] a = [1]; int[1] b = a; a = b; list int xs = [1]; list int ys = xs; xs = ys; }",
         );
-        assert!(errors.iter().any(|message| message.contains("whole-array")));
         assert!(errors.iter().any(|message| message.contains("whole-list")));
     }
 

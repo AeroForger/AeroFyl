@@ -1,0 +1,17 @@
+struct Node { optional ref Node next; int value; }
+enum Result { ok(ref Node), error(string) }
+
+private Result build() {
+    Node tail = Node { next: none(), value: 2 };
+    ref Node tailRef = reference(tail);
+    Node head = Node { next: some(tailRef), value: 1 };
+    return Result.ok(reference(head));
+}
+
+public void main() {
+    Result result = build();
+    if (result.is(Result.ok)) {
+        ref Node head = result.payload(Result.ok);
+        int value = head.value.value;
+    }
+}

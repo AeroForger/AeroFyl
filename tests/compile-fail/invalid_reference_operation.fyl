@@ -1,0 +1,7 @@
+struct Node { int value; }
+
+public void main() {
+    ref Node node = reference(Node { value: 1 });
+    int invalid = node.missing;
+    node.value = 3;
+}

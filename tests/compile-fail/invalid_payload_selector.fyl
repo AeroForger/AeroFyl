@@ -1,0 +1,7 @@
+enum First { value(int) }
+enum Second { value(int) }
+
+public void main() {
+    First first = First.value(1);
+    int invalid = first.payload(Second.value);
+}

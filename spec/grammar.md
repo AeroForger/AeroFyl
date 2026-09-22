@@ -7,7 +7,8 @@ module          = { import-decl | struct-decl | enum-decl | function-decl } ;
 import-decl     = "use" module-name ";" ;
 module-name     = identifier { "." identifier } ;
 struct-decl     = "struct" identifier "{" { type identifier ";" } "}" ;
-enum-decl       = "enum" identifier "{" identifier { "," identifier } [ "," ] "}" ;
+enum-decl       = "enum" identifier "{" enum-variant { "," enum-variant } [ "," ] "}" ;
+enum-variant    = identifier [ "(" type ")" ] ;
 function-decl   = visibility type identifier "(" [ parameters ] ")" block ;
 visibility      = "public" | "private" ;
 parameters      = parameter { "," parameter } ;
@@ -17,6 +18,7 @@ type            = basic-type
                 | identifier
                 | "list" type
                 | "optional" type
+                | "ref" type
                 | type "[" integer-literal "]"
                 | "string" "[" "]"
                 | "(" type { "," type } ")" ;
@@ -30,6 +32,7 @@ statement       = type identifier "=" expression ";"
                 | expression ";"
                 | "if" "(" expression ")" block [ "else" ( block | if-statement ) ]
                 | "while" "(" expression ")" block
+                | "for" "(" for-clause ";" expression ";" for-clause ")" block
                 | "break" ";"
                 | "continue" ";" ;
 
@@ -47,6 +50,8 @@ member          = "." identifier [ "(" [ arguments ] ")" ] ;
 index           = "[" expression "]" ;
 arguments       = expression { "," expression } ;
 assignable      = identifier { member | index } ;
+for-clause      = type identifier "=" expression
+                | assignable ( "=" | "+=" | "-=" | "*=" | "/=" ) expression ;
 if-statement    = "if" "(" expression ")" block [ "else" ( block | if-statement ) ] ;
 ```
 
@@ -57,4 +62,7 @@ are checked as explicit conversions rather than function calls.
 
 `some(expression)` and `none()` construct optional values in an `optional T`
 type context. Tuple return types are parsed, but tuple value syntax is not
-specified yet. `using` remains reserved and has no grammar.
+specified yet. `reference(expression)` constructs `ref T`. Payload variants use
+`Enum.Variant(expression)`; `.is(Enum.Variant)` discriminates and
+`.payload(Enum.Variant)` performs checked extraction. `using` remains reserved
+and has no grammar.

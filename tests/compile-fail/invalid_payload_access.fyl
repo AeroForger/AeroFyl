@@ -1,0 +1,7 @@
+enum Result { ok(int), error(string) }
+
+public void main() {
+    Result result = Result.ok(1);
+    string message = result.payload(Result.ok);
+    int tag = int(result);
+}

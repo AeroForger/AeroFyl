@@ -36,6 +36,24 @@ done
 "${compiler[@]}" compile "$repository_root/tests/runtime/stage1_features.fyl" -o "$runtime_directory/stage1-features" >/dev/null
 "$runtime_directory/stage1-features"
 
+"${compiler[@]}" compile "$repository_root/tests/runtime/stage2_recursive_ast.fyl" -o "$runtime_directory/stage2-recursive-ast" >/dev/null
+"$runtime_directory/stage2-recursive-ast"
+
+"${compiler[@]}" compile "$repository_root/tests/runtime/for_loop.fyl" -o "$runtime_directory/for-loop" >/dev/null
+"$runtime_directory/for-loop" >"$runtime_directory/for-loop.stdout"
+printf '8\n' >"$runtime_directory/for-loop.expected"
+cmp "$runtime_directory/for-loop.expected" "$runtime_directory/for-loop.stdout"
+
+"${compiler[@]}" compile "$repository_root/tests/runtime/invalid_payload_variant.fyl" -o "$runtime_directory/invalid-payload-variant" >/dev/null
+set +e
+"$runtime_directory/invalid-payload-variant"
+status=$?
+set -e
+if [[ $status -ne 70 ]]; then
+    printf 'expected invalid payload extraction to fail with status 70, got %s\n' "$status" >&2
+    exit 1
+fi
+
 "${compiler[@]}" compile "$repository_root/tests/runtime/optional_missing_value.fyl" -o "$runtime_directory/optional-missing-value" >/dev/null
 set +e
 "$runtime_directory/optional-missing-value"

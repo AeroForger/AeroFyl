@@ -29,7 +29,13 @@ pub struct IrField {
 pub struct IrEnum {
     pub id: TypeId,
     pub name: String,
-    pub variants: Vec<String>,
+    pub variants: Vec<IrEnumVariant>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IrEnumVariant {
+    pub name: String,
+    pub payload: Option<Type>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +124,19 @@ pub enum IrInstructionKind {
         optional: ValueId,
         value_type: Type,
     },
+    Reference {
+        value: ValueId,
+        value_type: Type,
+    },
+    ReferenceValue {
+        reference: ValueId,
+        value_type: Type,
+    },
+    ReferenceStore {
+        reference: ValueId,
+        value: ValueId,
+        value_type: Type,
+    },
     FieldLoad {
         base: ValueId,
         struct_id: TypeId,
@@ -132,6 +151,22 @@ pub enum IrInstructionKind {
     EnumConstant {
         enum_id: TypeId,
         variant: u32,
+    },
+    EnumValue {
+        enum_id: TypeId,
+        variant: u32,
+        payload: Option<ValueId>,
+    },
+    EnumIs {
+        value: ValueId,
+        enum_id: TypeId,
+        variant: u32,
+    },
+    EnumPayload {
+        value: ValueId,
+        enum_id: TypeId,
+        variant: u32,
+        payload_type: Type,
     },
     ArrayInit {
         local: SymbolId,

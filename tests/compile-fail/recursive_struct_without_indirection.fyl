@@ -1,0 +1,5 @@
+struct Node {
+    Node next;
+}
+
+public void main() {}

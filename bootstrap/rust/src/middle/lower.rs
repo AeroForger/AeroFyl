@@ -31,7 +31,14 @@ pub fn lower(module: &HirModule) -> IrModule {
             .map(|item| IrEnum {
                 id: item.id,
                 name: item.name.clone(),
-                variants: item.variants.clone(),
+                variants: item
+                    .variants
+                    .iter()
+                    .map(|variant| crate::middle::ir::IrEnumVariant {
+                        name: variant.name.clone(),
+                        payload: variant.payload.clone(),
+                    })
+                    .collect(),
             })
             .collect(),
         functions: module
@@ -185,6 +192,25 @@ impl FunctionLowerer {
                     *span,
                 );
             }
+            HirStatement::ReferenceAssignment {
+                reference,
+                value,
+                value_type,
+                span,
+            } => {
+                let reference = self.expression(reference);
+                let value = self.expression(value);
+                self.emit(
+                    None,
+                    None,
+                    IrInstructionKind::ReferenceStore {
+                        reference,
+                        value,
+                        value_type: value_type.clone(),
+                    },
+                    *span,
+                );
+            }
             HirStatement::IndexedAssignment {
                 collection,
                 collection_type,
@@ -291,6 +317,16 @@ impl FunctionLowerer {
             HirStatement::While {
                 condition, body, ..
             } => self.while_statement(condition, body),
+            HirStatement::For {
+                initializer,
+                condition,
+                increment,
+                body,
+                ..
+            } => {
+                self.statement(initializer);
+                self.for_statement(condition, increment, body);
+            }
             HirStatement::Break(_) => {
                 if let Some(targets) = self.loops.last().copied() {
                     self.terminate(IrTerminator::Jump(targets.break_block));
@@ -364,6 +400,42 @@ impl FunctionLowerer {
         self.switch_to(body_block);
         self.block(body);
         self.loops.pop();
+        if !self.is_terminated() {
+            self.terminate(IrTerminator::Jump(condition_block));
+        }
+        self.switch_to(exit_block);
+    }
+
+    fn for_statement(
+        &mut self,
+        condition: &HirExpression,
+        increment: &HirStatement,
+        body: &HirBlock,
+    ) {
+        let condition_block = self.new_block();
+        let body_block = self.new_block();
+        let increment_block = self.new_block();
+        let exit_block = self.new_block();
+        self.terminate(IrTerminator::Jump(condition_block));
+        self.switch_to(condition_block);
+        let condition = self.expression(condition);
+        self.terminate(IrTerminator::Branch {
+            condition,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+        self.loops.push(LoopTargets {
+            break_block: exit_block,
+            continue_block: increment_block,
+        });
+        self.switch_to(body_block);
+        self.block(body);
+        self.loops.pop();
+        if !self.is_terminated() {
+            self.terminate(IrTerminator::Jump(increment_block));
+        }
+        self.switch_to(increment_block);
+        self.statement(increment);
         if !self.is_terminated() {
             self.terminate(IrTerminator::Jump(condition_block));
         }
@@ -476,6 +548,19 @@ impl FunctionLowerer {
                     value_type: (**value_type).clone(),
                 }
             }
+            HirExpressionKind::Reference { value } => IrInstructionKind::Reference {
+                value: self.expression(value),
+                value_type: value.ty.clone(),
+            },
+            HirExpressionKind::ReferenceValue { value } => {
+                let Type::Ref(value_type) = &value.ty else {
+                    unreachable!("reference value receiver has reference type")
+                };
+                IrInstructionKind::ReferenceValue {
+                    reference: self.expression(value),
+                    value_type: (**value_type).clone(),
+                }
+            }
             HirExpressionKind::FieldLoad {
                 base,
                 struct_id,
@@ -485,9 +570,44 @@ impl FunctionLowerer {
                 struct_id: *struct_id,
                 field: *field,
             },
-            HirExpressionKind::EnumValue { enum_id, variant } => IrInstructionKind::EnumConstant {
+            HirExpressionKind::EnumValue {
+                enum_id,
+                variant,
+                payload,
+                boxed,
+            } => {
+                if *boxed {
+                    IrInstructionKind::EnumValue {
+                        enum_id: *enum_id,
+                        variant: *variant,
+                        payload: payload.as_ref().map(|value| self.expression(value)),
+                    }
+                } else {
+                    IrInstructionKind::EnumConstant {
+                        enum_id: *enum_id,
+                        variant: *variant,
+                    }
+                }
+            }
+            HirExpressionKind::EnumIs {
+                value,
+                enum_id,
+                variant,
+            } => IrInstructionKind::EnumIs {
+                value: self.expression(value),
                 enum_id: *enum_id,
                 variant: *variant,
+            },
+            HirExpressionKind::EnumPayload {
+                value,
+                enum_id,
+                variant,
+                payload_type,
+            } => IrInstructionKind::EnumPayload {
+                value: self.expression(value),
+                enum_id: *enum_id,
+                variant: *variant,
+                payload_type: payload_type.clone(),
             },
             HirExpressionKind::ArrayLoad { collection, index } => {
                 let Type::Array { element, length } = &collection.ty else {

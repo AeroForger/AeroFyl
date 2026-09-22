@@ -10,6 +10,7 @@ The literal element count must match the declared length in the bootstrap. Index
 
 Arrays may contain supported arrays, lists, structs, optionals, and scalar
 values. Nested indexing is supported. The bootstrap represents an array value
-as an owned process-lifetime handle so it can be stored in a struct or another
-collection. Whole-array copying, array type inference, array parameters and
-returns, reclamation, and a stable representation remain unspecified.
+as a process-lifetime handle so it can be stored in a struct or another
+collection. Passing, returning, or assigning an array copies the handle and
+shares its indexed storage; no implicit clone occurs. Array type inference,
+reclamation, and a stable representation remain unspecified.

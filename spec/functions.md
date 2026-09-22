@@ -15,6 +15,11 @@ Supported structs can be passed and returned. A call receives a copied struct
 record, and a returned local struct is copied before control leaves the
 function. No implicit conversion is performed at either boundary.
 
+References, payload enums, arrays, lists, and optionals use one-word handles at
+function boundaries. Passing or returning one copies that handle; it does not
+perform a hidden aggregate traversal. Fixed-array handles may be passed and
+returned and retain shared indexed storage.
+
 Overloading, variadic functions, default arguments, nested functions, and
 stable calling conventions are not specified yet. The bootstrap does not lower
 every parsed type through its executable function ABI.

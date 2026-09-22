@@ -29,7 +29,13 @@ pub struct HirField {
 pub struct HirEnum {
     pub id: TypeId,
     pub name: String,
-    pub variants: Vec<String>,
+    pub variants: Vec<HirEnumVariant>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HirEnumVariant {
+    pub name: String,
+    pub payload: Option<Type>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +82,12 @@ pub enum HirStatement {
         value: HirExpression,
         span: Span,
     },
+    ReferenceAssignment {
+        reference: HirExpression,
+        value: HirExpression,
+        value_type: Type,
+        span: Span,
+    },
     IndexedAssignment {
         collection: HirExpression,
         collection_type: Type,
@@ -104,6 +116,13 @@ pub enum HirStatement {
     },
     While {
         condition: HirExpression,
+        body: HirBlock,
+        span: Span,
+    },
+    For {
+        initializer: Box<HirStatement>,
+        condition: HirExpression,
+        increment: Box<HirStatement>,
         body: HirBlock,
         span: Span,
     },
@@ -156,6 +175,12 @@ pub enum HirExpressionKind {
     OptionalValue {
         value: Box<HirExpression>,
     },
+    Reference {
+        value: Box<HirExpression>,
+    },
+    ReferenceValue {
+        value: Box<HirExpression>,
+    },
     FieldLoad {
         base: Box<HirExpression>,
         struct_id: TypeId,
@@ -164,6 +189,19 @@ pub enum HirExpressionKind {
     EnumValue {
         enum_id: TypeId,
         variant: u32,
+        payload: Option<Box<HirExpression>>,
+        boxed: bool,
+    },
+    EnumIs {
+        value: Box<HirExpression>,
+        enum_id: TypeId,
+        variant: u32,
+    },
+    EnumPayload {
+        value: Box<HirExpression>,
+        enum_id: TypeId,
+        variant: u32,
+        payload_type: Type,
     },
     ArrayLoad {
         collection: Box<HirExpression>,

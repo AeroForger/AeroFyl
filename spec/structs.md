@@ -31,9 +31,13 @@ is not defined.
 Struct declarations currently have no visibility modifier and are available
 through the loaded import graph. Stage 1 supports fields of `int`, `byte`,
 `bool`, `char`, `string`, payload-free enum, supported list, fixed-array, and
-optional types. Supported structs can be function parameters and return values.
+optional, reference, and nested supported struct types. Supported structs can
+be function parameters and return values.
 Calls copy the struct record before the callee receives it, and returning a
 local struct copies the record. Collection handles inside that record retain
-the sharing rule above. Direct nested struct fields, field visibility,
+the sharing rule above. Nested struct fields are one-word record handles; an
+outer record copy copies that handle, so the nested record is shared rather
+than implicitly deep-cloned. Direct recursive value cycles are rejected and
+must use explicit indirection. Field visibility,
 defaults, methods, inheritance, interfaces, and a stable memory layout are not
 supported.

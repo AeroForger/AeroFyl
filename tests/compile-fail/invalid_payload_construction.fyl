@@ -1,0 +1,6 @@
+enum Result { ok(int), error(string) }
+
+public void main() {
+    Result missing = Result.ok();
+    Result extra = Result.error("bad", "extra");
+}

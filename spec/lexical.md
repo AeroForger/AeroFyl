@@ -8,7 +8,7 @@ The exact identifier alphabet is not specified yet. The bootstrap accepts an und
 
 ## Keywords
 
-The known keywords are `public`, `private`, `use`, `using`, `return`, `if`, `else`, `while`, `break`, `continue`, `true`, `false`, `print`, `input`, `list`, `optional`, `int`, `byte`, `float`, `bool`, `char`, `string`, `void`, `dynamic`, `struct`, and `enum`.
+The known keywords are `public`, `private`, `use`, `using`, `return`, `if`, `else`, `while`, `for`, `break`, `continue`, `true`, `false`, `print`, `input`, `list`, `optional`, `int`, `byte`, `float`, `bool`, `char`, `string`, `void`, `dynamic`, `struct`, and `enum`.
 
 `using` remains reserved without language behavior. `print` and `input` are
 reserved names belonging to the explicitly imported `std.io` API. `use`

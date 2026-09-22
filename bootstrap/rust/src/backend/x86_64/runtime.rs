@@ -35,6 +35,7 @@ pub const WRITE_BYTES: SymbolId = SymbolId(u32::MAX - 26);
 pub const EXISTS: SymbolId = SymbolId(u32::MAX - 27);
 pub const FS_ERROR: SymbolId = SymbolId(u32::MAX - 28);
 pub const OPTIONAL_VALUE: SymbolId = SymbolId(u32::MAX - 29);
+pub const ENUM_PAYLOAD: SymbolId = SymbolId(u32::MAX - 30);
 
 pub fn functions_for(roots: &HashSet<SymbolId>) -> Vec<MachineFunction> {
     let functions = vec![
@@ -68,6 +69,7 @@ pub fn functions_for(roots: &HashSet<SymbolId>) -> Vec<MachineFunction> {
         exists(),
         fs_error(),
         optional_value(),
+        enum_payload(),
     ];
     let runtime_symbols: HashSet<_> = functions.iter().map(|function| function.symbol).collect();
     let mut reachable = HashSet::new();
@@ -93,6 +95,36 @@ pub fn functions_for(roots: &HashSet<SymbolId>) -> Vec<MachineFunction> {
         .into_iter()
         .filter(|function| reachable.contains(&function.symbol))
         .collect()
+}
+
+fn enum_payload() -> MachineFunction {
+    MachineFunction {
+        symbol: ENUM_PAYLOAD,
+        name: "__aerofyl_enum_payload".into(),
+        instructions: vec![
+            Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rdi,
+                displacement: 0,
+            },
+            Instruction::Compare {
+                left: Register::Rax,
+                right: Register::Rsi,
+            },
+            Instruction::JumpIf {
+                condition: Condition::Equal,
+                target: BlockId(1),
+            },
+            Instruction::ExitFailure,
+            Instruction::Label(BlockId(1)),
+            Instruction::Load64 {
+                destination: Register::Rax,
+                base: Register::Rdi,
+                displacement: 8,
+            },
+            Instruction::Return,
+        ],
+    }
 }
 
 fn optional_value() -> MachineFunction {
@@ -329,6 +361,7 @@ fn list_push() -> MachineFunction {
             Instruction::Push(Register::R12),
             Instruction::Push(Register::R13),
             Instruction::Push(Register::R14),
+            Instruction::Push(Register::R15),
             Instruction::MoveRegister {
                 destination: Register::Rbx,
                 source: Register::Rdi,
@@ -348,6 +381,11 @@ fn list_push() -> MachineFunction {
                 base: Register::Rbx,
                 displacement: 16,
             },
+            Instruction::Load64 {
+                destination: Register::R15,
+                base: Register::Rbx,
+                displacement: 24,
+            },
             Instruction::Compare {
                 left: Register::R12,
                 right: Register::R13,
@@ -356,10 +394,10 @@ fn list_push() -> MachineFunction {
                 condition: Condition::Less,
                 target: BlockId(2),
             },
-            // mremap(old, 24 + capacity*stride, 24 + capacity*2*stride, MAYMOVE)
+            // mremap(data, capacity*stride, capacity*2*stride, MAYMOVE)
             Instruction::MoveRegister {
                 destination: Register::Rdi,
-                source: Register::Rbx,
+                source: Register::R15,
             },
             Instruction::MoveRegister {
                 destination: Register::Rax,
@@ -368,14 +406,6 @@ fn list_push() -> MachineFunction {
             Instruction::MultiplySigned {
                 destination: Register::Rax,
                 source: Register::R14,
-            },
-            Instruction::MoveImmediate64 {
-                destination: Register::Rcx,
-                value: 24,
-            },
-            Instruction::Add {
-                destination: Register::Rax,
-                source: Register::Rcx,
             },
             Instruction::MoveRegister {
                 destination: Register::Rsi,
@@ -397,10 +427,6 @@ fn list_push() -> MachineFunction {
                 destination: Register::Rax,
                 source: Register::R14,
             },
-            Instruction::Add {
-                destination: Register::Rax,
-                source: Register::Rcx,
-            },
             Instruction::MoveRegister {
                 destination: Register::Rdx,
                 source: Register::Rax,
@@ -420,13 +446,18 @@ fn list_push() -> MachineFunction {
                 target: BlockId(1),
             },
             Instruction::MoveRegister {
-                destination: Register::Rbx,
+                destination: Register::R15,
                 source: Register::Rax,
             },
             Instruction::Store64 {
                 base: Register::Rbx,
                 displacement: 8,
                 source: Register::R13,
+            },
+            Instruction::Store64 {
+                base: Register::Rbx,
+                displacement: 24,
+                source: Register::R15,
             },
             Instruction::Label(BlockId(2)),
             Instruction::MoveRegister {
@@ -439,15 +470,7 @@ fn list_push() -> MachineFunction {
             },
             Instruction::Add {
                 destination: Register::Rdx,
-                source: Register::Rbx,
-            },
-            Instruction::MoveImmediate64 {
-                destination: Register::Rax,
-                value: 24,
-            },
-            Instruction::Add {
-                destination: Register::Rdx,
-                source: Register::Rax,
+                source: Register::R15,
             },
             Instruction::MoveImmediate64 {
                 destination: Register::Rax,
@@ -466,6 +489,7 @@ fn list_push() -> MachineFunction {
                 destination: Register::Rax,
                 source: Register::Rbx,
             },
+            Instruction::Pop(Register::R15),
             Instruction::Pop(Register::R14),
             Instruction::Pop(Register::R13),
             Instruction::Pop(Register::R12),
@@ -838,19 +862,29 @@ fn main_args() -> MachineFunction {
         },
         Instruction::MoveImmediate64 {
             destination: Register::Rax,
+            value: 4,
+        },
+        Instruction::Add {
+            destination: Register::Rdi,
+            source: Register::Rax,
+        },
+        Instruction::MoveImmediate64 {
+            destination: Register::Rax,
             value: 8,
         },
         Instruction::MultiplySigned {
             destination: Register::Rdi,
             source: Register::Rax,
         },
-        Instruction::MoveImmediate64 {
-            destination: Register::Rax,
-            value: 24,
-        },
-        Instruction::Add {
-            destination: Register::Rdi,
+        Instruction::Call(ALLOC),
+        Instruction::Store64 {
+            base: Register::Rsp,
+            displacement: 0,
             source: Register::Rax,
+        },
+        Instruction::MoveImmediate64 {
+            destination: Register::Rdi,
+            value: 32,
         },
         Instruction::Call(ALLOC),
         Instruction::MoveRegister {
@@ -862,10 +896,22 @@ fn main_args() -> MachineFunction {
             displacement: 0,
             source: Register::R12,
         },
+        Instruction::MoveRegister {
+            destination: Register::Rax,
+            source: Register::R12,
+        },
+        Instruction::MoveImmediate64 {
+            destination: Register::Rcx,
+            value: 4,
+        },
+        Instruction::Add {
+            destination: Register::Rax,
+            source: Register::Rcx,
+        },
         Instruction::Store64 {
             base: Register::R13,
             displacement: 8,
-            source: Register::R12,
+            source: Register::Rax,
         },
         Instruction::MoveImmediate64 {
             destination: Register::Rax,
@@ -874,6 +920,16 @@ fn main_args() -> MachineFunction {
         Instruction::Store64 {
             base: Register::R13,
             displacement: 16,
+            source: Register::Rax,
+        },
+        Instruction::Load64 {
+            destination: Register::Rax,
+            base: Register::Rsp,
+            displacement: 0,
+        },
+        Instruction::Store64 {
+            base: Register::R13,
+            displacement: 24,
             source: Register::Rax,
         },
         Instruction::MoveImmediate64 {
@@ -965,10 +1021,15 @@ fn main_args() -> MachineFunction {
     instructions.extend([
         Instruction::Jump(BlockId(3)),
         Instruction::Label(BlockId(5)),
-        Instruction::IndexedStore64 {
+        Instruction::Load64 {
+            destination: Register::Rax,
             base: Register::R13,
-            index: Register::R14,
             displacement: 24,
+        },
+        Instruction::IndexedStore64 {
+            base: Register::Rax,
+            index: Register::R14,
+            displacement: 0,
             source: Register::R11,
         },
     ]);
@@ -3147,13 +3208,14 @@ fn read_bytes() -> MachineFunction {
             destination: Register::Rdi,
             source: Register::R14,
         },
-        Instruction::MoveImmediate64 {
-            destination: Register::Rax,
-            value: 24,
-        },
-        Instruction::Add {
-            destination: Register::Rdi,
+        Instruction::Call(ALLOC),
+        Instruction::MoveRegister {
+            destination: Register::Rbx,
             source: Register::Rax,
+        },
+        Instruction::MoveImmediate64 {
+            destination: Register::Rdi,
+            value: 32,
         },
         Instruction::Call(ALLOC),
         Instruction::MoveRegister {
@@ -3179,6 +3241,11 @@ fn read_bytes() -> MachineFunction {
             displacement: 16,
             source: Register::Rax,
         },
+        Instruction::Store64 {
+            base: Register::R15,
+            displacement: 24,
+            source: Register::Rbx,
+        },
         Instruction::MoveImmediate64 {
             destination: Register::Rbx,
             value: 0,
@@ -3193,16 +3260,21 @@ fn read_bytes() -> MachineFunction {
             target: BlockId(2),
         },
         Instruction::IndexedLoad8 {
-            destination: Register::Rax,
+            destination: Register::Rdx,
             base: Register::R12,
             index: Register::Rbx,
             displacement: 8,
         },
-        Instruction::IndexedStore8 {
+        Instruction::Load64 {
+            destination: Register::Rax,
             base: Register::R15,
-            index: Register::Rbx,
             displacement: 24,
-            source: Register::Rax,
+        },
+        Instruction::IndexedStore8 {
+            base: Register::Rax,
+            index: Register::Rbx,
+            displacement: 0,
+            source: Register::Rdx,
         },
     ];
     instructions.extend(increment(Register::Rbx));
@@ -3247,6 +3319,11 @@ fn write_bytes() -> MachineFunction {
             base: Register::R13,
             displacement: 0,
         },
+        Instruction::Load64 {
+            destination: Register::R13,
+            base: Register::R13,
+            displacement: 24,
+        },
         Instruction::MoveRegister {
             destination: Register::Rdi,
             source: Register::R14,
@@ -3286,7 +3363,7 @@ fn write_bytes() -> MachineFunction {
             destination: Register::Rax,
             base: Register::R13,
             index: Register::Rbx,
-            displacement: 24,
+            displacement: 0,
         },
         Instruction::IndexedStore8 {
             base: Register::R15,
@@ -3586,21 +3663,14 @@ fn list_element() -> MachineFunction {
                 destination: Register::Rsi,
                 source: Register::Rdx,
             },
-            Instruction::MoveRegister {
+            Instruction::Load64 {
                 destination: Register::Rax,
-                source: Register::Rdi,
+                base: Register::Rdi,
+                displacement: 24,
             },
             Instruction::Add {
                 destination: Register::Rax,
                 source: Register::Rsi,
-            },
-            Instruction::MoveImmediate64 {
-                destination: Register::Rdx,
-                value: 24,
-            },
-            Instruction::Add {
-                destination: Register::Rax,
-                source: Register::Rdx,
             },
             Instruction::Return,
             Instruction::Label(BlockId(1)),
@@ -3643,21 +3713,14 @@ fn list_pop_element() -> MachineFunction {
                 destination: Register::Rcx,
                 source: Register::Rdx,
             },
-            Instruction::MoveRegister {
+            Instruction::Load64 {
                 destination: Register::Rax,
-                source: Register::Rdi,
+                base: Register::Rdi,
+                displacement: 24,
             },
             Instruction::Add {
                 destination: Register::Rax,
                 source: Register::Rcx,
-            },
-            Instruction::MoveImmediate64 {
-                destination: Register::Rdx,
-                value: 24,
-            },
-            Instruction::Add {
-                destination: Register::Rax,
-                source: Register::Rdx,
             },
             Instruction::Return,
             Instruction::Label(BlockId(1)),

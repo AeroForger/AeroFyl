@@ -33,7 +33,14 @@ pub struct FieldDeclaration {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnumDeclaration {
     pub name: Name,
-    pub variants: Vec<Name>,
+    pub variants: Vec<EnumVariantDeclaration>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnumVariantDeclaration {
+    pub name: Name,
+    pub payload: Option<TypeNode>,
     pub span: Span,
 }
 
@@ -97,6 +104,15 @@ pub enum StatementKind {
     },
     While {
         condition: Expression,
+        body: Block,
+    },
+    /// A C-style loop. The initializer runs once, then the condition is checked
+    /// before each body execution; the increment runs after the body and on
+    /// `continue`.
+    For {
+        initializer: Box<Statement>,
+        condition: Expression,
+        increment: Box<Statement>,
         body: Block,
     },
     Break,

@@ -120,7 +120,25 @@ impl Parser {
         self.expect(TokenKind::LeftBrace, "expected `{` after enum name")?;
         let mut variants = Vec::new();
         while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
-            variants.push(self.expect_identifier("expected enum variant")?);
+            let name = self.expect_identifier("expected enum variant")?;
+            let payload = if self.consume(&TokenKind::LeftParen) {
+                let payload = self.parse_type()?;
+                self.expect(
+                    TokenKind::RightParen,
+                    "expected `)` after enum payload type",
+                )?;
+                Some(payload)
+            } else {
+                None
+            };
+            let span = payload
+                .as_ref()
+                .map_or(name.span, |payload| name.span.join(payload.span));
+            variants.push(super::ast::EnumVariantDeclaration {
+                name,
+                payload,
+                span,
+            });
             self.consume(&TokenKind::Comma);
         }
         let end = self.expect(TokenKind::RightBrace, "expected `}` after enum declaration")?;
@@ -194,6 +212,13 @@ impl Parser {
             let element = self.parse_type()?;
             return Ok(TypeNode {
                 kind: Type::Optional(Box::new(element.kind)),
+                span: start.join(element.span),
+            });
+        }
+        if self.consume_keyword(Keyword::Ref) {
+            let element = self.parse_type()?;
+            return Ok(TypeNode {
+                kind: Type::Ref(Box::new(element.kind)),
                 span: start.join(element.span),
             });
         }
@@ -307,6 +332,9 @@ impl Parser {
                 span,
             });
         }
+        if self.consume_keyword(Keyword::For) {
+            return self.parse_for_statement(start);
+        }
         if self.consume_keyword(Keyword::Break) {
             let end = self.expect(TokenKind::Semicolon, "expected `;` after `break`")?;
             return Ok(Statement {
@@ -392,6 +420,79 @@ impl Parser {
         Ok(Statement {
             kind: StatementKind::Expression(expression),
             span: start.join(end.span),
+        })
+    }
+
+    fn parse_for_statement(&mut self, start: Span) -> Result<Statement, Diagnostic> {
+        self.expect(TokenKind::LeftParen, "expected `(` after `for`")?;
+        let initializer = self.parse_for_clause_statement("initializer")?;
+        self.expect(TokenKind::Semicolon, "expected `;` after `for` initializer")?;
+        let condition = self.parse_expression()?;
+        self.expect(TokenKind::Semicolon, "expected `;` after `for` condition")?;
+        let increment = self.parse_for_clause_statement("increment")?;
+        self.expect(TokenKind::RightParen, "expected `)` after `for` increment")?;
+        let body = self.parse_block()?;
+        Ok(Statement {
+            span: start.join(body.span),
+            kind: StatementKind::For {
+                initializer: Box::new(initializer),
+                condition,
+                increment: Box::new(increment),
+                body,
+            },
+        })
+    }
+
+    /// Parses one header clause without consuming its separator. Restricting
+    /// clauses to declarations and assignments keeps loop side effects explicit.
+    fn parse_for_clause_statement(&mut self, clause: &str) -> Result<Statement, Diagnostic> {
+        let start = self.peek().span;
+        if self.starts_variable_declaration() {
+            let ty = self.parse_type()?;
+            let name = self.expect_identifier("expected variable name in `for` initializer")?;
+            self.expect(TokenKind::Equal, "expected `=` in `for` initializer")?;
+            let initializer = self.parse_expression()?;
+            return Ok(Statement {
+                span: start.join(initializer.span),
+                kind: StatementKind::Variable(VariableDeclaration {
+                    ty,
+                    name,
+                    initializer,
+                }),
+            });
+        }
+        let target = self.parse_expression()?;
+        let operator = if self.consume(&TokenKind::Equal) {
+            None
+        } else if self.consume(&TokenKind::PlusEqual) {
+            Some(BinaryOperator::Add)
+        } else if self.consume(&TokenKind::MinusEqual) {
+            Some(BinaryOperator::Subtract)
+        } else if self.consume(&TokenKind::StarEqual) {
+            Some(BinaryOperator::Multiply)
+        } else if self.consume(&TokenKind::SlashEqual) {
+            Some(BinaryOperator::Divide)
+        } else {
+            return Err(Diagnostic::error(
+                format!("expected assignment in `for` {clause}"),
+                target.span,
+            ));
+        };
+        let right = self.parse_expression()?;
+        let value = match operator {
+            Some(operator) => Expression {
+                span: target.span.join(right.span),
+                kind: ExpressionKind::Binary {
+                    operator,
+                    left: Box::new(target.clone()),
+                    right: Box::new(right),
+                },
+            },
+            None => right,
+        };
+        Ok(Statement {
+            span: start.join(value.span),
+            kind: StatementKind::Assignment(Assignment { target, value }),
         })
     }
 
@@ -806,6 +907,7 @@ impl Parser {
             TokenKind::Keyword(
                 Keyword::List
                     | Keyword::Optional
+                    | Keyword::Ref
                     | Keyword::Int
                     | Keyword::Byte
                     | Keyword::Float
@@ -1032,7 +1134,7 @@ mod tests {
     fn parses_enum_declaration_without_variant_semicolons() {
         let module = parse_source("enum State { idle, running, stopped }");
         assert_eq!(module.enums[0].variants.len(), 3);
-        assert_eq!(module.enums[0].variants[1].text, "running");
+        assert_eq!(module.enums[0].variants[1].name.text, "running");
     }
 
     #[test]
