@@ -65,7 +65,7 @@ private TokenKind keywordOrIdentifier(string word) {
     return TokenKind.Identifier(word);
 }
 
-// Token spans use byte offsets, matching Source.text's byte-oriented API.
+//token spans use byte offsets matching Source.texts byte-oriented API
 public list Token lex(string path) {
     Source s = load_file(path);
     string source = s.text;
@@ -110,7 +110,7 @@ public list Token lex(string path) {
             }
             continue;
         }
-
+        //sigle line comment :D
         if (current == int('/') && offset + 1 < source.length && source.byte(offset + 1) == int('/')) {
             offset = offset + 2;
             while (offset < source.length && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) {
@@ -118,6 +118,7 @@ public list Token lex(string path) {
             }
             continue;
         }
+        //multi line comment :D
         if (current == int('/') && offset + 1 < source.length && source.byte(offset + 1) == int('*')) {
             offset = offset + 2;
             while (offset + 1 < source.length
@@ -129,7 +130,7 @@ public list Token lex(string path) {
             }
             continue;
         }
-
+        //escapes
         if (current == int('"')) {
             offset = offset + 1;
             string value = "";
