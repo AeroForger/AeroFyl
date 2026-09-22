@@ -1,0 +1,81 @@
+/*
+This an experimental token.fyl for Stage-3 of bootstrap,
+I wiil use comments point out missing features
+*/
+//because we dont have using yet i have to load the whole source.fyl
+use source;
+
+public enum Keyword {
+    Public,
+    Private,
+    Use,
+    Using,
+    Return,
+    If,
+    Else,
+    While,
+    For,
+    Break,
+    Continue,
+    True,
+    False,
+    Print,
+    Input,
+    List,
+    Optional,
+    Ref,
+    Int,
+    Byte,
+    Float,
+    Bool,
+    Char,
+    String,
+    Void,
+    Dynamic,
+    Struct,
+    Enum
+}
+//In the future i will do smth like impl then fn from_source like orignal token.rs
+
+public enum TokenKind {
+    Identifier(String),
+    Integer(String),
+    Float(String),
+    String(String),
+    Char(char),
+    Keyword(Keyword),
+    LeftParen,
+    RightParen,
+    LeftBrace,
+    RightBrace,
+    LeftBracket,
+    RightBracket,
+    Comma,
+    Semicolon,
+    Colon,
+    Dot,
+    Equal,
+    EqualEqual,
+    BangEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Bang,
+    AmpersandAmpersand,
+    PipePipe,
+    Plus,
+    PlusEqual,
+    Minus,
+    MinusEqual,
+    Star,
+    StarEqual,
+    Slash,
+    SlashEqual,
+    Eof,
+}
+
+public struct token {
+    TokenKind kind;
+    Span span;
+}

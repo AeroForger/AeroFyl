@@ -1,0 +1,24 @@
+
+//same problem as token.fyl i dont have using yet
+use source;
+
+public enum DiagnosticLevel {
+    Error,
+    Warning,
+    Note,
+}
+
+public struct Diagnostic {
+    DiagnosticLevel level;
+    string message;
+    Span span;
+}
+
+public Diagnostic error(string message, Span span)
+{
+    return Diagnostic {
+        level: DiagnosticLevel.Error,
+        message: message,
+        span: span
+    };
+}

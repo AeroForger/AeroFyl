@@ -1,0 +1,29 @@
+/*
+To whoever is reading this - i want to eat but i am forced
+to work on this experimental compiler. please give me food
+*/
+
+
+use std.fs;
+
+
+//File reading:
+public struct Source {
+    string path;
+    string text;
+}
+public Source load_file(string path){
+    return Source {
+        path: path,
+        text: readFile(path)
+    };
+}
+/*--------*/
+
+//span
+public struct Span {
+    string source;
+    int start;
+    int end;
+}
+/*--------*/
