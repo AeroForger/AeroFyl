@@ -8,7 +8,7 @@ use std.fs;
 
 
 //File reading:
-public struct Source {
+struct Source {
     string path;
     string text;
 }
@@ -21,7 +21,7 @@ public Source load_file(string path){
 /*--------*/
 
 //span
-public struct Span {
+struct Span {
     string source;
     int start;
     int end;

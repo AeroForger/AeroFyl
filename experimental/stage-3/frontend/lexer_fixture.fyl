@@ -1,0 +1,10 @@
+public int fixture() {
+    // line comment
+    int number = 12;
+    float decimal = 3.5;
+    string text = "a\\n\\\"b";
+    char newline = '\\n';
+    number += 1;
+    if (number >= 13 && number != 14 || !false) { return number; }
+    /* block comment */
+}

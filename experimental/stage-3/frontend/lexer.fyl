@@ -1,4 +1,231 @@
-use std.io;
 use token;
 use source;
-use diagnostics;
+
+private bool isWhitespace(int current) {
+    return current == int(' ')
+        || current == int('\n')
+        || current == int('\r')
+        || current == int('\t');
+}
+
+private bool isLetter(int current) {
+    return (current >= int('a') && current <= int('z'))
+        || (current >= int('A') && current <= int('Z'))
+        || current == int('_');
+}
+
+private bool isDigit(int current) {
+    return current >= int('0') && current <= int('9');
+}
+
+private Span span(Source source, int start, int end) {
+    return Span {
+        source: source.path,
+        start: start,
+        end: end
+    };
+}
+
+private Token makeToken(TokenKind kind, Source source, int start, int end) {
+    return Token {
+        kind: kind,
+        span: span(source, start, end)
+    };
+}
+
+private TokenKind keywordOrIdentifier(string word) {
+    if (word == "public") { return TokenKind.Keyword(Keyword.Public); }
+    if (word == "private") { return TokenKind.Keyword(Keyword.Private); }
+    if (word == "use") { return TokenKind.Keyword(Keyword.Use); }
+    if (word == "using") { return TokenKind.Keyword(Keyword.Using); }
+    if (word == "return") { return TokenKind.Keyword(Keyword.Return); }
+    if (word == "if") { return TokenKind.Keyword(Keyword.If); }
+    if (word == "else") { return TokenKind.Keyword(Keyword.Else); }
+    if (word == "while") { return TokenKind.Keyword(Keyword.While); }
+    if (word == "for") { return TokenKind.Keyword(Keyword.For); }
+    if (word == "break") { return TokenKind.Keyword(Keyword.Break); }
+    if (word == "continue") { return TokenKind.Keyword(Keyword.Continue); }
+    if (word == "true") { return TokenKind.Keyword(Keyword.True); }
+    if (word == "false") { return TokenKind.Keyword(Keyword.False); }
+    if (word == "print") { return TokenKind.Keyword(Keyword.Print); }
+    if (word == "input") { return TokenKind.Keyword(Keyword.Input); }
+    if (word == "list") { return TokenKind.Keyword(Keyword.List); }
+    if (word == "optional") { return TokenKind.Keyword(Keyword.Optional); }
+    if (word == "ref") { return TokenKind.Keyword(Keyword.Ref); }
+    if (word == "int") { return TokenKind.Keyword(Keyword.Int); }
+    if (word == "byte") { return TokenKind.Keyword(Keyword.Byte); }
+    if (word == "float") { return TokenKind.Keyword(Keyword.Float); }
+    if (word == "bool") { return TokenKind.Keyword(Keyword.Bool); }
+    if (word == "char") { return TokenKind.Keyword(Keyword.Char); }
+    if (word == "string") { return TokenKind.Keyword(Keyword.String); }
+    if (word == "void") { return TokenKind.Keyword(Keyword.Void); }
+    if (word == "dynamic") { return TokenKind.Keyword(Keyword.Dynamic); }
+    if (word == "struct") { return TokenKind.Keyword(Keyword.Struct); }
+    if (word == "enum") { return TokenKind.Keyword(Keyword.Enum); }
+    return TokenKind.Identifier(word);
+}
+
+// Token spans use byte offsets, matching Source.text's byte-oriented API.
+public list Token lex(string path) {
+    Source s = load_file(path);
+    string source = s.text;
+    list Token tokens = [];
+    int offset = 0;
+
+    while (offset < source.length) {
+        int current = source.byte(offset);
+        int start = offset;
+
+        if (isWhitespace(current)) {
+            offset = offset + 1;
+            continue;
+        }
+
+        if (isLetter(current)) {
+            while (
+                offset < source.length
+                && (isLetter(source.byte(offset)) || isDigit(source.byte(offset)))
+            ) {
+                offset = offset + 1;
+            }
+            string word = source.slice(start, offset);
+            tokens.push(makeToken(keywordOrIdentifier(word), s, start, offset));
+            continue;
+        }
+
+        if (isDigit(current)) {
+            while (offset < source.length && isDigit(source.byte(offset))) {
+                offset = offset + 1;
+            }
+            if (offset + 1 < source.length
+                && source.byte(offset) == int('.')
+                && isDigit(source.byte(offset + 1))) {
+                offset = offset + 1;
+                while (offset < source.length && isDigit(source.byte(offset))) {
+                    offset = offset + 1;
+                }
+                tokens.push(makeToken(TokenKind.Float(source.slice(start, offset)), s, start, offset));
+            } else {
+                tokens.push(makeToken(TokenKind.Integer(source.slice(start, offset)), s, start, offset));
+            }
+            continue;
+        }
+
+        if (current == int('/') && offset + 1 < source.length && source.byte(offset + 1) == int('/')) {
+            offset = offset + 2;
+            while (offset < source.length && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) {
+                offset = offset + 1;
+            }
+            continue;
+        }
+        if (current == int('/') && offset + 1 < source.length && source.byte(offset + 1) == int('*')) {
+            offset = offset + 2;
+            while (offset + 1 < source.length
+                && !(source.byte(offset) == int('*') && source.byte(offset + 1) == int('/'))) {
+                offset = offset + 1;
+            }
+            if (offset + 1 < source.length) {
+                offset = offset + 2;
+            }
+            continue;
+        }
+
+        if (current == int('"')) {
+            offset = offset + 1;
+            string value = "";
+            bool valid = true;
+            while (offset < source.length && source.byte(offset) != int('"')
+                && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) {
+                if (source.byte(offset) == int('\\') && offset + 1 < source.length) {
+                    offset = offset + 1;
+                    int escape = source.byte(offset);
+                    if (escape == int('n')) { value = value + "\n"; }
+                    else if (escape == int('r')) { value = value + "\r"; }
+                    else if (escape == int('t')) { value = value + "\t"; }
+                    else if (escape == int('0')) { value = value + "\0"; }
+                    else if (escape == int('\\')) { value = value + "\\"; }
+                    else if (escape == int('"')) { value = value + "\""; }
+                    else { valid = false; }
+                    offset = offset + 1;
+                } else {
+                    value = value + source.slice(offset, offset + 1);
+                    offset = offset + 1;
+                }
+            }
+            if (valid && offset < source.length && source.byte(offset) == int('"')) {
+                offset = offset + 1;
+                tokens.push(makeToken(TokenKind.String(value), s, start, offset));
+            }
+            continue;
+        }
+
+        if (current == int('\'') && offset + 2 < source.length) {
+            offset = offset + 1;
+            int value = source.byte(offset);
+            bool valid = value != int('\n') && value != int('\r');
+            if (value == int('\\') && offset + 1 < source.length) {
+                offset = offset + 1;
+                value = source.byte(offset);
+                if (value == int('n')) { value = int('\n'); }
+                else if (value == int('r')) { value = int('\r'); }
+                else if (value == int('t')) { value = int('\t'); }
+                else if (value == int('0')) { value = 0; }
+                else if (value != int('\\') && value != int('\'')) { valid = false; }
+            }
+            offset = offset + 1;
+            if (valid && offset < source.length && source.byte(offset) == int('\'')) {
+                offset = offset + 1;
+                tokens.push(makeToken(TokenKind.Char(char(value)), s, start, offset));
+            }
+            continue;
+        }
+
+        if (current == int('(')) { tokens.push(makeToken(TokenKind.LeftParen, s, start, start + 1)); }
+        else if (current == int(')')) { tokens.push(makeToken(TokenKind.RightParen, s, start, start + 1)); }
+        else if (current == int('{')) { tokens.push(makeToken(TokenKind.LeftBrace, s, start, start + 1)); }
+        else if (current == int('}')) { tokens.push(makeToken(TokenKind.RightBrace, s, start, start + 1)); }
+        else if (current == int('[')) { tokens.push(makeToken(TokenKind.LeftBracket, s, start, start + 1)); }
+        else if (current == int(']')) { tokens.push(makeToken(TokenKind.RightBracket, s, start, start + 1)); }
+        else if (current == int(',')) { tokens.push(makeToken(TokenKind.Comma, s, start, start + 1)); }
+        else if (current == int(';')) { tokens.push(makeToken(TokenKind.Semicolon, s, start, start + 1)); }
+        else if (current == int(':')) { tokens.push(makeToken(TokenKind.Colon, s, start, start + 1)); }
+        else if (current == int('.')) { tokens.push(makeToken(TokenKind.Dot, s, start, start + 1)); }
+        else if (current == int('=')) {
+            if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.EqualEqual, s, start, start + 2)); offset = offset + 1; }
+            else { tokens.push(makeToken(TokenKind.Equal, s, start, start + 1)); }
+        }
+        else if (current == int('!')) {
+            if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.BangEqual, s, start, start + 2)); offset = offset + 1; }
+            else { tokens.push(makeToken(TokenKind.Bang, s, start, start + 1)); }
+        }
+        else if (current == int('<')) {
+            if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.LessEqual, s, start, start + 2)); offset = offset + 1; }
+            else { tokens.push(makeToken(TokenKind.Less, s, start, start + 1)); }
+        }
+        else if (current == int('>')) {
+            if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.GreaterEqual, s, start, start + 2)); offset = offset + 1; }
+            else { tokens.push(makeToken(TokenKind.Greater, s, start, start + 1)); }
+        }
+        else if (current == int('&') && offset + 1 < source.length && source.byte(offset + 1) == int('&')) { tokens.push(makeToken(TokenKind.AmpersandAmpersand, s, start, start + 2)); offset = offset + 1; }
+        else if (current == int('|') && offset + 1 < source.length && source.byte(offset + 1) == int('|')) { tokens.push(makeToken(TokenKind.PipePipe, s, start, start + 2)); offset = offset + 1; }
+        else if (current == int('+')) {
+            if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.PlusEqual, s, start, start + 2)); offset = offset + 1; }
+            else { tokens.push(makeToken(TokenKind.Plus, s, start, start + 1)); }
+        }
+        else if (current == int('-')) {
+            if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.MinusEqual, s, start, start + 2)); offset = offset + 1; }
+            else { tokens.push(makeToken(TokenKind.Minus, s, start, start + 1)); }
+        }
+        else if (current == int('*')) {
+            if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.StarEqual, s, start, start + 2)); offset = offset + 1; }
+            else { tokens.push(makeToken(TokenKind.Star, s, start, start + 1)); }
+        }
+        else if (current == int('/')) {
+            if (offset + 1 < source.length && source.byte(offset + 1) == int('=')) { tokens.push(makeToken(TokenKind.SlashEqual, s, start, start + 2)); offset = offset + 1; }
+            else { tokens.push(makeToken(TokenKind.Slash, s, start, start + 1)); }
+        }
+        offset = offset + 1;
+    }
+    tokens.push(makeToken(TokenKind.Eof, s, offset, offset));
+    return tokens;
+}

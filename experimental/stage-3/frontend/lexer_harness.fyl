@@ -1,0 +1,21 @@
+use lexer;
+
+public void main() {
+    list Token tokens = lex("experimental/stage-3/frontend/lexer_fixture.fyl");
+    if (tokens.length != 49) {
+        exit(70);
+    }
+
+    Keyword first = tokens[0].kind.payload(TokenKind.Keyword);
+    string decimal = tokens[13].kind.payload(TokenKind.Float);
+    string text = tokens[18].kind.payload(TokenKind.String);
+    char newline = tokens[23].kind.payload(TokenKind.Char);
+    if (first != Keyword.Public
+        || decimal != "3.5"
+        || text != "a\n\"b"
+        || newline != '\n'
+        || !tokens[26].kind.is(TokenKind.PlusEqual)
+        || !tokens[48].kind.is(TokenKind.Eof)) {
+        exit(70);
+    }
+}

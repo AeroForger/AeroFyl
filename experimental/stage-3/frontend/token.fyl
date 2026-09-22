@@ -5,7 +5,7 @@ I wiil use comments point out missing features
 //because we dont have using yet i have to load the whole source.fyl
 use source;
 
-public enum Keyword {
+enum Keyword {
     Public,
     Private,
     Use,
@@ -37,11 +37,11 @@ public enum Keyword {
 }
 //In the future i will do smth like impl then fn from_source like orignal token.rs
 
-public enum TokenKind {
-    Identifier(String),
-    Integer(String),
-    Float(String),
-    String(String),
+enum TokenKind {
+    Identifier(string),
+    Integer(string),
+    Float(string),
+    String(string),
     Char(char),
     Keyword(Keyword),
     LeftParen,
@@ -75,7 +75,7 @@ public enum TokenKind {
     Eof,
 }
 
-public struct token {
+struct Token {
     TokenKind kind;
     Span span;
 }
