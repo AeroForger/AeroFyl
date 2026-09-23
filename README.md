@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/AeroFyl.png">
+
 # Aerofyl
 
 Aerofyl is a compiled systems programming language currently in pre-alpha.
