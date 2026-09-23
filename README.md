@@ -1,8 +1,12 @@
+<div align="center">
+
 # Aerofyl
 
 Aerofyl is a compiled systems programming language currently in pre-alpha.
 
 The current compiler is written in Rust and exists to bootstrap the first compiler written in Aerofyl. It is the Stage 0 implementation, not the permanent compiler and not a claim of self-hosting. Its current subset includes relative multi-file imports and intentional `exit(code)` termination for compiler development.
+
+</div>
 
 ## Development phases
 
