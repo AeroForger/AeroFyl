@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/AeroFyl2.png">
+<img src="assets/AeroFyl3.png">
 
 # Aerofyl
 
