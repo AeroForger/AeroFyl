@@ -1,15 +1,87 @@
+
+//same problem as token.fyl i dont have using yet
 use source;
 
-enum ErrorType {
-    LexicalError
+public enum DiagnosticLevel {
+    Error(ErrorType),
+    Warning(WarningType),
+    Note,
+}
+public enum ErrorType {
+    SyntaxError,
+    LexicalError,
+    TypeError,
+    ReferenceError,
+    CompilationError,
+    
+    RuntimeError,
+    NullPointerError,
+    IndexOutOfBoundsError,
+    DivisionByZeroError,
+    StackOverflowError,
+    OutOfMemoryError,
+    
+    LogicError,
+    SemanticError,
+    
+    FileReadError,
+    FileWriteError,
+    
+    DeadlockError,
+    RaceConditionError,
+
+    ValidationError,
+}
+public enum WarningType {
+    DeprecationWarning,
+    UnusedVariableWarning,
+    UnusedImportWarning,
+    DeadCodeWarning,
+    MagicNumberWarning,
+    
+    UncheckedCastWarning,
+    RawTypesWarning,
+    NullabilityWarning,
+    
+    StyleWarning,
+    NamingConventionWarning,
+    MissingOverrideWarning,
+    SerialVersionUIDWarning,
+    
+    SecurityWarning,
+    InsecureCryptoWarning,
+    HardcodedCredentialWarning,
+    
+    ConcurrencyWarning,
+    ThreadSafetyWarning,
+    VolatileUsageWarning
 }
 
-struct Diagnostic {
-    ErrorType kind;
+
+public struct Diagnostic {
+    DiagnosticLevel level;
     string message;
     Span span;
 }
 
-public Diagnostic error(ErrorType kind, string message, Span location) {
-    return Diagnostic { kind: kind, message: message, span: location };
+public Diagnostic error(ErrorType error, string message, Span span) {
+    return Diagnostic {
+        level: DiagnosticLevel.Error(error),
+        message: message,
+        span: span
+    };
+}
+public Diagnostic warning(WarningType warning, string message, Span span){
+    return Diagnostic {
+        level: DiagnosticLevel.Warning(warning),
+        message: message,
+        span: span
+    };
+}
+public Diagnostic note(string message, Span span) {
+    return Diagnostic {
+        level: DiagnosticLevel.Note,
+        message: message,
+        span: span
+    };
 }
