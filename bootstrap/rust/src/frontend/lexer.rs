@@ -1,6 +1,6 @@
 use super::diagnostics::Diagnostic;
 use super::source::{FileId, Span};
-use super::token::{Keyword, Token, TokenKind};
+use super::token::{InterpolationPart, Keyword, Token, TokenKind};
 
 pub type LexError = Diagnostic;
 pub type LexResult = Result<Vec<Token>, Vec<LexError>>;
@@ -34,6 +34,9 @@ impl<'source> Lexer<'source> {
                 character if is_identifier_start(character) => self.lex_identifier(start),
                 character if character.is_ascii_digit() => self.lex_number(start),
                 '"' => self.lex_string(start),
+                '\\' if self.source[self.offset..].starts_with("\\v\"") => {
+                    self.lex_interpolated_string(start)
+                }
                 '\'' => self.lex_char(start),
                 '(' => self.single(TokenKind::LeftParen),
                 ')' => self.single(TokenKind::RightParen),
@@ -229,6 +232,99 @@ impl<'source> Lexer<'source> {
         }
         self.diagnostics.push(Diagnostic::error(
             "unterminated string literal",
+            Span::new(self.file, start, self.offset),
+        ));
+    }
+
+    fn lex_interpolated_string(&mut self, start: usize) {
+        self.bump(); // backslash
+        self.bump(); // v
+        self.bump(); // opening quote
+        let mut parts = Vec::new();
+        let mut text = String::new();
+        while let Some(character) = self.peek() {
+            if character == '"' {
+                self.bump();
+                if !text.is_empty() {
+                    parts.push(InterpolationPart::Text(text));
+                }
+                self.tokens.push(Token::new(
+                    TokenKind::InterpolatedString(parts),
+                    Span::new(self.file, start, self.offset),
+                ));
+                return;
+            }
+            if character == '\n' || character == '\r' {
+                break;
+            }
+            if character == '{' {
+                self.bump();
+                if !text.is_empty() {
+                    parts.push(InterpolationPart::Text(std::mem::take(&mut text)));
+                }
+                let name_start = self.offset;
+                if !self.peek().is_some_and(is_identifier_start) {
+                    self.diagnostics.push(Diagnostic::error(
+                        "expected variable name after `{`",
+                        Span::new(self.file, start, self.offset),
+                    ));
+                    return;
+                }
+                self.bump();
+                while self.peek().is_some_and(is_identifier_continue) {
+                    self.bump();
+                }
+                let name = self.source[name_start..self.offset].to_owned();
+                let name_span = Span::new(self.file, name_start, self.offset);
+                if self.peek() != Some('}') {
+                    self.diagnostics.push(Diagnostic::error(
+                        "expected `}` after interpolated variable",
+                        name_span,
+                    ));
+                    return;
+                }
+                self.bump();
+                parts.push(InterpolationPart::Variable(name, name_span));
+                continue;
+            }
+            if character == '}' {
+                self.bump();
+                self.diagnostics.push(Diagnostic::error(
+                    "unescaped `}` in interpolated string",
+                    Span::new(self.file, self.offset - 1, self.offset),
+                ));
+                return;
+            }
+            if character == '\\' {
+                self.bump();
+                let Some(escape) = self.bump() else {
+                    break;
+                };
+                let decoded = match escape {
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    '0' => '\0',
+                    '\\' => '\\',
+                    '"' => '"',
+                    '{' => '{',
+                    '}' => '}',
+                    _ => {
+                        self.diagnostics.push(Diagnostic::error(
+                            format!("unsupported interpolated string escape `\\{escape}`"),
+                            Span::new(self.file, self.offset - escape.len_utf8() - 1, self.offset),
+                        ));
+                        continue;
+                    }
+                };
+                text.push(decoded);
+            } else {
+                self.bump();
+                text.push(character);
+            }
+        }
+        self.diagnostics.push(Diagnostic::error(
+            "unterminated interpolated string literal",
             Span::new(self.file, start, self.offset),
         ));
     }

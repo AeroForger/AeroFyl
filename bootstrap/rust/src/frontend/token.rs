@@ -74,6 +74,7 @@ pub enum TokenKind {
     Integer(String),
     Float(String),
     String(String),
+    InterpolatedString(Vec<InterpolationPart>),
     Char(char),
     Keyword(Keyword),
     LeftParen,
@@ -105,6 +106,12 @@ pub enum TokenKind {
     Slash,
     SlashEqual,
     Eof,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InterpolationPart {
+    Text(String),
+    Variable(String, Span),
 }
 
 #[derive(Clone, Debug, PartialEq)]

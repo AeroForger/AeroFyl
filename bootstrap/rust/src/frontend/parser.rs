@@ -32,7 +32,9 @@ impl Parser {
         let mut imports = Vec::new();
         let mut imported_names = HashSet::new();
         while !self.at(&TokenKind::Eof) {
-            let result = if self.at(&TokenKind::Keyword(Keyword::Use)) {
+            let result = if self.at(&TokenKind::Keyword(Keyword::Use))
+                || self.at(&TokenKind::Keyword(Keyword::Using))
+            {
                 self.parse_import().and_then(|import| {
                     if imported_names.insert(import.name.text.clone()) {
                         imports.push(import);
@@ -74,16 +76,42 @@ impl Parser {
 
     fn parse_import(&mut self) -> Result<Import, Diagnostic> {
         let start = self.advance().span;
-        let mut name = self.expect_identifier("expected module name after `use`")?;
+        let selective = matches!(
+            self.tokens[self.current - 1].kind,
+            TokenKind::Keyword(Keyword::Using)
+        );
+        let mut name = self.expect_identifier("expected module name after import keyword")?;
         while self.consume(&TokenKind::Dot) {
             let component = self.expect_identifier("expected module name after `.`")?;
             name.text.push('.');
             name.text.push_str(&component.text);
             name.span = name.span.join(component.span);
         }
+        let selected = if selective {
+            self.expect(
+                TokenKind::Colon,
+                "expected `:` after module name in `using`",
+            )?;
+            let mut names = vec![self.expect_identifier("expected name after `:`")?];
+            while self.consume(&TokenKind::Comma) {
+                names.push(self.expect_identifier("expected name after `,`")?);
+            }
+            let mut unique = HashSet::new();
+            if let Some(duplicate) = names.iter().find(|name| !unique.insert(name.text.clone())) {
+                return Err(Diagnostic::error(
+                    format!("duplicate selected name `{}`", duplicate.text),
+                    duplicate.span,
+                ));
+            }
+            Some(names)
+        } else {
+            None
+        };
         let end = self.expect(TokenKind::Semicolon, "expected `;` after import")?;
         Ok(Import {
             name,
+            selected,
+            target_file: None,
             span: start.join(end.span),
         })
     }
@@ -154,12 +182,6 @@ impl Parser {
         let visibility = match visibility_token.kind {
             TokenKind::Keyword(Keyword::Public) => Visibility::Public,
             TokenKind::Keyword(Keyword::Private) => Visibility::Private,
-            TokenKind::Keyword(Keyword::Using) => {
-                return Err(Diagnostic::error(
-                    "`using` is reserved; use `use module;` for imports",
-                    visibility_token.span,
-                ));
-            }
             _ => {
                 return Err(Diagnostic::error(
                     "expected `public` or `private` function visibility",
@@ -678,6 +700,10 @@ impl Parser {
             },
             TokenKind::String(value) => Expression {
                 kind: ExpressionKind::Literal(Literal::String(value)),
+                span: token.span,
+            },
+            TokenKind::InterpolatedString(parts) => Expression {
+                kind: ExpressionKind::Interpolated(parts),
                 span: token.span,
             },
             TokenKind::Char(value) => Expression {

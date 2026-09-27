@@ -443,6 +443,45 @@ impl FunctionLowerer {
     }
 
     fn expression(&mut self, expression: &HirExpression) -> ValueId {
+        if let HirExpressionKind::PrintSeries {
+            values,
+            stderr,
+            newline,
+        } = &expression.kind
+        {
+            let mut result = None;
+            for (index, value) in values.iter().enumerate() {
+                let printed = self.expression(value);
+                result = Some(self.emit_value(
+                    IrInstructionKind::Print {
+                        value: printed,
+                        value_type: value.ty.clone(),
+                        stderr: *stderr,
+                        newline: *newline && index + 1 == values.len(),
+                    },
+                    Type::Void,
+                    expression.span,
+                ));
+            }
+            if let Some(result) = result {
+                return result;
+            }
+            let empty = self.emit_value(
+                IrInstructionKind::StringConstant(String::new()),
+                Type::String,
+                expression.span,
+            );
+            return self.emit_value(
+                IrInstructionKind::Print {
+                    value: empty,
+                    value_type: Type::String,
+                    stderr: *stderr,
+                    newline: *newline,
+                },
+                Type::Void,
+                expression.span,
+            );
+        }
         if let HirExpressionKind::Binary {
             operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr,
             left,
@@ -743,6 +782,7 @@ impl FunctionLowerer {
                 stderr: *stderr,
                 newline: *newline,
             },
+            HirExpressionKind::PrintSeries { .. } => unreachable!("print series lowered above"),
             HirExpressionKind::Input { target } => IrInstructionKind::Input {
                 target: target.clone(),
             },

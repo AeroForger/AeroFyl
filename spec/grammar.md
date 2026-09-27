@@ -3,8 +3,9 @@
 This is a partial grammar for forms accepted by the bootstrap. It does not define unspecified language areas. Literal token definitions are in [lexical.md](lexical.md).
 
 ```text
-module          = { import-decl | struct-decl | enum-decl | function-decl } ;
+module          = { import-decl | selective-import-decl | struct-decl | enum-decl | function-decl } ;
 import-decl     = "use" module-name ";" ;
+selective-import-decl = "using" module-name ":" identifier { "," identifier } ";" ;
 module-name     = identifier { "." identifier } ;
 struct-decl     = "struct" identifier "{" { type identifier ";" } "}" ;
 enum-decl       = "enum" identifier "{" enum-variant { "," enum-variant } [ "," ] "}" ;
@@ -57,6 +58,10 @@ if-statement    = "if" "(" expression ")" block [ "else" ( block | if-statement 
 
 Primary expressions currently include identifiers, known literals, parenthesized expressions, collection literals, and named struct literals. Qualified enum variants use `EnumName.variant`.
 
+The four `std.io` output calls additionally accept an interpolated output
+literal as their sole argument. Its variable placeholders are described in
+[lexical.md](lexical.md).
+
 `int(expression)` and `char(expression)` use ordinary call-shaped syntax but
 are checked as explicit conversions rather than function calls.
 
@@ -64,5 +69,4 @@ are checked as explicit conversions rather than function calls.
 type context. Tuple return types are parsed, but tuple value syntax is not
 specified yet. `reference(expression)` constructs `ref T`. Payload variants use
 `Enum.Variant(expression)`; `.is(Enum.Variant)` discriminates and
-`.payload(Enum.Variant)` performs checked extraction. `using` remains reserved
-and has no grammar.
+`.payload(Enum.Variant)` performs checked extraction.

@@ -13,6 +13,8 @@ pub struct Module {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
     pub name: Name,
+    pub selected: Option<Vec<Name>>,
+    pub target_file: Option<super::source::FileId>,
     pub span: Span,
 }
 
@@ -141,6 +143,7 @@ pub struct Expression {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExpressionKind {
     Literal(Literal),
+    Interpolated(Vec<super::token::InterpolationPart>),
     Identifier(Name),
     Call {
         callee: Name,

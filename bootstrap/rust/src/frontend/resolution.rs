@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::ast::{Block, Expression, ExpressionKind, Module, StatementKind};
+use super::ast::{Block, Expression, ExpressionKind, Import, Module, StatementKind};
 use super::diagnostics::Diagnostic;
 use super::source::Span;
 use super::types::Type;
@@ -63,6 +63,7 @@ struct Resolver {
     scopes: Vec<HashMap<String, SymbolId>>,
     diagnostics: Vec<Diagnostic>,
     type_names: HashMap<String, Span>,
+    imports: Vec<Import>,
 }
 
 impl Resolver {
@@ -72,6 +73,7 @@ impl Resolver {
             scopes: vec![HashMap::new()],
             diagnostics: Vec::new(),
             type_names: HashMap::new(),
+            imports: module.imports.clone(),
         };
         if module
             .imports
@@ -102,6 +104,35 @@ impl Resolver {
     }
 
     fn resolve(mut self, module: &Module) -> Result<Resolution, Vec<Diagnostic>> {
+        for import in &module.imports {
+            if let (Some(names), Some(target)) = (&import.selected, import.target_file) {
+                for name in names {
+                    let function = module
+                        .functions
+                        .iter()
+                        .find(|item| item.name.text == name.text && item.name.span.file == target);
+                    let named_type =
+                        module.structs.iter().any(|item| {
+                            item.name.text == name.text && item.name.span.file == target
+                        }) || module.enums.iter().any(|item| {
+                            item.name.text == name.text && item.name.span.file == target
+                        });
+                    if let Some(function) = function {
+                        if function.visibility == super::ast::Visibility::Private {
+                            self.diagnostics.push(Diagnostic::error(
+                                format!("private function `{}` cannot be selected", name.text),
+                                name.span,
+                            ));
+                        }
+                    } else if !named_type {
+                        self.diagnostics.push(Diagnostic::error(
+                            format!("module does not declare `{}`", name.text),
+                            name.span,
+                        ));
+                    }
+                }
+            }
+        }
         for (name, span) in module
             .structs
             .iter()
@@ -297,6 +328,13 @@ impl Resolver {
                 }
             }
             ExpressionKind::Literal(_) => {}
+            ExpressionKind::Interpolated(parts) => {
+                for part in parts {
+                    if let super::token::InterpolationPart::Variable(name, span) = part {
+                        self.resolve_name(name, *span);
+                    }
+                }
+            }
         }
     }
 
@@ -341,6 +379,16 @@ impl Resolver {
                 ));
                 return;
             }
+            if let Some(declaration) = declaration
+                && declaration.file != span.file
+                && !import_allows(&self.imports, span.file, declaration.file, name)
+            {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("`{name}` was not imported into this module"),
+                    span,
+                ));
+                return;
+            }
             self.resolution.references.insert(span, symbol);
         } else {
             self.diagnostics.push(Diagnostic::error(
@@ -349,7 +397,40 @@ impl Resolver {
             ));
         }
     }
+}
 
+pub(crate) fn import_allows(
+    imports: &[Import],
+    source: super::source::FileId,
+    target: super::source::FileId,
+    name: &str,
+) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    let mut pending = vec![source];
+    while let Some(file) = pending.pop() {
+        if !visited.insert(file) {
+            continue;
+        }
+        for import in imports.iter().filter(|item| item.span.file == file) {
+            let Some(imported_file) = import.target_file else {
+                continue;
+            };
+            if let Some(selected) = &import.selected {
+                if imported_file == target && selected.iter().any(|item| item.text == name) {
+                    return true;
+                }
+            } else {
+                if imported_file == target {
+                    return true;
+                }
+                pending.push(imported_file);
+            }
+        }
+    }
+    false
+}
+
+impl Resolver {
     fn define_builtin(&mut self, name: &str) {
         let id = self.push_symbol(name, SymbolKind::Builtin, None, None);
         self.scopes[0].insert(name.to_owned(), id);

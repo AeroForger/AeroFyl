@@ -67,6 +67,15 @@ Developer logs while making Experimental Stage-3 `.FYL` compiler aka `ES3FL FRON
 > **STATUS:** NOT-ADDED
 
 1. Currently we dont have `using` statement meaning i had to import parts of the code fully instead of a small part that i needed.
+Concept:
+```
+using file2: function1, function2;
+
+void main(string[] args){
+  function1();
+  function2();
+}
+```
 
 ## REPORT - 2 LEXER.FYL
 
@@ -97,6 +106,17 @@ Developer logs while making Experimental Stage-3 `.FYL` compiler aka `ES3FL FRON
 > **STATUS:** NOT-ADDED
 
 2. Missing string interpolation. Diagnostic/debug output requires multiple print calls or manual string construction.
+
+string interpolation:
+```
+use std.io;
+
+void main(string[] args){
+  int result = 2;
+  print(\v"result: {result}");
+  // output result: 2
+}
+```
 
 </details>
 

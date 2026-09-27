@@ -12,9 +12,20 @@ for source in "$repository_root"/examples/*.fyl \
 done
 
 "${compiler[@]}" "$repository_root/tests/modules/compiler/main.fyl" >/dev/null
+"${compiler[@]}" "$repository_root/tests/modules/selective/main.fyl" >/dev/null
 
 runtime_directory="$(mktemp -d)"
 trap 'rm -rf "$runtime_directory"' EXIT
+
+"${compiler[@]}" compile "$repository_root/tests/modules/selective/main.fyl" -o "$runtime_directory/selective-import" >/dev/null
+set +e
+"$runtime_directory/selective-import"
+status=$?
+set -e
+if [[ $status -ne 23 ]]; then
+    printf 'selective import fixture exited with %s, expected 23\n' "$status" >&2
+    exit 1
+fi
 
 for source in "$repository_root"/tests/compile-fail/*.fyl; do
     if "${compiler[@]}" "$source" >/dev/null 2>&1; then
@@ -95,6 +106,19 @@ printf 'Hello, World!\n123\n-456\n0\n-9223372036854775808\ntrue\nfalse\nAé\n' >
 printf 'error: something happened\n' >"$runtime_directory/io-output.expected-stderr"
 cmp "$runtime_directory/io-output.expected-stdout" "$runtime_directory/io-output.stdout"
 cmp "$runtime_directory/io-output.expected-stderr" "$runtime_directory/io-output.stderr"
+
+"${compiler[@]}" compile "$repository_root/tests/runtime/language_walls.fyl" -o "$runtime_directory/language-walls" >/dev/null
+"$runtime_directory/language-walls" >"$runtime_directory/language-walls.stdout"
+cat >"$runtime_directory/language-walls.expected" <<'EXPECTED'
+[1, 2]
+[3, 4]
+Result.ok(42)
+Point{x: 7, label: "a\"b"}
+some(5)
+ref(6)
+result: Result.ok(42), numbers: [1, 2], literal {brace}
+EXPECTED
+cmp "$runtime_directory/language-walls.expected" "$runtime_directory/language-walls.stdout"
 
 "${compiler[@]}" compile "$repository_root/tests/runtime/io_input.fyl" -o "$runtime_directory/io-input" >/dev/null
 printf 'alpha\nbeta\n42\n-9223372036854775808\ntrue\nfalse\nλ\n' \

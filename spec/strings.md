@@ -22,6 +22,8 @@ does not mutate either operand. Literal storage is read-only; concatenation and
 slicing allocate independent process-lifetime storage in Stage 0. Copying a
 string value may share immutable storage.
 
-String indexing is not supported; use `.byte`. String escape syntax, Unicode
-character iteration, grapheme operations, reclamation, and a stable string ABI
-are not specified.
+String indexing is not supported; use `.byte`. String escape syntax is listed
+in [lexical.md](lexical.md). Interpolated output literals are a separate form
+used only in direct `std.io` output calls; they do not construct string values.
+Unicode character iteration, grapheme operations, reclamation, and a stable
+string ABI are not specified.

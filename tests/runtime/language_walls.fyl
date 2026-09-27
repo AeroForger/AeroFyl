@@ -1,0 +1,25 @@
+use std.io;
+
+enum Result { ok(int), error(string) }
+
+struct Point {
+    int x;
+    string label;
+}
+
+public void main() {
+    list int numbers = [1, 2];
+    int[2] fixed = [3, 4];
+    Result result = Result.ok(42);
+    Point point = Point { x: 7, label: "a\"b" };
+    optional int option = some(5);
+    ref int referenced = reference(6);
+
+    println(numbers);
+    println(fixed);
+    println(result);
+    println(point);
+    println(option);
+    println(referenced);
+    println(\v"result: {result}, numbers: {numbers}, literal \{brace\}");
+}

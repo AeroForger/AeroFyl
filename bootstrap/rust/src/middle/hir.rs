@@ -286,6 +286,11 @@ pub enum HirExpressionKind {
         stderr: bool,
         newline: bool,
     },
+    PrintSeries {
+        values: Vec<HirExpression>,
+        stderr: bool,
+        newline: bool,
+    },
     Input {
         target: Type,
     },

@@ -1,5 +1,6 @@
 pub mod elf;
 pub mod emitter;
+mod format;
 pub mod instruction;
 pub mod lower;
 pub mod register;

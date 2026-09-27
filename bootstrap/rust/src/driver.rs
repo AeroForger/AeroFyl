@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -8,7 +8,7 @@ use crate::backend::x86_64::elf::ElfError;
 use crate::backend::x86_64::emitter::EmitError;
 use crate::backend::x86_64::lower::BackendError;
 use crate::frontend::diagnostics::Diagnostic;
-use crate::frontend::source::SourceMap;
+use crate::frontend::source::{FileId, SourceMap};
 use crate::middle::hir::HirModule;
 use crate::middle::ir::IrModule;
 use crate::middle::verify::IrVerificationError;
@@ -186,7 +186,7 @@ pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutpu
     let mut sources = SourceMap::new();
     let mut modules = Vec::new();
     let mut active = Vec::new();
-    let mut loaded = HashSet::new();
+    let mut loaded = HashMap::new();
     load_module(path, &mut sources, &mut modules, &mut active, &mut loaded).map_err(|error| {
         match error {
             ModuleLoadError::Load(error) => CompileError::Load(error),
@@ -208,13 +208,7 @@ pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutpu
         span: root_span,
     };
     for module in modules {
-        merged.imports.extend(
-            module
-                .imports
-                .iter()
-                .filter(|import| import.name.text.starts_with("std."))
-                .cloned(),
-        );
+        merged.imports.extend(module.imports);
         merged.structs.extend(module.structs);
         merged.enums.extend(module.enums);
         merged.functions.extend(module.functions);
@@ -232,8 +226,8 @@ fn load_module(
     sources: &mut SourceMap,
     modules: &mut Vec<crate::frontend::ast::Module>,
     active: &mut Vec<PathBuf>,
-    loaded: &mut HashSet<PathBuf>,
-) -> Result<(), ModuleLoadError> {
+    loaded: &mut HashMap<PathBuf, FileId>,
+) -> Result<FileId, ModuleLoadError> {
     let source = load_source(path).map_err(ModuleLoadError::Load)?;
     let canonical = fs::canonicalize(path).map_err(|source| {
         ModuleLoadError::Load(LoadError::Io {
@@ -241,19 +235,25 @@ fn load_module(
             source,
         })
     })?;
-    if loaded.contains(&canonical) {
-        return Ok(());
+    if let Some(file) = loaded.get(&canonical) {
+        return Ok(*file);
     }
     let file = sources.add(&canonical, &source);
     let tokens = crate::frontend::lexer::lex(file, &source).map_err(ModuleLoadError::Frontend)?;
-    let module = crate::frontend::parser::parse(tokens).map_err(ModuleLoadError::Frontend)?;
+    let mut module = crate::frontend::parser::parse(tokens).map_err(ModuleLoadError::Frontend)?;
 
     active.push(canonical.clone());
     let parent = canonical
         .parent()
         .expect("source file has a parent directory");
-    for import in &module.imports {
+    for import in &mut module.imports {
         if matches!(import.name.text.as_str(), "std.io" | "std.fs") {
+            if import.selected.is_some() {
+                return Err(ModuleLoadError::Frontend(vec![Diagnostic::error(
+                    "selective standard-library imports are not specified",
+                    import.span,
+                )]));
+            }
             continue;
         }
         if import.name.text.starts_with("std.") {
@@ -291,12 +291,18 @@ fn load_module(
                 import.span,
             )]));
         }
-        load_module(&imported_canonical, sources, modules, active, loaded)?;
+        import.target_file = Some(load_module(
+            &imported_canonical,
+            sources,
+            modules,
+            active,
+            loaded,
+        )?);
     }
     active.pop();
-    loaded.insert(canonical);
+    loaded.insert(canonical, file);
     modules.push(module);
-    Ok(())
+    Ok(file)
 }
 
 /// Compiles one source file and writes a directly executable bootstrap artifact.
@@ -401,6 +407,224 @@ mod tests {
         let output = directory.join("program");
         compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
         assert_eq!(Command::new(&output).status().unwrap().code(), Some(19));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn selective_import_exposes_only_named_function() {
+        let directory = write_project(&[
+            (
+                "main.fyl",
+                "using helper: chosen; public void main() { chosen(); hidden(); }",
+            ),
+            (
+                "helper.fyl",
+                "public void chosen() {} public void hidden() {}",
+            ),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error.render().contains("`hidden` was not imported"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn selective_import_can_call_named_function() {
+        use std::process::Command;
+        let directory = write_project(&[
+            (
+                "main.fyl",
+                "using helper: chosen; public void main() { exit(chosen()); }",
+            ),
+            (
+                "helper.fyl",
+                "public int chosen() { return hidden(); } private int hidden() { return 23; }",
+            ),
+        ]);
+        let output = directory.join("program");
+        compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
+        assert_eq!(Command::new(&output).status().unwrap().code(), Some(23));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn selective_import_rejects_unknown_name() {
+        let directory = write_project(&[
+            ("main.fyl", "using helper: absent; public void main() {}"),
+            ("helper.fyl", "public void chosen() {}"),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error.render().contains("module does not declare `absent`"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn selective_import_restricts_named_types_and_private_functions() {
+        let directory = write_project(&[
+            (
+                "main.fyl",
+                "using helper: Visible; public void main() { Hidden item = Hidden { value: 1 }; }",
+            ),
+            (
+                "helper.fyl",
+                "struct Visible { int value; } struct Hidden { int value; }",
+            ),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error.render().contains("type `Hidden` was not imported"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[
+            ("main.fyl", "using helper: hidden; public void main() {}"),
+            ("helper.fyl", "private void hidden() {}"),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("private function `hidden` cannot be selected"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn interpolated_output_uses_variables_and_escaped_braces() {
+        use std::process::Command;
+        let directory = write_project(&[(
+            "main.fyl",
+            r#"use std.io; public void main() { int value = 42; println(\v"value: {value} \{ok\}"); }"#,
+        )]);
+        let output = directory.join("program");
+        compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
+        let result = Command::new(&output).output().unwrap();
+        assert_eq!(result.stdout, b"value: 42 {ok}\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn interpolation_requires_direct_output_and_variable_placeholders() {
+        let source =
+            r#"use std.io; public void main() { int result = 2; string text = \v"{result}"; }"#;
+        let error = compile(source, "memory.fyl", CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("only supported as a direct output argument")
+        );
+
+        let source =
+            r#"use std.io; public void main() { int result = 2; print(\v"{result + 1}"); }"#;
+        let error = compile(source, "memory.fyl", CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("expected `}` after interpolated variable")
+        );
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn prints_collections_enums_structs_optionals_and_references() {
+        use std::process::Command;
+        let source = r#"
+            use std.io;
+            enum State { idle, running }
+            enum Result { ok(int), error(string) }
+            struct Point { int x; string name; }
+            public void main() {
+                list int values = [1, 2];
+                int[2] fixed = [3, 4];
+                State state = State.running;
+                Result result = Result.ok(42);
+                Point point = Point { x: 7, name: "a\"b" };
+                optional int option = some(5);
+                ref int referenceValue = reference(6);
+                println(values);
+                println(fixed);
+                println(state);
+                println(result);
+                println(point);
+                println(option);
+                println(referenceValue);
+            }
+        "#;
+        let directory = write_project(&[("main.fyl", source)]);
+        let output = directory.join("program");
+        compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
+        let result = Command::new(&output).output().unwrap();
+        assert_eq!(result.status.code(), Some(0));
+        assert_eq!(result.stdout, b"[1, 2]\n[3, 4]\nState.running\nResult.ok(42)\nPoint{x: 7, name: \"a\\\"b\"}\nsome(5)\nref(6)\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn prints_nested_values_and_interpolated_complex_variable() {
+        use std::process::Command;
+        let source = r#"
+            use std.io;
+            struct Point { int x; string label; }
+            enum Message { text(string), empty }
+            public void main() {
+                list string names = ["a\n", "b\\"];
+                list Point points = [Point { x: 1, label: "one" }, Point { x: 2, label: "two" }];
+                list list int matrix = [[1, 2], [3, 4]];
+                Message message = Message.text("hi");
+                optional int absent = none();
+                println(names);
+                println(points);
+                println(matrix);
+                println(message);
+                println(absent);
+                println(\v"matrix = {matrix}");
+                eprintln(\v"names = {names}");
+            }
+        "#;
+        let directory = write_project(&[("main.fyl", source)]);
+        let output = directory.join("program");
+        compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
+        let result = Command::new(&output).output().unwrap();
+        assert_eq!(result.status.code(), Some(0));
+        assert_eq!(result.stdout, b"[\"a\\n\", \"b\\\\\"]\n[Point{x: 1, label: \"one\"}, Point{x: 2, label: \"two\"}]\n[[1, 2], [3, 4]]\nMessage.text(\"hi\")\nnone()\nmatrix = [[1, 2], [3, 4]]\n");
+        assert_eq!(result.stderr, b"names = [\"a\\n\", \"b\\\\\"]\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn recursive_reference_printing_fails_with_runtime_status() {
+        use std::process::Command;
+        let source = r#"
+            use std.io;
+            struct Node { int value; optional ref Node next; }
+            public void main() {
+                ref Node root = reference(Node { value: 1, next: none() });
+                root.value = Node { value: 1, next: some(root) };
+                println(root);
+            }
+        "#;
+        let directory = write_project(&[("main.fyl", source)]);
+        let output = directory.join("program");
+        compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
+        assert_eq!(
+            Command::new(&output).output().unwrap().status.code(),
+            Some(70)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

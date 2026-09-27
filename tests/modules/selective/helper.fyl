@@ -1,0 +1,7 @@
+enum Result { ok(int), error(string) }
+
+private int internal() { return 23; }
+
+public Result run() { return Result.ok(internal()); }
+
+public int unselected() { return 99; }

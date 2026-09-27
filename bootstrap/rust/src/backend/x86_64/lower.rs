@@ -9,6 +9,7 @@ use crate::middle::ir::{
 };
 use crate::middle::verify::VerifiedIrModule;
 
+use super::format;
 use super::instruction::{Condition, Instruction, MachineFunction, MachineModule};
 use super::register::Register;
 use super::runtime;
@@ -143,12 +144,14 @@ pub fn lower(module: &VerifiedIrModule<'_>) -> Result<MachineModule, BackendErro
     }
 
     let structs: HashMap<_, _> = module.structs.iter().map(|item| (item.id, item)).collect();
+    let format_symbols = format::types(module);
     let (string_offsets, read_only_data) = collect_string_data(module);
     let mut functions = module
         .functions
         .iter()
-        .map(|function| lower_function(function, &structs, &string_offsets))
+        .map(|function| lower_function(function, &structs, &string_offsets, &format_symbols))
         .collect::<Result<Vec<_>, _>>()?;
+    functions.extend(format::functions(module, &format_symbols, &string_offsets));
     let startup = startup::generate(main.symbol, !main.parameters.is_empty());
     let runtime_roots: HashSet<_> = functions
         .iter()
@@ -180,8 +183,10 @@ fn collect_string_data(module: &crate::middle::ir::IrModule) -> (HashMap<String,
             IrInstructionKind::StringConstant(value) => Some(value),
             _ => None,
         })
+        .cloned()
+        .chain(format::text_values(module))
     {
-        if offsets.contains_key(value) {
+        if offsets.contains_key(&value) {
             continue;
         }
         while data.len() % 8 != 0 {
@@ -272,6 +277,7 @@ fn lower_function(
     function: &IrFunction,
     structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
     string_offsets: &HashMap<String, usize>,
+    format_symbols: &HashMap<Type, SymbolId>,
 ) -> Result<MachineFunction, BackendError> {
     let slots = build_slots(function)?;
     let mut instructions = vec![
@@ -318,6 +324,7 @@ fn lower_function(
                 &slots,
                 structs,
                 string_offsets,
+                format_symbols,
                 &mut instructions,
             )?;
         }
@@ -397,6 +404,7 @@ fn lower_instruction(
     slots: &Slots,
     structs: &HashMap<crate::frontend::types::TypeId, &IrStruct>,
     string_offsets: &HashMap<String, usize>,
+    format_symbols: &HashMap<Type, SymbolId>,
     output: &mut Vec<Instruction>,
 ) -> Result<(), BackendError> {
     match &instruction.kind {
@@ -1436,31 +1444,43 @@ fn lower_instruction(
             newline,
         } => {
             load_value(output, slots, *value, Register::Rdi)?;
-            let type_code = match value_type {
-                Type::String => 0,
-                Type::Int => 1,
-                Type::Bool => 2,
-                Type::Char => 3,
-                _ => {
-                    return Err(BackendError::UnsupportedIr {
-                        function: function.name.clone(),
-                        feature: "unsupported std.io output type",
-                    });
-                }
-            };
             output.push(Instruction::MoveImmediate64 {
                 destination: Register::Rsi,
-                value: type_code,
-            });
-            output.push(Instruction::MoveImmediate64 {
-                destination: Register::Rdx,
                 value: if *stderr { 2 } else { 1 },
             });
             output.push(Instruction::MoveImmediate64 {
-                destination: Register::Rcx,
-                value: u64::from(*newline),
+                destination: Register::Rdx,
+                value: 0,
             });
-            output.push(Instruction::Call(runtime::PRINT));
+            output.push(Instruction::MoveImmediate64 {
+                destination: Register::Rcx,
+                value: 0,
+            });
+            output.push(Instruction::Call(*format_symbols.get(value_type).ok_or(
+                BackendError::UnsupportedIr {
+                    function: function.name.clone(),
+                    feature: "unsupported std.io output type",
+                },
+            )?));
+            if *newline {
+                output.push(Instruction::LoadDataAddress {
+                    destination: Register::Rdi,
+                    offset: *string_offsets.get("").expect("empty format string"),
+                });
+                output.push(Instruction::MoveImmediate64 {
+                    destination: Register::Rsi,
+                    value: 0,
+                });
+                output.push(Instruction::MoveImmediate64 {
+                    destination: Register::Rdx,
+                    value: if *stderr { 2 } else { 1 },
+                });
+                output.push(Instruction::MoveImmediate64 {
+                    destination: Register::Rcx,
+                    value: 1,
+                });
+                output.push(Instruction::Call(runtime::PRINT));
+            }
             store_result(instruction, slots, output)?;
         }
         IrInstructionKind::Input { target } => {

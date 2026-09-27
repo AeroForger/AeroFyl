@@ -4,7 +4,7 @@ use super::ast::{
     Expression, ExpressionKind, Literal, Module, Statement, StatementKind, Visibility,
 };
 use super::diagnostics::Diagnostic;
-use super::resolution::{Resolution, SymbolId, SymbolKind, resolve};
+use super::resolution::{Resolution, SymbolId, SymbolKind, import_allows, resolve};
 use super::types::{Type, TypeId};
 use crate::middle::hir::*;
 
@@ -16,6 +16,8 @@ pub fn analyze(module: &Module) -> Result<HirModule, Vec<Diagnostic>> {
         structs: Vec::new(),
         enums: Vec::new(),
         type_names: HashMap::new(),
+        type_sources: HashMap::new(),
+        imports: module.imports.clone(),
     };
     analyzer.collect_types(module);
     analyzer.analyze_module(module)
@@ -80,18 +82,24 @@ struct Analyzer<'resolution> {
     structs: Vec<HirStruct>,
     enums: Vec<HirEnum>,
     type_names: HashMap<String, Type>,
+    type_sources: HashMap<String, super::source::FileId>,
+    imports: Vec<super::ast::Import>,
 }
 
 impl Analyzer<'_> {
     fn collect_types(&mut self, module: &Module) {
         for declaration in &module.structs {
             let id = TypeId(self.type_names.len() as u32);
+            self.type_sources
+                .insert(declaration.name.text.clone(), declaration.name.span.file);
             self.type_names
                 .entry(declaration.name.text.clone())
                 .or_insert(Type::Struct(id));
         }
         for declaration in &module.enums {
             let id = TypeId(self.type_names.len() as u32);
+            self.type_sources
+                .insert(declaration.name.text.clone(), declaration.name.span.file);
             self.type_names
                 .entry(declaration.name.text.clone())
                 .or_insert(Type::Enum(id));
@@ -432,6 +440,16 @@ impl Analyzer<'_> {
         expected: Option<&Type>,
     ) -> HirExpression {
         let (kind, actual) = match &expression.kind {
+            ExpressionKind::Interpolated(_) => {
+                self.diagnostics.push(Diagnostic::error(
+                    "interpolated strings are only supported as a direct output argument",
+                    expression.span,
+                ));
+                (
+                    HirExpressionKind::StringLiteral(String::new()),
+                    Type::String,
+                )
+            }
             ExpressionKind::Literal(literal) => {
                 let ty = match literal {
                     Literal::Integer(value) => {
@@ -644,6 +662,62 @@ impl Analyzer<'_> {
                                     expression.span,
                                 ));
                             }
+                            if let Some(Expression {
+                                kind: ExpressionKind::Interpolated(parts),
+                                ..
+                            }) = arguments.first()
+                            {
+                                let mut values = Vec::new();
+                                for part in parts {
+                                    match part {
+                                        super::token::InterpolationPart::Text(text) => {
+                                            values.push(HirExpression {
+                                                kind: HirExpressionKind::StringLiteral(
+                                                    text.clone(),
+                                                ),
+                                                ty: Type::String,
+                                                span: expression.span,
+                                            })
+                                        }
+                                        super::token::InterpolationPart::Variable(name, span) => {
+                                            let variable = Expression {
+                                                kind: ExpressionKind::Identifier(
+                                                    super::ast::Name {
+                                                        text: name.clone(),
+                                                        span: *span,
+                                                    },
+                                                ),
+                                                span: *span,
+                                            };
+                                            values.push(self.check_expression(&variable, None));
+                                        }
+                                    }
+                                }
+                                for argument in arguments.iter().skip(1) {
+                                    self.check_expression(argument, None);
+                                }
+                                for value in &values {
+                                    if !self.is_printable_type(&value.ty, &mut HashSet::new()) {
+                                        self.diagnostics.push(Diagnostic::error(
+                                            format!(
+                                                "`{}` cannot print a `{}` value",
+                                                callee.text, value.ty
+                                            ),
+                                            value.span,
+                                        ));
+                                    }
+                                }
+                                return self.finish_expression(
+                                    expression,
+                                    expected,
+                                    HirExpressionKind::PrintSeries {
+                                        values,
+                                        stderr: callee.text.starts_with('e'),
+                                        newline: callee.text.ends_with("println"),
+                                    },
+                                    Type::Void,
+                                );
+                            }
                             let value = arguments
                                 .first()
                                 .map(|argument| self.check_expression(argument, None))
@@ -655,10 +729,7 @@ impl Analyzer<'_> {
                             for argument in arguments.iter().skip(1) {
                                 self.check_expression(argument, None);
                             }
-                            if !matches!(
-                                value.ty,
-                                Type::String | Type::Char | Type::Int | Type::Bool
-                            ) {
+                            if !self.is_printable_type(&value.ty, &mut HashSet::new()) {
                                 self.diagnostics.push(Diagnostic::error(
                                     format!(
                                         "`{}` cannot print a `{}` value",
@@ -1399,6 +1470,7 @@ impl Analyzer<'_> {
         fields: &[super::ast::StructLiteralField],
         span: super::source::Span,
     ) -> (HirExpressionKind, Type) {
+        self.check_named_type_visibility(&name.text, name.span);
         let Some(Type::Struct(struct_id)) = self.type_names.get(&name.text).cloned() else {
             self.diagnostics.push(Diagnostic::error(
                 format!("unknown struct `{}`", name.text),
@@ -1474,6 +1546,7 @@ impl Analyzer<'_> {
         if let ExpressionKind::Identifier(type_name) = &base.kind
             && let Some(Type::Enum(enum_id)) = self.type_names.get(&type_name.text).cloned()
         {
+            self.check_named_type_visibility(&type_name.text, type_name.span);
             let definition = self
                 .enums
                 .iter()
@@ -1725,6 +1798,7 @@ impl Analyzer<'_> {
         if let ExpressionKind::Identifier(type_name) = &receiver.kind
             && let Some(Type::Enum(enum_id)) = self.type_names.get(&type_name.text).cloned()
         {
+            self.check_named_type_visibility(&type_name.text, type_name.span);
             let definition = self
                 .enums
                 .iter()
@@ -2059,11 +2133,23 @@ impl Analyzer<'_> {
 
     fn resolve_type(&mut self, ty: &Type, span: super::source::Span) -> Type {
         match ty {
-            Type::Named(name) => self.type_names.get(name).cloned().unwrap_or_else(|| {
-                self.diagnostics
-                    .push(Diagnostic::error(format!("unknown type `{name}`"), span));
-                Type::Dynamic
-            }),
+            Type::Named(name) => {
+                if let Some(&declaration_file) = self.type_sources.get(name)
+                    && declaration_file != span.file
+                    && !import_allows(&self.imports, span.file, declaration_file, name)
+                {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("type `{name}` was not imported into this module"),
+                        span,
+                    ));
+                    return Type::Dynamic;
+                }
+                self.type_names.get(name).cloned().unwrap_or_else(|| {
+                    self.diagnostics
+                        .push(Diagnostic::error(format!("unknown type `{name}`"), span));
+                    Type::Dynamic
+                })
+            }
             Type::Array { element, length } => Type::Array {
                 element: Box::new(self.resolve_type(element, span)),
                 length: *length,
@@ -2078,6 +2164,58 @@ impl Analyzer<'_> {
                     .collect(),
             ),
             other => other.clone(),
+        }
+    }
+
+    fn check_named_type_visibility(&mut self, name: &str, span: super::source::Span) {
+        if let Some(&declaration_file) = self.type_sources.get(name)
+            && declaration_file != span.file
+            && !import_allows(&self.imports, span.file, declaration_file, name)
+        {
+            self.diagnostics.push(Diagnostic::error(
+                format!("type `{name}` was not imported into this module"),
+                span,
+            ));
+        }
+    }
+
+    fn is_printable_type(&self, ty: &Type, visited: &mut HashSet<TypeId>) -> bool {
+        match ty {
+            Type::String | Type::Char | Type::Int | Type::Byte | Type::Bool => true,
+            Type::Array { element, .. }
+            | Type::List(element)
+            | Type::Optional(element)
+            | Type::Ref(element) => self.is_printable_type(element, visited),
+            Type::Struct(id) => {
+                if !visited.insert(*id) {
+                    return true;
+                }
+                self.structs
+                    .iter()
+                    .find(|item| item.id == *id)
+                    .is_some_and(|item| {
+                        item.fields
+                            .iter()
+                            .all(|field| self.is_printable_type(&field.ty, visited))
+                    })
+            }
+            Type::Enum(id) => {
+                if !visited.insert(*id) {
+                    return true;
+                }
+                self.enums
+                    .iter()
+                    .find(|item| item.id == *id)
+                    .is_some_and(|item| {
+                        item.variants.iter().all(|variant| {
+                            variant
+                                .payload
+                                .as_ref()
+                                .is_none_or(|payload| self.is_printable_type(payload, visited))
+                        })
+                    })
+            }
+            _ => false,
         }
     }
 

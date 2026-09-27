@@ -1,0 +1,9 @@
+using helper: Result, run;
+
+public void main() {
+    Result result = run();
+    if (result.is(Result.ok)) {
+        exit(result.payload(Result.ok));
+    }
+    exit(70);
+}

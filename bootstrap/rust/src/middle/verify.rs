@@ -1792,10 +1792,7 @@ fn validate_instruction(
                 values,
                 errors,
             );
-            if !matches!(
-                value_type,
-                Type::String | Type::Char | Type::Int | Type::Bool
-            ) {
+            if !printable_type(value_type, structs, enums, &mut HashSet::new()) {
                 push_error(
                     errors,
                     function,
@@ -1966,6 +1963,45 @@ fn validate_instruction(
         IrInstructionKind::Aggregate(items) => {
             validate_aggregate(function, block, items, result_type, values, errors)
         }
+    }
+}
+
+fn printable_type(
+    ty: &Type,
+    structs: &HashMap<TypeId, &IrStruct>,
+    enums: &HashMap<TypeId, &IrEnum>,
+    visited: &mut HashSet<TypeId>,
+) -> bool {
+    match ty {
+        Type::String | Type::Char | Type::Int | Type::Byte | Type::Bool => true,
+        Type::Array { element, .. }
+        | Type::List(element)
+        | Type::Optional(element)
+        | Type::Ref(element) => printable_type(element, structs, enums, visited),
+        Type::Struct(id) => {
+            if !visited.insert(*id) {
+                return true;
+            }
+            structs.get(id).is_some_and(|item| {
+                item.fields
+                    .iter()
+                    .all(|field| printable_type(&field.ty, structs, enums, visited))
+            })
+        }
+        Type::Enum(id) => {
+            if !visited.insert(*id) {
+                return true;
+            }
+            enums.get(id).is_some_and(|item| {
+                item.variants.iter().all(|variant| {
+                    variant
+                        .payload
+                        .as_ref()
+                        .is_none_or(|payload| printable_type(payload, structs, enums, visited))
+                })
+            })
+        }
+        _ => false,
     }
 }
 
