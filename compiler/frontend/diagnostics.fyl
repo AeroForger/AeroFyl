@@ -1,0 +1,15 @@
+use source;
+
+enum ErrorType {
+    LexicalError
+}
+
+struct Diagnostic {
+    ErrorType kind;
+    string message;
+    Span span;
+}
+
+public Diagnostic error(ErrorType kind, string message, Span location) {
+    return Diagnostic { kind: kind, message: message, span: location };
+}

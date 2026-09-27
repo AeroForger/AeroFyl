@@ -1,0 +1,25 @@
+use lexer;
+use std.io;
+
+public void main(string[] args) {
+    if (args.length != 1) {
+        eprintln("usage: aerofyl <source.fyl>");
+        exit(2);
+    }
+
+    LexResult result = lex(args[0]);
+    int index = 0;
+    while (index < result.diagnostics.length) {
+        Diagnostic diagnostic = result.diagnostics[index];
+        eprint(diagnostic.span.source);
+        eprint(":");
+        eprint(diagnostic.span.start);
+        eprint(": error: ");
+        eprintln(diagnostic.message);
+        index += 1;
+    }
+    if (result.diagnostics.length > 0) {
+        exit(1);
+    }
+    println("lex succeeded");
+}

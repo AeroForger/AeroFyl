@@ -64,7 +64,7 @@ Developer logs while making Experimental Stage-3 `.FYL` compiler aka `ES3FL FRON
 ---
 
 > **LEVEL:** MEDIUM  
-> **STATUS:** NOT-ADDED
+> **STATUS:** ADDED
 
 1. Currently we dont have `using` statement meaning i had to import parts of the code fully instead of a small part that i needed.
 Concept:
@@ -98,12 +98,12 @@ void main(string[] args){
 ---
 
 > **LEVEL:** MEDIUM  
-> **STATUS:** NOT-ADDED
+> **STATUS:** ADDED
 
 1. Unable to directly print enums and other complex data types, making debugging harder.
 
 > **LEVEL:** LOW  
-> **STATUS:** NOT-ADDED
+> **STATUS:** ADDED
 
 2. Missing string interpolation. Diagnostic/debug output requires multiple print calls or manual string construction.
 

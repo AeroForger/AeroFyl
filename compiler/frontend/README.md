@@ -1,3 +1,5 @@
 # Frontend
 
-This directory is the starting point for the manually written Aerofyl frontend. `token.fyl` defines only an initial token model. Token coverage and the lexer are TODOs.
+`main.fyl` is the current lexer-only command line entry point. The lexer
+returns tokens and lexical diagnostics with byte spans. Parser, AST, resolution,
+and semantic analysis remain to be implemented.
