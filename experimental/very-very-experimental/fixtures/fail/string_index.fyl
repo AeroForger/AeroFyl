@@ -1,0 +1,1 @@
+public void main() { string text = "abc"; int c = text[0]; }

@@ -1,0 +1,2 @@
+use shared;
+public int rightValue() { return sharedValue() + 1; }

@@ -1,0 +1,22 @@
+use std.io;
+use std.fs;
+public void main(string[] args) {
+    writeFile(args[0], "\0\r\néend");
+    string text = readFile(args[0]);
+    println(text.length);
+    println(text == "\0\r\néend");
+    println(exists(args[0]));
+    println(exists(args[1]));
+    println(exists(args[2]));
+    list byte data = [];
+    for (int i = 0; i < 256; i += 1) { data.push(byte(i)); }
+    writeBytes(args[0], data);
+    list byte copy = readBytes(args[0]);
+    for (int i = 0; i < 256; i += 1) { if (int(copy[i]) != i) { exit(60); } }
+    println(copy.length);
+    println(int(copy[255]));
+    list byte empty = [];
+    writeBytes(args[0], empty);
+    string truncated = readFile(args[0]);
+    println(truncated.length);
+}

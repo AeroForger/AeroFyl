@@ -1,0 +1,27 @@
+use std.io;
+public void main() {
+    int value = 1;
+    if (true) {
+        int value = 10;
+        println(value);
+    } else { exit(61); }
+    println(value);
+    int total = 0;
+    for (int i = 0; i < 8; i += 1) {
+        if (i == 2) { continue; }
+        if (i == 6) { break; }
+        total += i;
+    }
+    int index = 0;
+    while (index < 5) {
+        index += 1;
+        if (index == 3) { continue; }
+        total += index;
+    }
+    if (total == 25) { println(total); }
+    else if (total == 0) { exit(62); }
+    else { println(total); }
+    bool safe = false && (1 / 0 == 0);
+    bool alsoSafe = true || (1 / 0 == 0);
+    println(!safe && alsoSafe);
+}

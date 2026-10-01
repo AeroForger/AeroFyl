@@ -1,0 +1,615 @@
+// New recursive-descent declarations/statements and precedence-climbing expressions.
+// Each arena append and cursor change writes a local state copy back through the reference.
+// AI STEALING EVEN MY SCRATCH CODE AND I DIDNT EVEN GET CREDITED
+
+use ast;
+use lexer;
+use diagnostics;
+
+struct ParserState {
+    Source source;
+    list Token tokens;
+    int position;
+    int depth;
+    AstProgram program;
+}
+
+private string p_keyword(Keyword keyword) {
+    while (false) { }
+    if (keyword == Keyword.Public) { return "public"; }
+    if (keyword == Keyword.Private) { return "private"; }
+    if (keyword == Keyword.Use) { return "use"; }
+    if (keyword == Keyword.Using) { return "using"; }
+    if (keyword == Keyword.Return) { return "return"; }
+    if (keyword == Keyword.If) { return "if"; }
+    if (keyword == Keyword.Else) { return "else"; }
+    if (keyword == Keyword.While) { return "while"; }
+    if (keyword == Keyword.For) { return "for"; }
+    if (keyword == Keyword.Break) { return "break"; }
+    if (keyword == Keyword.Continue) { return "continue"; }
+    if (keyword == Keyword.True) { return "true"; }
+    if (keyword == Keyword.False) { return "false"; }
+    if (keyword == Keyword.Print) { return "print"; }
+    if (keyword == Keyword.Input) { return "input"; }
+    if (keyword == Keyword.List) { return "list"; }
+    if (keyword == Keyword.Optional) { return "optional"; }
+    if (keyword == Keyword.Ref) { return "ref"; }
+    if (keyword == Keyword.Int) { return "int"; }
+    if (keyword == Keyword.Byte) { return "byte"; }
+    if (keyword == Keyword.Float) { return "float"; }
+    if (keyword == Keyword.Bool) { return "bool"; }
+    if (keyword == Keyword.Char) { return "char"; }
+    if (keyword == Keyword.String) { return "string"; }
+    if (keyword == Keyword.Void) { return "void"; }
+    if (keyword == Keyword.Dynamic) { return "dynamic"; }
+    if (keyword == Keyword.Struct) { return "struct"; }
+    return "enum";
+}
+
+private string p_spelling(Token token) {
+    while (false) { }
+    if (token.kind.is(TokenKind.Identifier)) { return token.kind.payload(TokenKind.Identifier); }
+    if (token.kind.is(TokenKind.Keyword)) { return p_keyword(token.kind.payload(TokenKind.Keyword)); }
+    if (token.kind.is(TokenKind.LeftParen)) { return "("; }
+    if (token.kind.is(TokenKind.RightParen)) { return ")"; }
+    if (token.kind.is(TokenKind.LeftBrace)) { return "{"; }
+    if (token.kind.is(TokenKind.RightBrace)) { return "}"; }
+    if (token.kind.is(TokenKind.LeftBracket)) { return "["; }
+    if (token.kind.is(TokenKind.RightBracket)) { return "]"; }
+    if (token.kind.is(TokenKind.Comma)) { return ","; }
+    if (token.kind.is(TokenKind.Semicolon)) { return ";"; }
+    if (token.kind.is(TokenKind.Colon)) { return ":"; }
+    if (token.kind.is(TokenKind.Dot)) { return "."; }
+    if (token.kind.is(TokenKind.Equal)) { return "="; }
+    if (token.kind.is(TokenKind.EqualEqual)) { return "=="; }
+    if (token.kind.is(TokenKind.BangEqual)) { return "!="; }
+    if (token.kind.is(TokenKind.Less)) { return "<"; }
+    if (token.kind.is(TokenKind.LessEqual)) { return "<="; }
+    if (token.kind.is(TokenKind.Greater)) { return ">"; }
+    if (token.kind.is(TokenKind.GreaterEqual)) { return ">="; }
+    if (token.kind.is(TokenKind.Bang)) { return "!"; }
+    if (token.kind.is(TokenKind.AmpersandAmpersand)) { return "&&"; }
+    if (token.kind.is(TokenKind.PipePipe)) { return "||"; }
+    if (token.kind.is(TokenKind.Plus)) { return "+"; }
+    if (token.kind.is(TokenKind.PlusEqual)) { return "+="; }
+    if (token.kind.is(TokenKind.Minus)) { return "-"; }
+    if (token.kind.is(TokenKind.MinusEqual)) { return "-="; }
+    if (token.kind.is(TokenKind.Star)) { return "*"; }
+    if (token.kind.is(TokenKind.StarEqual)) { return "*="; }
+    if (token.kind.is(TokenKind.Slash)) { return "/"; }
+    if (token.kind.is(TokenKind.SlashEqual)) { return "/="; }
+    if (token.kind.is(TokenKind.Eof)) { return "<eof>"; }
+    return "<literal>";
+}
+
+private Token p_peek(ref ParserState state) {
+    while (false) { }
+    return state.value.tokens[state.value.position];
+}
+
+private Token p_take(ref ParserState state) {
+    while (false) { }
+    ParserState local = state.value;
+    Token token = local.tokens[local.position];
+    if (!token.kind.is(TokenKind.Eof)) { local.position += 1; }
+    state.value = local;
+    return token;
+}
+
+private bool p_at(ref ParserState state, string spelling) {
+    while (false) { }
+    return p_spelling(p_peek(state)) == spelling;
+}
+
+private bool p_accept(ref ParserState state, string spelling) {
+    while (false) { }
+    if (p_at(state, spelling)) { p_take(state); return true; }
+    return false;
+}
+
+private void p_error(ref ParserState state, string message) {
+    while (false) { }
+    report(state.value.source, error(ErrorType.SyntaxError, message, p_peek(state).span));
+    exit(1);
+}
+
+private Token p_expect(ref ParserState state, string spelling) {
+    while (false) { }
+    if (!p_at(state, spelling)) { p_error(state, "expected `" + spelling + "`"); }
+    return p_take(state);
+}
+
+private Token p_identifier(ref ParserState state) {
+    while (false) { }
+    Token token = p_peek(state);
+    if (token.kind.is(TokenKind.Identifier)) { return p_take(state); }
+    if (token.kind.is(TokenKind.Keyword) && token.kind.payload(TokenKind.Keyword) == Keyword.Byte) { return p_take(state); }
+    p_error(state, "expected identifier");
+    return token;
+}
+
+private Span p_join(Span first, Span last) {
+    while (false) { }
+    return Span { source: first.source, start: first.start, end: last.end };
+}
+
+private void p_enter(ref ParserState state) {
+    while (false) { }
+    ParserState local = state.value;
+    local.depth += 1;
+    state.value = local;
+    if (local.depth > 96) { p_error(state, "source nesting exceeds experimental compiler limit of 96"); }
+}
+
+private void p_leave(ref ParserState state) {
+    while (false) { }
+    ParserState local = state.value;
+    local.depth -= 1;
+    state.value = local;
+}
+
+private int p_add(ref ParserState state, NodeKind kind, string text, int number,
+                  list int children, list string names, Span span) {
+    while (false) { }
+    ParserState local = state.value;
+    AstProgram program = local.program;
+    int id = program.nodes.length;
+    program.nodes.push(AstNode { kind: kind, text: text, number: number, children: children, names: names, span: span });
+    local.program = program;
+    state.value = local;
+    return id;
+}
+
+private AstNode p_node(ref ParserState state, int id) {
+    while (false) { }
+    return state.value.program.nodes[id];
+}
+
+private int p_leaf(ref ParserState state, NodeKind kind, string text, int number, Span span) {
+    while (false) { }
+    return p_add(state, kind, text, number, [], [], span);
+}
+
+private bool p_basic_type(string name) {
+    while (false) { }
+    return name == "int" || name == "byte" || name == "float" || name == "bool"
+        || name == "char" || name == "string" || name == "void" || name == "dynamic";
+}
+
+private int p_length(ref ParserState state, Token token) {
+    while (false) { }
+    // Existing bootstrap verifier workaround; see ../BOOTSTRAP_BLOCKER.md.
+    if (!token.kind.is(TokenKind.Integer)) { p_error(state, "array length must be a decimal integer"); }
+    string digits = token.kind.payload(TokenKind.Integer);
+    int value = 0;
+    int index = 0;
+    while (index < digits.length) {
+        int digit = digits.byte(index) - 48;
+        if (value > (9223372036854775807 - digit) / 10) { p_error(state, "array length is too large"); }
+        value = value * 10 + digit;
+        index += 1;
+    }
+    return value;
+}
+
+private int p_type(ref ParserState state) {
+    while (false) { }
+    p_enter(state);
+    Token start = p_take(state);
+    string spelling = p_spelling(start);
+    int result = -1;
+    if (spelling == "list" || spelling == "optional" || spelling == "ref") {
+        int inner = p_type(state);
+        result = p_add(state, NodeKind.typeSyntax, spelling, 0, [inner], [], p_join(start.span, p_node(state, inner).span));
+    } else if (spelling == "(") {
+        list int elements = [];
+        elements.push(p_type(state));
+        while (p_accept(state, ",")) { elements.push(p_type(state)); }
+        Token close = p_expect(state, ")");
+        result = p_add(state, NodeKind.typeSyntax, "tuple", 0, elements, [], p_join(start.span, close.span));
+    } else if (p_basic_type(spelling) || start.kind.is(TokenKind.Identifier)) {
+        result = p_leaf(state, NodeKind.typeSyntax, spelling, 0, start.span);
+        int dimensions = 0;
+        while (p_accept(state, "[")) {
+            dimensions += 1;
+            if (dimensions > 96) { p_error(state, "array type nesting exceeds experimental compiler limit of 96"); }
+            int count = 0;
+            string form = "array";
+            if (p_at(state, "]")) {
+                if (p_node(state, result).text != "string") { p_error(state, "only `string[]` may omit array length"); }
+                form = "cliargs";
+            } else { count = p_length(state, p_take(state)); }
+            Token close = p_expect(state, "]");
+            result = p_add(state, NodeKind.typeSyntax, form, count, [result], [], p_join(start.span, close.span));
+        }
+    } else { p_error(state, "expected type"); }
+    p_leave(state);
+    return result;
+}
+
+private bool p_variable_start(ref ParserState state) {
+    while (false) { }
+    Token current = p_peek(state);
+    string spelling = p_spelling(current);
+    if (p_basic_type(spelling) || spelling == "list" || spelling == "optional" || spelling == "ref") { return true; }
+    if (current.kind.is(TokenKind.Identifier)) {
+        ParserState local = state.value;
+        Token next = local.tokens[local.position + 1];
+        return next.kind.is(TokenKind.Identifier) || p_spelling(next) == "byte";
+    }
+    return false;
+}
+
+private int p_precedence(string op) {
+    while (false) { }
+    if (op == "||") { return 1; }
+    if (op == "&&") { return 2; }
+    if (op == "==" || op == "!=") { return 3; }
+    if (op == "<" || op == "<=" || op == ">" || op == ">=") { return 4; }
+    if (op == "+" || op == "-") { return 5; }
+    if (op == "*" || op == "/") { return 6; }
+    return 0;
+}
+
+private bool p_interp_identifier_start(int value) {
+    while (false) { }
+    return (value >= 65 && value <= 90) || (value >= 97 && value <= 122) || value == 95;
+}
+
+private int p_interpolation(ref ParserState state, Token token) {
+    while (false) { }
+    string raw = token.kind.payload(TokenKind.Interpolated);
+    list int values = [];
+    list string pieces = [];
+    string text = "";
+    int offset = 0;
+    while (offset < raw.length) {
+        int current = raw.byte(offset);
+        if (current == int('{')) {
+            pieces.push(text);
+            text = "";
+            offset += 1;
+            int begin = offset;
+            if (offset >= raw.length || !p_interp_identifier_start(raw.byte(offset))) { p_error(state, "interpolation requires one variable name"); }
+            offset += 1;
+            while (offset < raw.length && (p_interp_identifier_start(raw.byte(offset)) || (raw.byte(offset) >= 48 && raw.byte(offset) <= 57))) { offset += 1; }
+            if (offset >= raw.length || raw.byte(offset) != int('}')) { p_error(state, "expected `}` after interpolated variable"); }
+            Span location = Span { source: token.span.source, start: token.span.start + 3 + begin, end: token.span.start + 3 + offset };
+            values.push(p_leaf(state, NodeKind.name, raw.slice(begin, offset), 0, location));
+            offset += 1;
+        } else if (current == int('}')) {
+            p_error(state, "unescaped `}` in interpolated output literal");
+        } else if (current == int('\\')) {
+            offset += 1;
+            if (offset >= raw.length) { p_error(state, "unterminated interpolation escape"); }
+            int escaped = raw.byte(offset);
+            if (escaped == int('n')) { text = text + "\n"; }
+            else if (escaped == int('r')) { text = text + "\r"; }
+            else if (escaped == int('t')) { text = text + "\t"; }
+            else if (escaped == int('0')) { text = text + "\0"; }
+            else if (escaped == int('\\') || escaped == int('"') || escaped == int('{') || escaped == int('}')) { text = text + raw.slice(offset, offset + 1); }
+            else { p_error(state, "unsupported interpolation escape"); }
+            offset += 1;
+        } else { text = text + raw.slice(offset, offset + 1); offset += 1; }
+    }
+    pieces.push(text);
+    return p_add(state, NodeKind.interpolated, "", 0, values, pieces, token.span);
+}
+
+private int p_primary(ref ParserState state) {
+    while (false) { }
+    Token token = p_take(state);
+    string spelling = p_spelling(token);
+    int result = -1;
+    if (token.kind.is(TokenKind.Integer)) { result = p_leaf(state, NodeKind.integer, token.kind.payload(TokenKind.Integer), 0, token.span); }
+    else if (token.kind.is(TokenKind.Float)) { result = p_leaf(state, NodeKind.floatValue, token.kind.payload(TokenKind.Float), 0, token.span); }
+    else if (token.kind.is(TokenKind.String)) { result = p_leaf(state, NodeKind.stringValue, token.kind.payload(TokenKind.String), 0, token.span); }
+    else if (token.kind.is(TokenKind.Interpolated)) { result = p_interpolation(state, token); }
+    else if (token.kind.is(TokenKind.Char)) { result = p_leaf(state, NodeKind.character, "", int(token.kind.payload(TokenKind.Char)), token.span); }
+    else if (spelling == "true" || spelling == "false") {
+        int value = 0;
+        if (spelling == "true") { value = 1; }
+        result = p_leaf(state, NodeKind.boolean, "", value, token.span);
+    } else if (token.kind.is(TokenKind.Identifier) || spelling == "print" || spelling == "input" || p_basic_type(spelling)) {
+        result = p_leaf(state, NodeKind.name, spelling, 0, token.span);
+    } else if (spelling == "(") {
+        result = p_expression(state, 1);
+        p_expect(state, ")");
+    } else if (spelling == "[") {
+        list int elements = [];
+        if (!p_at(state, "]")) {
+            elements.push(p_expression(state, 1));
+            while (p_accept(state, ",")) { elements.push(p_expression(state, 1)); }
+        }
+        Token close = p_expect(state, "]");
+        result = p_add(state, NodeKind.collection, "", 0, elements, [], p_join(token.span, close.span));
+    } else { p_error(state, "expected expression"); }
+
+    int chainLength = 0;
+    while (true) {
+        chainLength += 1;
+        if (chainLength > 96) { p_error(state, "postfix chain exceeds experimental compiler limit"); }
+        AstNode left = p_node(state, result);
+        if (left.kind == NodeKind.name && p_accept(state, "{")) {
+            list int fields = [];
+            list string names = [];
+            if (!p_at(state, "}")) {
+                Token field = p_identifier(state);
+                names.push(p_spelling(field));
+                p_expect(state, ":");
+                fields.push(p_expression(state, 1));
+                while (p_accept(state, ",") && !p_at(state, "}")) {
+                    Token next = p_identifier(state);
+                    names.push(p_spelling(next));
+                    p_expect(state, ":");
+                    fields.push(p_expression(state, 1));
+                }
+            }
+            Token close = p_expect(state, "}");
+            result = p_add(state, NodeKind.structValue, left.text, 0, fields, names, p_join(left.span, close.span));
+        } else if (p_accept(state, ".")) {
+            Token member = p_identifier(state);
+            result = p_add(state, NodeKind.member, p_spelling(member), 0, [result], [], p_join(left.span, member.span));
+        } else if (p_accept(state, "(")) {
+            if (left.kind != NodeKind.name && left.kind != NodeKind.member) { p_error(state, "only named functions and built-in member operations may be called"); }
+            list int arguments = [];
+            arguments.push(result);
+            if (!p_at(state, ")")) {
+                arguments.push(p_expression(state, 1));
+                while (p_accept(state, ",")) { arguments.push(p_expression(state, 1)); }
+            }
+            Token close = p_expect(state, ")");
+            result = p_add(state, NodeKind.call, "", 0, arguments, [], p_join(left.span, close.span));
+        } else if (p_accept(state, "[")) {
+            int index = p_expression(state, 1);
+            Token close = p_expect(state, "]");
+            result = p_add(state, NodeKind.index, "", 0, [result, index], [], p_join(left.span, close.span));
+        } else { break; }
+    }
+    return result;
+}
+
+private int p_expression(ref ParserState state, int minimum) {
+    while (false) { }
+    p_enter(state);
+    int result = -1;
+    if (p_at(state, "-") || p_at(state, "!")) {
+        Token op = p_take(state);
+        int value = p_expression(state, 7);
+        result = p_add(state, NodeKind.unary, p_spelling(op), 0, [value], [], p_join(op.span, p_node(state, value).span));
+    } else { result = p_primary(state); }
+    int chainLength = 0;
+    while (p_precedence(p_spelling(p_peek(state))) >= minimum) {
+        string op = p_spelling(p_peek(state));
+        int precedence = p_precedence(op);
+        chainLength += 1;
+        if (chainLength > 96) { p_error(state, "expression chain exceeds experimental compiler limit"); }
+        p_take(state);
+        int right = p_expression(state, precedence + 1);
+        result = p_add(state, NodeKind.binary, op, 0, [result, right], [], p_join(p_node(state, result).span, p_node(state, right).span));
+    }
+    p_leave(state);
+    return result;
+}
+
+private bool p_assignment_operator(string text) {
+    while (false) { }
+    return text == "=" || text == "+=" || text == "-=" || text == "*=" || text == "/=";
+}
+
+private int p_simple(ref ParserState state, bool requireAssignment) {
+    while (false) { }
+    Span start = p_peek(state).span;
+    if (p_variable_start(state)) {
+        int type = p_type(state);
+        Token name = p_identifier(state);
+        p_expect(state, "=");
+        int value = p_expression(state, 1);
+        return p_add(state, NodeKind.variable, p_spelling(name), 0, [type, value], [], p_join(start, p_node(state, value).span));
+    }
+    int target = p_expression(state, 1);
+    string op = p_spelling(p_peek(state));
+    if (p_assignment_operator(op)) {
+        p_take(state);
+        int value = p_expression(state, 1);
+        return p_add(state, NodeKind.assignment, op, 0, [target, value], [], p_join(start, p_node(state, value).span));
+    }
+    if (requireAssignment) { p_error(state, "for clause requires declaration or assignment"); }
+    return p_add(state, NodeKind.expressionStatement, "", 0, [target], [], p_node(state, target).span);
+}
+
+private int p_block(ref ParserState state) {
+    while (false) { }
+    p_enter(state);
+    Token start = p_expect(state, "{");
+    list int statements = [];
+    while (!p_at(state, "}")) {
+        if (p_at(state, "<eof>")) { p_error(state, "unterminated block; expected `}`"); }
+        statements.push(p_statement(state));
+    }
+    Token close = p_expect(state, "}");
+    p_leave(state);
+    return p_add(state, NodeKind.block, "", 0, statements, [], p_join(start.span, close.span));
+}
+
+private int p_statement(ref ParserState state) {
+    while (false) { }
+    Token start = p_peek(state);
+    if (p_accept(state, "if")) {
+        p_expect(state, "(");
+        int condition = p_expression(state, 1);
+        p_expect(state, ")");
+        int thenBlock = p_block(state);
+        list int parts = [condition, thenBlock];
+        if (p_accept(state, "else")) {
+            if (p_at(state, "if")) {
+                p_enter(state);
+                int nested = p_statement(state);
+                p_leave(state);
+                parts.push(p_add(state, NodeKind.block, "", 0, [nested], [], p_node(state, nested).span));
+            } else { parts.push(p_block(state)); }
+        }
+        return p_add(state, NodeKind.ifStatement, "", 0, parts, [], p_join(start.span, p_node(state, parts[parts.length - 1]).span));
+    }
+    if (p_accept(state, "while")) {
+        p_expect(state, "(");
+        int condition = p_expression(state, 1);
+        p_expect(state, ")");
+        int body = p_block(state);
+        return p_add(state, NodeKind.whileStatement, "", 0, [condition, body], [], p_join(start.span, p_node(state, body).span));
+    }
+    if (p_accept(state, "for")) {
+        p_expect(state, "(");
+        int initial = p_simple(state, true);
+        p_expect(state, ";");
+        int condition = p_expression(state, 1);
+        p_expect(state, ";");
+        int increment = p_simple(state, true);
+        p_expect(state, ")");
+        int body = p_block(state);
+        return p_add(state, NodeKind.forStatement, "", 0, [initial, condition, increment, body], [], p_join(start.span, p_node(state, body).span));
+    }
+    if (p_accept(state, "return")) {
+        list int values = [];
+        if (!p_at(state, ";")) { values.push(p_expression(state, 1)); }
+        Token close = p_expect(state, ";");
+        return p_add(state, NodeKind.returnValue, "", 0, values, [], p_join(start.span, close.span));
+    }
+    if (p_accept(state, "break")) {
+        Token close = p_expect(state, ";");
+        return p_leaf(state, NodeKind.breakStatement, "", 0, p_join(start.span, close.span));
+    }
+    if (p_accept(state, "continue")) {
+        Token close = p_expect(state, ";");
+        return p_leaf(state, NodeKind.continueStatement, "", 0, p_join(start.span, close.span));
+    }
+    int result = p_simple(state, false);
+    p_expect(state, ";");
+    return result;
+}
+
+private int p_declaration(ref ParserState state) {
+    while (false) { }
+    Token start = p_take(state);
+    string spelling = p_spelling(start);
+    if (spelling == "struct") {
+        Token name = p_identifier(state);
+        p_expect(state, "{");
+        list int fields = [];
+        while (!p_at(state, "}")) {
+            int type = p_type(state);
+            Token field = p_identifier(state);
+            Token close = p_expect(state, ";");
+            fields.push(p_add(state, NodeKind.fieldDeclaration, p_spelling(field), 0, [type], [], p_join(p_node(state, type).span, close.span)));
+        }
+        Token close = p_expect(state, "}");
+        return p_add(state, NodeKind.structDeclaration, p_spelling(name), 0, fields, [], p_join(start.span, close.span));
+    }
+    if (spelling == "enum") {
+        Token name = p_identifier(state);
+        p_expect(state, "{");
+        list int variants = [];
+        while (!p_at(state, "}")) {
+            Token variant = p_identifier(state);
+            list int payload = [];
+            Span end = variant.span;
+            if (p_accept(state, "(")) {
+                payload.push(p_type(state));
+                Token close = p_expect(state, ")");
+                end = close.span;
+            }
+            variants.push(p_add(state, NodeKind.variantDeclaration, p_spelling(variant), 0, payload, [], p_join(variant.span, end)));
+            p_accept(state, ",");
+        }
+        Token close = p_expect(state, "}");
+        return p_add(state, NodeKind.enumDeclaration, p_spelling(name), 0, variants, [], p_join(start.span, close.span));
+    }
+    if (spelling != "public" && spelling != "private") { p_error(state, "expected function visibility, struct, enum, or import declaration"); }
+    int visibility = 0;
+    if (spelling == "public") { visibility = 1; }
+    int returnType = p_type(state);
+    Token name = p_identifier(state);
+    p_expect(state, "(");
+    list int parts = [returnType];
+    if (!p_at(state, ")")) {
+        int type = p_type(state);
+        Token parameter = p_identifier(state);
+        parts.push(p_add(state, NodeKind.parameter, p_spelling(parameter), 0, [type], [], p_join(p_node(state, type).span, parameter.span)));
+        while (p_accept(state, ",")) {
+            int nextType = p_type(state);
+            Token next = p_identifier(state);
+            parts.push(p_add(state, NodeKind.parameter, p_spelling(next), 0, [nextType], [], p_join(p_node(state, nextType).span, next.span)));
+        }
+    }
+    p_expect(state, ")");
+    int body = p_block(state);
+    parts.push(body);
+    return p_add(state, NodeKind.function, p_spelling(name), visibility, parts, [], p_join(start.span, p_node(state, body).span));
+}
+
+private void p_import(ref ParserState state) {
+    while (false) { }
+    Token start = p_take(state);
+    bool selective = p_spelling(start) == "using";
+    Token first = p_identifier(state);
+    string name = p_spelling(first);
+    while (p_accept(state, ".")) { name = name + "." + p_spelling(p_identifier(state)); }
+    list string selected = [];
+    if (selective) {
+        p_expect(state, ":");
+        selected.push(p_spelling(p_identifier(state)));
+        while (p_accept(state, ",")) { selected.push(p_spelling(p_identifier(state))); }
+    }
+    Token close = p_expect(state, ";");
+    ParserState local = state.value;
+    AstProgram program = local.program;
+    int index = 0;
+    while (index < program.imports.length) {
+        AstImport prior = program.imports[index];
+        if (prior.span.source == start.span.source && prior.name == name) { p_error(state, "duplicate import `" + name + "`"); }
+        index += 1;
+    }
+    int outer = 0;
+    while (outer < selected.length) {
+        int inner = outer + 1;
+        while (inner < selected.length) {
+            if (selected[outer] == selected[inner]) { p_error(state, "duplicate selected import name"); }
+            inner += 1;
+        }
+        outer += 1;
+    }
+    program.imports.push(AstImport { name: name, target: "", selective: selective, selected: selected, span: p_join(start.span, close.span) });
+    local.program = program;
+    state.value = local;
+}
+
+public AstProgram parseInto(Source source, AstProgram program) {
+    while (false) { }
+    LexResult lexed = lex_source(source);
+    int diagnostic = 0;
+    while (diagnostic < lexed.diagnostics.length) {
+        report(source, lexed.diagnostics[diagnostic]);
+        diagnostic += 1;
+    }
+    if (lexed.diagnostics.length > 0) { exit(1); }
+    ref ParserState state = reference(ParserState { source: source, tokens: lexed.tokens, position: 0, depth: 0, program: program });
+    while (!p_at(state, "<eof>")) {
+        if (p_at(state, "use") || p_at(state, "using")) { p_import(state); }
+        else {
+            int root = p_declaration(state);
+            ParserState local = state.value;
+            AstProgram updated = local.program;
+            updated.roots.push(root);
+            local.program = updated;
+            state.value = local;
+        }
+    }
+    return state.value.program;
+}
+
+public AstProgram parse(Source source) {
+    while (false) { }
+    AstProgram program = empty_program();
+    program.rootPath = source.path;
+    return parseInto(source, program);
+}

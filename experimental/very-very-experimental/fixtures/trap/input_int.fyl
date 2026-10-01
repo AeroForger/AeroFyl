@@ -1,0 +1,2 @@
+use std.io;
+public void main() { int value = input(int); }

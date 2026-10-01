@@ -1,0 +1,1 @@
+public void main() { byte a = 1; byte b = 2; byte c = a + b; }

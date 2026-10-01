@@ -1,0 +1,37 @@
+// New AeroFyl compiler driver. The Rust bootstrap only builds this program.
+// The false-loop prelude is the source-only bootstrap verifier workaround.
+use loader;
+use semantic;
+use lower;
+use verify;
+use x86_64;
+use std.io;
+use std.fs;
+
+public void main(string[] args) {
+    while (false) {}
+    if (args.length != 2) {
+        eprintln("usage: aerofyl-experimental <source.fyl> <output>");
+        eprintln("       aerofyl-experimental check <source.fyl>");
+        exit(2);
+    }
+    bool checking = args[0] == "check";
+    string path = args[0];
+    if (checking) { path = args[1]; }
+    AstProgram ast = loadProgram(path);
+    HirProgram hir = analyze(ast, !checking);
+    if (hir.error != "") { fail(hir.errorSpan, hir.error); }
+    CompileProgram program = lower(hir);
+    if (program.error != "") {
+        fail(Span {source: ast.rootPath, start: 0, end: 0}, "lowering: " + program.error);
+    }
+    string verification = verify(program);
+    if (verification != "") {
+        fail(Span {source: ast.rootPath, start: 0, end: 0}, "internal IR error: " + verification);
+    }
+    if (checking) { println("check succeeded"); return; }
+    list byte image = emitExecutable(program);
+    writeBytes(args[1], image);
+    println("wrote " + args[1]);
+}
+// i reviewed the Ai's work while listening to September by earth, wind and fire

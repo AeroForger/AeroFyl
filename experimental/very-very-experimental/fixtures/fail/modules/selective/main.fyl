@@ -1,0 +1,2 @@
+using helper: chosen;
+public void main() { hidden(); }

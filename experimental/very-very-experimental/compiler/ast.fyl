@@ -1,0 +1,40 @@
+// New indexed syntax tree. Lists of child IDs avoid recursive record layouts. 
+use source;
+
+enum NodeKind {
+    integer, floatValue, stringValue, interpolated, boolean, character, name, unary, binary,
+    call, member, index, collection, structValue,
+    block, variable, assignment, expressionStatement, returnValue, ifStatement,
+    whileStatement, forStatement, breakStatement, continueStatement,
+    function, parameter, structDeclaration, fieldDeclaration,
+    enumDeclaration, variantDeclaration, typeSyntax
+}
+
+struct AstNode {
+    NodeKind kind;
+    Span span;
+    string text;
+    int number;
+    list int children;
+    list string names;
+}
+
+struct AstImport {
+    string name;
+    string target;
+    bool selective;
+    list string selected;
+    Span span;
+}
+
+struct AstProgram {
+    string rootPath;
+    list AstNode nodes;
+    list int roots;
+    list AstImport imports;
+}
+
+public AstProgram empty_program() {
+    while (false) { }
+    return AstProgram { rootPath: "", nodes: [], roots: [], imports: [] };
+}

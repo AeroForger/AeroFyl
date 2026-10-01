@@ -1,0 +1,3 @@
+use helper;
+use std.io;
+public void main() { println(compute()); }

@@ -1,0 +1,13 @@
+use std.io;
+public void main() {
+    string text = input();
+    int number = input(int);
+    bool flag = input(bool);
+    char character = input(char);
+    println(text);
+    println(number);
+    println(flag);
+    println(character);
+    eprint("error:");
+    eprintln("done");
+}

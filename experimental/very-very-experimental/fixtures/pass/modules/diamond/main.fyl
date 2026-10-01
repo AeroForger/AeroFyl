@@ -1,0 +1,4 @@
+use left;
+use right;
+use std.io;
+public void main() { println(leftValue() + rightValue()); }

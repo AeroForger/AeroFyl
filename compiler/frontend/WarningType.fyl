@@ -1,0 +1,24 @@
+public enum WarningType {
+    DeprecationWarning,
+    UnusedVariableWarning,
+    UnusedImportWarning,
+    DeadCodeWarning,
+    MagicNumberWarning,
+    
+    UncheckedCastWarning,
+    RawTypesWarning,
+    NullabilityWarning,
+    
+    StyleWarning,
+    NamingConventionWarning,
+    MissingOverrideWarning,
+    SerialVersionUIDWarning,
+    
+    SecurityWarning,
+    InsecureCryptoWarning,
+    HardcodedCredentialWarning,
+    
+    ConcurrencyWarning,
+    ThreadSafetyWarning,
+    VolatileUsageWarning
+}

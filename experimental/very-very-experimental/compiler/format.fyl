@@ -1,0 +1,96 @@
+use model;
+use emitter;
+
+public int nativeFormatLabel(int ty) { while (false) {}  return 100000000 + ty * 10000; }
+private void fmtLiteral(ref NativeImage image, int label, string text) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    nativeLabel(image, label);
+    for (int i=0; i<text.length; i+=1) { nativeByte(image,text.byte(i)); }
+}
+private void fmtWrite(ref NativeImage image, int label, int length) { while (false) {} 
+    nativeAddress(image,label); nativeMove(image,6,0); nativeImm(image,2,length); nativeLoad(image,7,5,-16); nativeCall(image,4);
+}
+private void fmtChild(ref NativeImage image, int ty) { while (false) {} 
+    nativeLoad(image,6,5,-16); nativeLoad(image,2,5,-24); nativeImm(image,1,1); nativeBinary(image,1,2,1);
+    nativeImm(image,1,1); nativeCall(image,nativeFormatLabel(ty));
+}
+private void fmtQuotedString(ref NativeImage image) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    nativeLabel(image,41); nativePrologue(image,8); nativeStore(image,5,-8,7); nativeStore(image,5,-16,6);
+    fmtWrite(image,41000,1); nativeImm(image,0,0); nativeStore(image,5,-24,0);
+    nativeLabel(image,4101); nativeLoad(image,0,5,-24); nativeLoad(image,7,5,-8); nativeLoad(image,1,7,0);
+    nativeBinary(image,57,0,1); nativeBranch(image,13,4190); nativeBinary(image,1,7,0); nativeLoadByte(image,0,7,8);
+    list int chars=[10,13,9,0,92,34];
+    for (int i=0; i<chars.length; i+=1) {
+        nativeImm(image,1,chars[i]); nativeBinary(image,57,0,1); nativeBranch(image,4,4110+i);
+    }
+    nativeStoreByte(image,5,-48,0); nativeLea(image,6,5,-48); nativeImm(image,2,1); nativeLoad(image,7,5,-16); nativeCall(image,4); nativeJump(image,4180);
+    for (int i=0; i<chars.length; i+=1) { nativeLabel(image,4110+i); fmtWrite(image,41001+i,2); nativeJump(image,4180); }
+    nativeLabel(image,4180); nativeLoad(image,0,5,-24); nativeImm(image,1,1); nativeBinary(image,1,0,1); nativeStore(image,5,-24,0); nativeJump(image,4101);
+    nativeLabel(image,4190); fmtWrite(image,41000,1); nativeReturn(image);
+    fmtLiteral(image,41000,"\""); fmtLiteral(image,41001,"\\n"); fmtLiteral(image,41002,"\\r"); fmtLiteral(image,41003,"\\t");
+    fmtLiteral(image,41004,"\\0"); fmtLiteral(image,41005,"\\\\"); fmtLiteral(image,41006,"\\\"");
+}
+private void fmtType(ref NativeImage image, CompileProgram program, int ty) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    TypeDef definition=program.types[ty]; int label=nativeFormatLabel(ty); int data=label+5000;
+    nativeLabel(image,label); nativePrologue(image,8);
+    nativeStore(image,5,-8,7); nativeStore(image,5,-16,6); nativeStore(image,5,-24,2); nativeStore(image,5,-32,1);
+    nativeImm(image,1,64); nativeBinary(image,57,2,1); nativeBranch(image,15,1);
+    if (definition.kind==TypeTag.scalar) {
+        if (ty==4) {
+            nativeLoad(image,0,5,-32); nativeImm(image,1,0); nativeBinary(image,57,0,1); nativeBranch(image,4,label+1);
+            nativeLoad(image,7,5,-8); nativeLoad(image,6,5,-16); nativeCall(image,41); nativeReturn(image); nativeLabel(image,label+1);
+        }
+        nativeLoad(image,7,5,-8); nativeImm(image,6,ty); nativeLoad(image,2,5,-16); nativeImm(image,1,0); nativeCall(image,5); nativeReturn(image);
+    } else if (definition.kind==TypeTag.array || definition.kind==TypeTag.sequence || definition.kind==TypeTag.arguments) {
+        fmtWrite(image,data,1); nativeImm(image,0,0); nativeStore(image,5,-40,0); nativeLabel(image,label+1);
+        nativeLoad(image,0,5,-40); nativeLoad(image,7,5,-8); nativeLoad(image,1,7,0); nativeBinary(image,57,0,1); nativeBranch(image,13,label+3);
+        nativeImm(image,1,0); nativeBinary(image,57,0,1); nativeBranch(image,4,label+2); fmtWrite(image,data+1,2);
+        nativeLabel(image,label+2); nativeLoad(image,7,5,-8); nativeLoad(image,6,5,-40); nativeImm(image,2,0); nativeCall(image,12); nativeMove(image,7,0);
+        int inner=definition.inner; if (definition.kind==TypeTag.arguments) { inner=4; } fmtChild(image,inner);
+        nativeLoad(image,0,5,-40); nativeImm(image,1,1); nativeBinary(image,1,0,1); nativeStore(image,5,-40,0); nativeJump(image,label+1);
+        nativeLabel(image,label+3); fmtWrite(image,data+2,1); nativeReturn(image);
+        fmtLiteral(image,data,"["); fmtLiteral(image,data+1,", "); fmtLiteral(image,data+2,"]");
+    } else if (definition.kind==TypeTag.record) {
+        string start=definition.name+"{"; fmtWrite(image,data,start.length);
+        for (int i=0; i<definition.members.length; i+=1) {
+            string field=definition.names[i]+": "; if (i>0) { field=", "+field; }
+            fmtWrite(image,data+10+i,field.length); nativeLoad(image,7,5,-8); nativeLoad(image,7,7,i*8); fmtChild(image,definition.members[i]);
+        }
+        fmtWrite(image,data+1,1); nativeReturn(image); fmtLiteral(image,data,start); fmtLiteral(image,data+1,"}");
+        for (int i=0; i<definition.members.length; i+=1) {
+            string field=definition.names[i]+": "; if (i>0) { field=", "+field; } fmtLiteral(image,data+10+i,field);
+        }
+    } else if (definition.kind==TypeTag.maybe || definition.kind==TypeTag.referenceType) {
+        if (definition.kind==TypeTag.maybe) {
+            nativeLoad(image,0,5,-8); nativeLoad(image,0,0,0); nativeImm(image,1,0); nativeBinary(image,57,0,1); nativeBranch(image,4,label+1);
+        }
+        string start="ref("; if (definition.kind==TypeTag.maybe) { start="some("; } fmtWrite(image,data,start.length);
+        nativeLoad(image,7,5,-8); int offset=0; if (definition.kind==TypeTag.maybe) { offset=8; } nativeLoad(image,7,7,offset); fmtChild(image,definition.inner);
+        fmtWrite(image,data+1,1); nativeReturn(image);
+        if (definition.kind==TypeTag.maybe) { nativeLabel(image,label+1); fmtWrite(image,data+2,6); nativeReturn(image); fmtLiteral(image,data+2,"none()"); }
+        fmtLiteral(image,data,start); fmtLiteral(image,data+1,")");
+    } else if (definition.kind==TypeTag.enumeration) {
+        bool payload=false; for (int i=0; i<definition.members.length; i+=1) { if (definition.members[i]>=0) { payload=true; } }
+        nativeLoad(image,0,5,-8); if (payload) { nativeLoad(image,0,0,0); }
+        for (int i=0; i<definition.names.length; i+=1) { nativeImm(image,1,i); nativeBinary(image,57,0,1); nativeBranch(image,4,label+100+i); }
+        nativeJump(image,1);
+        for (int i=0; i<definition.names.length; i+=1) {
+            nativeLabel(image,label+100+i); string name=definition.name+"."+definition.names[i]; fmtWrite(image,data+10+i,name.length);
+            if (definition.members[i]>=0) { fmtWrite(image,data,1); nativeLoad(image,7,5,-8); nativeLoad(image,7,7,8); fmtChild(image,definition.members[i]); fmtWrite(image,data+1,1); }
+            nativeReturn(image);
+        }
+        fmtLiteral(image,data,"("); fmtLiteral(image,data+1,")");
+        for (int i=0; i<definition.names.length; i+=1) { fmtLiteral(image,data+10+i,definition.name+"."+definition.names[i]); }
+    }
+}
+public void nativeFormatter(ref NativeImage image, CompileProgram program) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    fmtQuotedString(image);
+    for (int ty=1; ty<program.types.length; ty+=1) { fmtType(image,program,ty); }
+}

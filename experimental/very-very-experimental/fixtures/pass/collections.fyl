@@ -1,0 +1,30 @@
+use std.io;
+struct Point { int x; string name; }
+private list int build() { return [4, 5]; }
+private int sum(list int items) {
+    int result = 0;
+    for (int i = 0; i < items.length; i += 1) { result += items[i]; }
+    return result;
+}
+public void main() {
+    int[3] fixed = [1, 2, 3];
+    fixed[1] *= 5;
+    println(fixed);
+    list int values = build();
+    for (int i = 0; i < 12; i += 1) { values.push(i); }
+    println(sum(values));
+    println(values.pop());
+    println(values.length);
+    list Point points = [Point {x: 1, name: "first"}];
+    Point loaded = points[0];
+    loaded.x = 9;
+    println(points[0].x);
+    points[0] = loaded;
+    println(points.pop());
+    list list int nested = [[1, 2], [3]];
+    nested[0][1] += 6;
+    println(nested);
+    list byte bytes = [0, 127, 255];
+    bytes.push(byte(42));
+    println(bytes);
+}

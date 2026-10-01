@@ -1,0 +1,2 @@
+enum Result { ok(int), error(string) }
+public void main() { Result value = Result.ok(1); string message = value.payload(Result.error); }

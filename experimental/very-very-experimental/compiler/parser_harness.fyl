@@ -1,0 +1,60 @@
+use parser;
+use std.io;
+
+private void frontend_assert(bool condition, string message) {
+    while (false) { }
+    if (!condition) { eprintln("frontend test failed: " + message); exit(1); }
+}
+
+private void frontend_tests() {
+    while (false) { }
+    Source source = Source { path: "<frontend-test>", text: "public int calculate(int n) { return -1 + 2 * 3 - n; }" };
+    AstProgram program = parse(source);
+    frontend_assert(program.roots.length == 1, "one function");
+    AstNode function = program.nodes[program.roots[0]];
+    frontend_assert(function.kind == NodeKind.function && function.text == "calculate", "function declaration");
+    AstNode body = program.nodes[function.children[function.children.length - 1]];
+    AstNode returned = program.nodes[body.children[0]];
+    AstNode subtraction = program.nodes[returned.children[0]];
+    frontend_assert(subtraction.kind == NodeKind.binary && subtraction.text == "-", "left associative subtraction");
+    AstNode addition = program.nodes[subtraction.children[0]];
+    frontend_assert(addition.text == "+", "addition precedence");
+    frontend_assert(program.nodes[addition.children[0]].kind == NodeKind.unary, "unary minus");
+    frontend_assert(program.nodes[addition.children[1]].text == "*", "multiplication precedence");
+
+    Source aggregates = Source { path: "<frontend-test>", text: "enum Result { ok(int) error(string), } struct Point { int x; list byte data; } public void main() { Point p = Point { data: [], x: 1 }; optional ref Point r = some(reference(p)); for (int i = 0; i < 2; i += 1) { if (i == 1) { continue; } else if (false) { break; } } }" };
+    AstProgram many = parse(aggregates);
+    frontend_assert(many.roots.length == 3, "aggregate declarations and control flow");
+    frontend_assert(many.nodes[many.roots[0]].children.length == 2, "comma-free enum variants");
+
+    Source imports = Source { path: "<frontend-test>", text: "use std.io; using values: add, Point; public void main() { int value = 1; println(\\v\"answer {value}\\{\\}\"); }" };
+    AstProgram imported = parse(imports);
+    frontend_assert(imported.imports.length == 2 && imported.imports[1].selective, "selective imports");
+    int found = 0;
+    int index = 0;
+    while (index < imported.nodes.length) {
+        AstNode node = imported.nodes[index];
+        if (node.kind == NodeKind.interpolated) {
+            frontend_assert(node.children.length == 1 && node.names.length == 2, "interpolation structured parts");
+            found += 1;
+        }
+        index += 1;
+    }
+    frontend_assert(found == 1, "interpolation node");
+
+    Source characters = Source { path: "<frontend-test>", text: "'λ' '😀' '\\n'" };
+    LexResult lexed = lex_source(characters);
+    frontend_assert(lexed.diagnostics.length == 0, "unicode character lexing");
+    frontend_assert(int(lexed.tokens[0].kind.payload(TokenKind.Char)) == 955, "Greek scalar");
+    frontend_assert(int(lexed.tokens[1].kind.payload(TokenKind.Char)) == 128512, "four-byte scalar");
+    frontend_assert(int(lexed.tokens[2].kind.payload(TokenKind.Char)) == 10, "escaped character");
+    println("frontend tests passed");
+}
+//holy skill issue
+public void main(string[] args) {
+    while (false) { }
+    if (args.length == 0) { frontend_tests(); return; }
+    AstProgram program = parse(load_file(args[0]));
+    println(program.nodes.length);
+    println(program.roots.length);
+}

@@ -1,0 +1,2 @@
+use std.fs;
+public void main(string[] args) { writeFile(args[0], "fail"); }

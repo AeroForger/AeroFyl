@@ -1,0 +1,2 @@
+private int f(int value) { return value; }
+public void main() { int x = f(); }

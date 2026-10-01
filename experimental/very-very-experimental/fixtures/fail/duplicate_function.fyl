@@ -1,0 +1,3 @@
+private int f() { return 1; }
+private int f() { return 2; }
+public void main() {}

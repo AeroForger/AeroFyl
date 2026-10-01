@@ -1,0 +1,238 @@
+use model;
+use emitter;
+use runtime;
+use runtime_io;
+use format;
+use elf;
+
+// Negative IDs separate program fixups from positive runtime/formatter labels.
+private int nativeFunctionLabel(int id) { while (false) {}  return -1000000 - id * 1000000; }
+private int nativeBlockLabel(int id, int block) { while (false) {}  return nativeFunctionLabel(id) - 1000 - block; }
+private int nativeStringLabel(int id, int instructionIndex) { while (false) {}  return nativeFunctionLabel(id) - 500000 - instructionIndex; }
+private void nativeSlotLoad(ref NativeImage image, int register, int slot) { while (false) {} 
+    nativeLoad(image, register, 5, -8 * (slot + 1));
+}
+private void nativeSlotStore(ref NativeImage image, int slot, int register) { while (false) {} 
+    if (slot >= 0) { nativeStore(image, 5, -8 * (slot + 1), register); }
+}
+private int nativeStructWords(CompileProgram program, int ty) { while (false) {} 
+    if (ty < 0 || ty >= program.types.length) { return 0; }
+    TypeDef definition = program.types[ty];
+    if (definition.kind == TypeTag.record) { return definition.members.length; }
+    return 0;
+}
+private bool nativePayloadEnum(CompileProgram program, int ty) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    TypeDef definition = program.types[ty];
+    if (definition.kind != TypeTag.enumeration) { return false; }
+    for (int i = 0; i < definition.members.length; i += 1) {
+        if (definition.members[i] >= 0) { return true; }
+    }
+    return false;
+}
+private int nativeListCopyWords(CompileProgram program, int collection, int element) { while (false) {} 
+    if (program.types[collection].kind == TypeTag.sequence) { return nativeStructWords(program, element); }
+    return 0;
+}
+private void nativeBinaryInstruction(ref NativeImage image, Instruction item) { while (false) {} 
+    nativeSlotLoad(image, 0, item.a); nativeSlotLoad(image, 1, item.b);
+    if (item.op == Op.add) { nativeBinary(image, 1, 0, 1); }
+    else if (item.op == Op.sub) { nativeBinary(image, 41, 0, 1); }
+    else if (item.op == Op.mul) { nativeMultiply(image, 0, 1); }
+    else if (item.op == Op.div) { nativeMove(image, 7, 0); nativeMove(image, 6, 1); nativeCall(image, 3); }
+    else {
+        nativeBinary(image, 57, 0, 1);
+        int condition = 4;
+        if (item.op == Op.ne) { condition = 5; }
+        if (item.op == Op.lt) { condition = 12; }
+        if (item.op == Op.le) { condition = 14; }
+        if (item.op == Op.gt) { condition = 15; }
+        if (item.op == Op.ge) { condition = 13; }
+        nativeSet(image, condition);
+    }
+    nativeSlotStore(image, item.dest, 0);
+}
+private void nativeScalarInstruction(ref NativeImage image, CompileProgram program, CompiledFunction function, Instruction item, int index) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    if (item.op == Op.constant) {
+        nativeImm(image, 0, item.value); nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.stringConstant) {
+        nativeAddress(image, nativeStringLabel(function.id, index)); nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.copy || item.op == Op.loadLocal || item.op == Op.storeLocal) {
+        nativeSlotLoad(image, 0, item.a); nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.add || item.op == Op.sub || item.op == Op.mul || item.op == Op.div || item.op == Op.eq || item.op == Op.ne || item.op == Op.lt || item.op == Op.le || item.op == Op.gt || item.op == Op.ge) {
+        nativeBinaryInstruction(image, item);
+    } else if (item.op == Op.neg || item.op == Op.notValue) {
+        nativeSlotLoad(image, 0, item.a);
+        if (item.op == Op.neg) { nativeUnary(image, 3, 0); }
+        else { nativeImm(image, 1, 1); nativeBinary(image, 49, 0, 1); }
+        nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.label) {
+        nativeLabel(image, nativeBlockLabel(function.id, item.value));
+    } else if (item.op == Op.jump) {
+        nativeJump(image, nativeBlockLabel(function.id, item.value));
+    } else if (item.op == Op.jumpFalse) {
+        nativeSlotLoad(image, 0, item.a); nativeImm(image, 1, 0); nativeBinary(image, 57, 0, 1);
+        nativeBranch(image, 4, nativeBlockLabel(function.id, item.value));
+    } else if (item.op == Op.call) {
+        for (int i = item.args.length - 1; i >= 0; i -= 1) { nativeSlotLoad(image, 0, item.args[i]); nativePush(image, 0); }
+        nativeCall(image, nativeFunctionLabel(item.value));
+        nativeImm(image, 1, item.args.length * 8); nativeBinary(image, 1, 4, 1);
+        nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.returnValue) {
+        nativeSlotLoad(image, 0, item.a); nativeReturn(image);
+    } else if (item.op == Op.returnVoid) {
+        nativeImm(image, 0, 0); nativeReturn(image);
+    } else if (item.op == Op.exitValue) {
+        nativeSlotLoad(image, 7, item.a); nativeImm(image, 0, 60); nativeSyscall(image);
+    } else if (item.op == Op.output) {
+        nativeSlotLoad(image, 7, item.a); nativeImm(image, 6, 1 + item.value / 2);
+        nativeImm(image, 2, 0); nativeImm(image, 1, 0); nativeCall(image, nativeFormatLabel(item.ty));
+        if (item.value == 1 || item.value == 3) {
+            nativeAddress(image, 102); nativeMove(image, 6, 0); nativeImm(image, 2, 1); nativeImm(image, 7, 1 + item.value / 2); nativeCall(image, 4);
+        }
+    } else if (item.op == Op.length) {
+        nativeSlotLoad(image, 0, item.a); nativeLoad(image, 0, 0, 0); nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.stringConcat || item.op == Op.stringEqual || item.op == Op.stringByte || item.op == Op.stringSlice) {
+        nativeSlotLoad(image, 7, item.a); nativeSlotLoad(image, 6, item.b);
+        int helper = 6;
+        if (item.op == Op.stringEqual) { helper = 7; }
+        if (item.op == Op.stringByte) { helper = 8; }
+        if (item.op == Op.stringSlice) { nativeSlotLoad(image, 2, item.c); helper = 9; }
+        nativeCall(image, helper);
+        if (item.op == Op.stringEqual && item.value == 0) { nativeImm(image, 1, 1); nativeBinary(image, 49, 0, 1); }
+        nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.convert) {
+        nativeSlotLoad(image, 0, item.a);
+        if (item.ty == 5 || item.ty == 3) {
+            nativeImm(image, 1, 0); nativeBinary(image, 57, 0, 1); nativeBranch(image, 12, 1);
+            int upper = 255; if (item.ty == 3) { upper = 1114111; }
+            nativeImm(image, 1, upper); nativeBinary(image, 57, 0, 1); nativeBranch(image, 15, 1);
+            if (item.ty == 3) {
+                nativeImm(image, 1, 55296); nativeBinary(image, 57, 0, 1);
+                nativeBranch(image, 12, nativeStringLabel(function.id, index));
+                nativeImm(image, 1, 57343); nativeBinary(image, 57, 0, 1); nativeBranch(image, 14, 1);
+                nativeLabel(image, nativeStringLabel(function.id, index));
+            }
+        }
+        nativeSlotStore(image, item.dest, 0);
+    } else { exit(71); }
+}
+private void nativeAggregateInstruction(ref NativeImage image, CompileProgram program, CompiledFunction function, Instruction item, int index) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    if (item.op == Op.enumValue && !nativePayloadEnum(program,item.ty)) { nativeImm(image,0,item.value); nativeSlotStore(image,item.dest,0); }
+    else if (item.op == Op.arrayValue || item.op == Op.listValue) {
+        TypeDef definition = program.types[item.ty];
+        int stride = 8; if (definition.inner == 5) { stride = 1; }
+        nativeImm(image, 7, item.args.length); nativeImm(image, 6, stride); nativeCall(image, 11); nativeSlotStore(image, item.dest, 0);
+        int copyWords = 0;
+        if (definition.kind == TypeTag.sequence) { copyWords = nativeStructWords(program, definition.inner); }
+        for (int i = 0; i < item.args.length; i += 1) {
+            nativeSlotLoad(image, 7, item.dest); nativeImm(image, 6, i); nativeSlotLoad(image, 2, item.args[i]); nativeImm(image, 1, copyWords); nativeCall(image, 13);
+        }
+    } else if (item.op == Op.indexLoad) {
+        nativeSlotLoad(image, 7, item.a); nativeSlotLoad(image, 6, item.b);
+        nativeImm(image, 2, nativeListCopyWords(program, item.c, item.ty)); nativeCall(image, 12); nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.indexStore) {
+        nativeSlotLoad(image, 7, item.a); nativeSlotLoad(image, 6, item.b); nativeSlotLoad(image, 2, item.value);
+        nativeImm(image, 1, nativeListCopyWords(program, item.c, item.ty)); nativeCall(image, 13);
+    } else if (item.op == Op.listPush) {
+        nativeSlotLoad(image, 7, item.a); nativeSlotLoad(image, 6, item.b); nativeImm(image, 2, nativeStructWords(program, item.ty)); nativeCall(image, 15);
+    } else if (item.op == Op.listPop) {
+        nativeSlotLoad(image, 7, item.a); nativeImm(image, 6, nativeStructWords(program, item.ty)); nativeCall(image, 16); nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.structValue) {
+        int words = program.types[item.ty].members.length;
+        nativeImm(image, 7, 8 + words * 8); nativeCall(image, 2); nativeSlotStore(image, item.dest, 0);
+        for (int i = 0; i < item.args.length; i += 1) {
+            nativeSlotLoad(image, 0, item.dest); nativeSlotLoad(image, 1, item.args[i]); nativeStore(image, 0, i * 8, 1);
+        }
+    } else if (item.op == Op.structCopy) {
+        nativeSlotLoad(image, 7, item.a); nativeImm(image, 6, nativeStructWords(program, item.ty)); nativeCall(image, 14); nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.fieldLoad) {
+        nativeSlotLoad(image, 0, item.a); nativeLoad(image, 0, 0, item.value * 8); nativeSlotStore(image, item.dest, 0);
+    } else if (item.op == Op.fieldStore) {
+        nativeSlotLoad(image, 0, item.a); nativeSlotLoad(image, 1, item.b); nativeStore(image, 0, item.value * 8, 1);
+    } else if (item.op == Op.referenceValue || item.op == Op.optionalSome || item.op == Op.optionalNone || item.op == Op.enumValue) {
+        nativeImm(image, 7, 16); nativeCall(image, 2); nativeSlotStore(image, item.dest, 0);
+        if (item.op == Op.referenceValue) {
+            nativeSlotLoad(image, 1, item.a); nativeStore(image, 0, 0, 1);
+        } else {
+            int tag = 1;
+            if (item.op == Op.optionalNone) { tag = 0; }
+            if (item.op == Op.enumValue) { tag = item.value; }
+            nativeImm(image, 1, tag); nativeStore(image, 0, 0, 1);
+            if (item.a >= 0) { nativeSlotLoad(image, 1, item.a); } else { nativeImm(image, 1, 0); }
+            nativeStore(image, 0, 8, 1);
+        }
+    } else if (item.op == Op.referenceLoad || item.op == Op.referenceStore || item.op == Op.optionalHas || item.op == Op.optionalValue || item.op == Op.enumIs || item.op == Op.enumPayload) {
+        nativeSlotLoad(image, 0, item.a);
+        if (item.op == Op.referenceStore) { nativeSlotLoad(image, 1, item.b); nativeStore(image, 0, 0, 1); }
+        else if (item.op == Op.referenceLoad || item.op == Op.optionalHas) {
+            nativeLoad(image, 0, 0, 0); nativeSlotStore(image, item.dest, 0);
+        } else if (item.op == Op.optionalValue) {
+            nativeLoad(image, 1, 0, 0); nativeImm(image, 2, 0); nativeBinary(image, 57, 1, 2); nativeBranch(image, 4, 1);
+            nativeLoad(image, 0, 0, 8); nativeSlotStore(image, item.dest, 0);
+        } else {
+            nativeMove(image, 2, 0);
+            if (item.c >= 0 && nativePayloadEnum(program, item.c)) { nativeLoad(image, 0, 0, 0); }
+            nativeImm(image, 1, item.value); nativeBinary(image, 57, 0, 1);
+            if (item.op == Op.enumIs) { nativeSet(image, 4); }
+            else { nativeBranch(image, 5, 1); nativeLoad(image, 0, 2, 8); }
+            nativeSlotStore(image, item.dest, 0);
+        }
+    } else { exit(71); }
+}
+private void nativeEncoderFailure() { while (false) {}  exit(71); }
+private void nativeIOInstruction(ref NativeImage image, Instruction item) { while (false) {} 
+    if (item.op == Op.inputValue) {
+        nativeImm(image,7,item.ty); nativeCall(image,30); nativeSlotStore(image,item.dest,0); return;
+    }
+    nativeSlotLoad(image,7,item.a);
+    if (item.op == Op.readFileValue) { nativeCall(image,31); }
+    else if (item.op == Op.readBytesValue) { nativeCall(image,32); }
+    else if (item.op == Op.existsValue) { nativeCall(image,35); }
+    else if (item.op == Op.writeFileValue) { nativeSlotLoad(image,6,item.b); nativeCall(image,33); }
+    else if (item.op == Op.writeBytesValue) { nativeSlotLoad(image,6,item.b); nativeCall(image,34); }
+    else { nativeEncoderFailure(); }
+    nativeSlotStore(image,item.dest,0);
+}
+private void nativeInstruction(ref NativeImage image, CompileProgram program, CompiledFunction function, Instruction item, int index) { while (false) {} 
+    if (int(item.op) < int(Op.arrayValue) || item.op == Op.convert) { nativeScalarInstruction(image,program,function,item,index); }
+    else if (int(item.op) >= int(Op.inputValue)) { nativeIOInstruction(image,item); }
+    else { nativeAggregateInstruction(image,program,function,item,index); }
+}
+public list byte emitExecutable(CompileProgram program) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    ref NativeImage image = reference(newNativeImage());
+    CompiledFunction entryFunction = program.functions[program.entry];
+    if (entryFunction.parameters.length == 1) { nativeMove(image, 7, 4); nativeCall(image, 20); nativePush(image, 0); }
+    nativeCall(image, nativeFunctionLabel(program.entry));
+    nativeImm(image, 0, 60); nativeImm(image, 7, 0); nativeSyscall(image);
+    for (int i = 0; i < program.functions.length; i += 1) {
+        CompiledFunction function = program.functions[i];
+        nativeLabel(image, nativeFunctionLabel(function.id)); nativePrologue(image, function.frameSlots);
+        for (int p = 0; p < function.parameters.length; p += 1) {
+            nativeLoad(image, 0, 5, 16 + p * 8); nativeSlotStore(image, function.parameters[p], 0);
+        }
+        for (int j = 0; j < function.instructions.length; j += 1) {
+            nativeInstruction(image, program, function, function.instructions[j], j);
+        }
+    }
+    nativeRuntime(image); nativeRuntimeIO(image); nativeFormatter(image, program);
+    for (int i = 0; i < program.functions.length; i += 1) {
+        CompiledFunction function = program.functions[i];
+        for (int j = 0; j < function.instructions.length; j += 1) {
+            Instruction item = function.instructions[j];
+            if (item.op == Op.stringConstant) {
+                nativeLabel(image, nativeStringLabel(function.id, j)); nativeLE(image, item.text.length, 8);
+                for (int k = 0; k < item.text.length; k += 1) { nativeByte(image, item.text.byte(k)); }
+            }
+        }
+    }
+    list byte code = nativeFinish(image);
+    return nativeElf(code);
+}

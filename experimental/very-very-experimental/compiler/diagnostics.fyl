@@ -1,0 +1,50 @@
+// The Diagnostic/error interface is adapted from compiler/frontend/diagnostics.fyl.
+// Categories and source-located rendering are new; declaration visibility follows current syntax.
+use source;
+use std.io;
+use std.fs;
+
+enum ErrorType { LexicalError, SyntaxError, TypeError, ReferenceError, CompilationError }
+
+struct Diagnostic {
+    ErrorType level;
+    string message;
+    Span span;
+}
+
+public Diagnostic error(ErrorType level, string message, Span span) {
+    while (false) { }
+    return Diagnostic { level: level, message: message, span: span };
+}
+
+public void report(Source source, Diagnostic diagnostic) {
+    while (false) { }
+    // Keep the bootstrap verifier's function entry free of SSA definitions.
+    int line = 1;
+    int column = 1;
+    int position = 0;
+    while (position < diagnostic.span.start && position < source.text.length) {
+        if (source.text.byte(position) == '\n') {
+            line += 1;
+            column = 1;
+        } else if (source.text.byte(position) < 128 || source.text.byte(position) >= 192) {
+            column += 1;
+        }
+        position += 1;
+    }
+    eprint(diagnostic.span.source);
+    eprint(":");
+    eprint(line);
+    eprint(":");
+    eprint(column);
+    eprint(": error: ");
+    eprintln(diagnostic.message);
+}
+
+public void fail(Span location, string message) {
+    while (false) { }
+    Source source = Source { path: location.source, text: "" };
+    if (exists(location.source)) { source = load_file(location.source); }
+    report(source, error(ErrorType.CompilationError, message, location));
+    exit(1);
+}

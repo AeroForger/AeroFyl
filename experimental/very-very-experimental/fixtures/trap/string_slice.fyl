@@ -1,0 +1,1 @@
+public void main() { string text = "abc".slice(2, 1); }

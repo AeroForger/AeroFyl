@@ -1,0 +1,183 @@
+use emitter;
+use model;
+
+// Internal helper labels: 1 failure, 2 mmap, 3 division, 4 write-all,
+// 5 scalar print, 6 concat, 7 equality, 8 string byte, 9 string slice.
+private void rtCompare(ref NativeImage image, int register, int value) { while (false) {} 
+    int temporary = 1; if (register == 1) { temporary = 11; }
+    nativeImm(image, temporary, value); nativeBinary(image, 57, register, temporary);
+}
+private void rtAdd(ref NativeImage image, int register, int value) { while (false) {} 
+    int temporary = 1; if (register == 1) { temporary = 11; }
+    nativeImm(image, temporary, value); nativeBinary(image, 1, register, temporary);
+}
+private void rtText(ref NativeImage image, int label, string text) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    nativeLabel(image, label);
+    for (int i = 0; i < text.length; i += 1) { nativeByte(image, text.byte(i)); }
+}
+private void rtCore(ref NativeImage image) { while (false) {} 
+    nativeLabel(image, 1); nativeImm(image, 0, 60); nativeImm(image, 7, 70); nativeSyscall(image);
+    nativeLabel(image, 2);
+    nativeMove(image, 6, 7); nativeImm(image, 0, 9); nativeImm(image, 7, 0);
+    nativeImm(image, 2, 3); nativeImm(image, 10, 34); nativeImm(image, 8, -1); nativeImm(image, 9, 0);
+    nativeSyscall(image); rtCompare(image, 0, 0); nativeBranch(image, 12, 1); nativeByte(image, 195);
+    nativeLabel(image, 3);
+    rtCompare(image, 6, 0); nativeBranch(image, 4, 1);
+    rtCompare(image, 7, -9223372036854775808); nativeBranch(image, 5, 301);
+    rtCompare(image, 6, -1); nativeBranch(image, 4, 1);
+    nativeLabel(image, 301); nativeMove(image, 0, 7); nativeMove(image, 1, 6);
+    nativeByte(image, 72); nativeByte(image, 153); nativeUnary(image, 7, 1); nativeByte(image, 195);
+    nativeLabel(image, 4); nativeMove(image, 8, 7); nativeMove(image, 9, 6); nativeMove(image, 10, 2);
+    nativeLabel(image, 401); rtCompare(image, 10, 0); nativeBranch(image, 4, 402);
+    nativeImm(image, 0, 1); nativeMove(image, 7, 8); nativeMove(image, 6, 9); nativeMove(image, 2, 10);
+    nativeSyscall(image); rtCompare(image, 0, -4); nativeBranch(image, 4, 401);
+    rtCompare(image, 0, 0); nativeBranch(image, 14, 1);
+    nativeBinary(image, 1, 9, 0); nativeBinary(image, 41, 10, 0); nativeJump(image, 401);
+    nativeLabel(image, 402); nativeByte(image, 195);
+}
+private void rtPrint(ref NativeImage image) { while (false) {} 
+    nativeLabel(image, 5); nativePrologue(image, 16);
+    nativeStore(image, 5, -8, 7); nativeStore(image, 5, -16, 6);
+    nativeStore(image, 5, -24, 2); nativeStore(image, 5, -32, 1);
+    rtCompare(image, 6, 4); nativeBranch(image, 4, 510);
+    rtCompare(image, 6, 2); nativeBranch(image, 4, 520);
+    rtCompare(image, 6, 3); nativeBranch(image, 4, 530);
+    // Signed integer formatting uses unsigned DIV after negation, including MIN.
+    nativeMove(image, 0, 7); nativeImm(image, 1, 0); nativeStore(image, 5, -40, 1);
+    rtCompare(image, 0, 0); nativeBranch(image, 13, 501);
+    nativeImm(image, 1, 1); nativeStore(image, 5, -40, 1); nativeUnary(image, 3, 0);
+    nativeLabel(image, 501); nativeLea(image, 9, 5, -48); nativeImm(image, 8, 0);
+    nativeLabel(image, 502); nativeImm(image, 2, 0); nativeImm(image, 1, 10); nativeUnary(image, 6, 1);
+    rtAdd(image, 2, 48); nativeStoreByte(image, 9, 0, 2); rtAdd(image, 9, -1); rtAdd(image, 8, 1);
+    rtCompare(image, 0, 0); nativeBranch(image, 5, 502);
+    nativeLoad(image, 0, 5, -40); rtCompare(image, 0, 0); nativeBranch(image, 4, 503);
+    nativeImm(image, 2, 45); nativeStoreByte(image, 9, 0, 2); rtAdd(image, 9, -1); rtAdd(image, 8, 1);
+    nativeLabel(image, 503); rtAdd(image, 9, 1); nativeMove(image, 6, 9); nativeMove(image, 2, 8);
+    nativeJump(image, 550);
+    nativeLabel(image, 510); nativeLoad(image, 2, 7, 0); nativeLea(image, 6, 7, 8); nativeJump(image, 550);
+    nativeLabel(image, 520); rtCompare(image, 7, 0); nativeBranch(image, 4, 521);
+    nativeAddress(image, 100); nativeMove(image, 6, 0); nativeImm(image, 2, 4); nativeJump(image, 550);
+    nativeLabel(image, 521); nativeAddress(image, 101); nativeMove(image, 6, 0); nativeImm(image, 2, 5); nativeJump(image, 550);
+    nativeLabel(image, 530); nativeMove(image, 0, 7); nativeLea(image, 6, 5, -128);
+    rtCompare(image, 0, 128); nativeBranch(image, 12, 531);
+    rtCompare(image, 0, 2048); nativeBranch(image, 12, 532);
+    rtCompare(image, 0, 65536); nativeBranch(image, 12, 533);
+    nativeMove(image, 2, 0); nativeShift(image, 5, 2, 18); rtAdd(image, 2, 240); nativeStoreByte(image, 6, 0, 2);
+    nativeMove(image, 2, 0); nativeShift(image, 5, 2, 12); nativeImm(image, 1, 63); nativeBinary(image, 33, 2, 1); rtAdd(image, 2, 128); nativeStoreByte(image, 6, 1, 2);
+    nativeMove(image, 2, 0); nativeShift(image, 5, 2, 6); nativeImm(image, 1, 63); nativeBinary(image, 33, 2, 1); rtAdd(image, 2, 128); nativeStoreByte(image, 6, 2, 2);
+    nativeImm(image, 1, 63); nativeBinary(image, 33, 0, 1); rtAdd(image, 0, 128); nativeStoreByte(image, 6, 3, 0); nativeImm(image, 2, 4); nativeJump(image, 550);
+    nativeLabel(image, 533); nativeMove(image, 2, 0); nativeShift(image, 5, 2, 12); rtAdd(image, 2, 224); nativeStoreByte(image, 6, 0, 2);
+    nativeMove(image, 2, 0); nativeShift(image, 5, 2, 6); nativeImm(image, 1, 63); nativeBinary(image, 33, 2, 1); rtAdd(image, 2, 128); nativeStoreByte(image, 6, 1, 2);
+    nativeImm(image, 1, 63); nativeBinary(image, 33, 0, 1); rtAdd(image, 0, 128); nativeStoreByte(image, 6, 2, 0); nativeImm(image, 2, 3); nativeJump(image, 550);
+    nativeLabel(image, 532); nativeMove(image, 2, 0); nativeShift(image, 5, 2, 6); rtAdd(image, 2, 192); nativeStoreByte(image, 6, 0, 2);
+    nativeImm(image, 1, 63); nativeBinary(image, 33, 0, 1); rtAdd(image, 0, 128); nativeStoreByte(image, 6, 1, 0); nativeImm(image, 2, 2); nativeJump(image, 550);
+    nativeLabel(image, 531); nativeStoreByte(image, 6, 0, 0); nativeImm(image, 2, 1);
+    nativeLabel(image, 550); nativeLoad(image, 7, 5, -24); nativeCall(image, 4);
+    nativeLoad(image, 0, 5, -32); rtCompare(image, 0, 0); nativeBranch(image, 4, 551);
+    nativeAddress(image, 102); nativeMove(image, 6, 0); nativeImm(image, 2, 1); nativeLoad(image, 7, 5, -24); nativeCall(image, 4);
+    nativeLabel(image, 551); nativeReturn(image);
+}
+private void rtStrings(ref NativeImage image) { while (false) {} 
+    // Byte copy, RDI destination RSI source RDX count.
+    nativeLabel(image, 10); nativeLabel(image, 1001); rtCompare(image, 2, 0); nativeBranch(image, 4, 1002);
+    nativeLoadByte(image, 0, 6, 0); nativeStoreByte(image, 7, 0, 0);
+    rtAdd(image, 6, 1); rtAdd(image, 7, 1); rtAdd(image, 2, -1); nativeJump(image, 1001);
+    nativeLabel(image, 1002); nativeByte(image, 195);
+    nativeLabel(image, 6); nativePrologue(image, 6); nativeStore(image, 5, -8, 7); nativeStore(image, 5, -16, 6);
+    nativeLoad(image, 0, 7, 0); nativeLoad(image, 1, 6, 0); nativeBinary(image, 1, 0, 1);
+    rtCompare(image, 0, 0); nativeBranch(image, 12, 1); nativeStore(image, 5, -24, 0);
+    nativeMove(image, 7, 0); rtAdd(image, 7, 8); nativeCall(image, 2); nativeStore(image, 5, -32, 0);
+    nativeLoad(image, 1, 5, -24); nativeStore(image, 0, 0, 1); nativeLea(image, 7, 0, 8);
+    nativeLoad(image, 6, 5, -8); nativeLoad(image, 2, 6, 0); nativeLea(image, 6, 6, 8); nativeCall(image, 10);
+    nativeLoad(image, 7, 5, -32); rtAdd(image, 7, 8); nativeLoad(image, 0, 5, -8); nativeLoad(image, 0, 0, 0); nativeBinary(image, 1, 7, 0);
+    nativeLoad(image, 6, 5, -16); nativeLoad(image, 2, 6, 0); nativeLea(image, 6, 6, 8); nativeCall(image, 10);
+    nativeLoad(image, 0, 5, -32); nativeReturn(image);
+    nativeLabel(image, 7); nativeLoad(image, 2, 7, 0); nativeLoad(image, 0, 6, 0); nativeBinary(image, 57, 2, 0); nativeBranch(image, 5, 703);
+    nativeLea(image, 7, 7, 8); nativeLea(image, 6, 6, 8);
+    nativeLabel(image, 701); rtCompare(image, 2, 0); nativeBranch(image, 4, 702);
+    nativeLoadByte(image, 0, 7, 0); nativeLoadByte(image, 1, 6, 0); nativeBinary(image, 57, 0, 1); nativeBranch(image, 5, 703);
+    rtAdd(image, 7, 1); rtAdd(image, 6, 1); rtAdd(image, 2, -1); nativeJump(image, 701);
+    nativeLabel(image, 702); nativeImm(image, 0, 1); nativeByte(image, 195);
+    nativeLabel(image, 703); nativeImm(image, 0, 0); nativeByte(image, 195);
+    nativeLabel(image, 8); rtCompare(image, 6, 0); nativeBranch(image, 12, 1);
+    nativeLoad(image, 0, 7, 0); nativeBinary(image, 57, 6, 0); nativeBranch(image, 13, 1);
+    nativeBinary(image, 1, 7, 6); nativeLoadByte(image, 0, 7, 8); nativeByte(image, 195);
+    nativeLabel(image, 9); nativePrologue(image, 6);
+    rtCompare(image, 6, 0); nativeBranch(image, 12, 1); nativeBinary(image, 57, 2, 6); nativeBranch(image, 12, 1);
+    nativeLoad(image, 0, 7, 0); nativeBinary(image, 57, 2, 0); nativeBranch(image, 15, 1);
+    nativeStore(image, 5, -8, 7); nativeStore(image, 5, -16, 6); nativeBinary(image, 41, 2, 6); nativeStore(image, 5, -24, 2);
+    nativeMove(image, 7, 2); rtAdd(image, 7, 8); nativeCall(image, 2); nativeStore(image, 5, -32, 0);
+    nativeLoad(image, 2, 5, -24); nativeStore(image, 0, 0, 2); nativeLea(image, 7, 0, 8);
+    nativeLoad(image, 6, 5, -8); nativeLoad(image, 0, 5, -16); nativeBinary(image, 1, 6, 0); nativeLea(image, 6, 6, 8);
+    nativeCall(image, 10); nativeLoad(image, 0, 5, -32); nativeReturn(image);
+}
+private void rtCollections(ref NativeImage image) { while (false) {} 
+    nativeLabel(image, 11); nativePrologue(image, 6);
+    nativeStore(image, 5, -8, 7); nativeStore(image, 5, -16, 6);
+    rtCompare(image, 7, 4); nativeBranch(image, 13, 1101); nativeImm(image, 7, 4);
+    nativeLabel(image, 1101); nativeStore(image, 5, -24, 7); nativeMultiply(image, 7, 6); rtAdd(image, 7, 32); nativeCall(image, 2);
+    nativeLoad(image, 1, 5, -8); nativeStore(image, 0, 0, 1);
+    nativeLoad(image, 1, 5, -24); nativeStore(image, 0, 8, 1);
+    nativeLoad(image, 1, 5, -16); nativeStore(image, 0, 16, 1);
+    nativeLea(image, 1, 0, 32); nativeStore(image, 0, 24, 1); nativeReturn(image);
+    nativeLabel(image, 14); nativePrologue(image, 4); nativeStore(image, 5, -8, 7);
+    nativeMove(image, 7, 6); nativeShift(image, 4, 7, 3); nativeStore(image, 5, -16, 7);
+    rtCompare(image, 7, 0); nativeBranch(image, 5, 1401); nativeImm(image, 7, 8);
+    nativeLabel(image, 1401); nativeCall(image, 2); nativeStore(image, 5, -24, 0);
+    nativeMove(image, 7, 0); nativeLoad(image, 6, 5, -8); nativeLoad(image, 2, 5, -16); nativeCall(image, 10);
+    nativeLoad(image, 0, 5, -24); nativeReturn(image);
+    nativeLabel(image, 12); rtCompare(image, 6, 0); nativeBranch(image, 12, 1);
+    nativeLoad(image, 0, 7, 0); nativeBinary(image, 57, 6, 0); nativeBranch(image, 13, 1);
+    nativeMove(image, 8, 2); nativeLoad(image, 0, 7, 16); nativeMultiply(image, 6, 0);
+    nativeLoad(image, 7, 7, 24); nativeBinary(image, 1, 7, 6);
+    rtCompare(image, 0, 1); nativeBranch(image, 4, 1201); nativeLoad(image, 0, 7, 0); nativeJump(image, 1202);
+    nativeLabel(image, 1201); nativeLoadByte(image, 0, 7, 0);
+    nativeLabel(image, 1202); rtCompare(image, 8, 0); nativeBranch(image, 4, 1203);
+    nativeMove(image, 7, 0); nativeMove(image, 6, 8); nativeCall(image, 14);
+    nativeLabel(image, 1203); nativeByte(image, 195);
+    nativeLabel(image, 13); nativePrologue(image, 5);
+    nativeStore(image, 5, -8, 7); nativeStore(image, 5, -16, 6); nativeStore(image, 5, -24, 2);
+    rtCompare(image, 1, 0); nativeBranch(image, 4, 1301);
+    nativeMove(image, 7, 2); nativeMove(image, 6, 1); nativeCall(image, 14); nativeStore(image, 5, -24, 0);
+    nativeLabel(image, 1301); nativeLoad(image, 7, 5, -8); nativeLoad(image, 6, 5, -16);
+    rtCompare(image, 6, 0); nativeBranch(image, 12, 1); nativeLoad(image, 0, 7, 0); nativeBinary(image, 57, 6, 0); nativeBranch(image, 13, 1);
+    nativeLoad(image, 0, 7, 16); nativeMultiply(image, 6, 0); nativeLoad(image, 7, 7, 24); nativeBinary(image, 1, 7, 6); nativeLoad(image, 2, 5, -24);
+    rtCompare(image, 0, 1); nativeBranch(image, 4, 1302); nativeStore(image, 7, 0, 2); nativeReturn(image);
+    nativeLabel(image, 1302); nativeStoreByte(image, 7, 0, 2); nativeReturn(image);
+    nativeLabel(image, 15); nativePrologue(image, 8); nativeStore(image, 5, -8, 7); nativeStore(image, 5, -16, 6);
+    rtCompare(image, 2, 0); nativeBranch(image, 4, 1501); nativeMove(image, 7, 6); nativeMove(image, 6, 2); nativeCall(image, 14); nativeStore(image, 5, -16, 0);
+    nativeLabel(image, 1501); nativeLoad(image, 7, 5, -8); nativeLoad(image, 0, 7, 0); nativeLoad(image, 1, 7, 8); nativeBinary(image, 57, 0, 1); nativeBranch(image, 12, 1502);
+    nativeMove(image, 0, 1); nativeShift(image, 4, 0, 1); nativeStore(image, 5, -24, 0); nativeLoad(image, 1, 7, 16); nativeMultiply(image, 0, 1);
+    nativeMove(image, 7, 0); nativeCall(image, 2); nativeStore(image, 5, -32, 0);
+    nativeMove(image, 7, 0); nativeLoad(image, 0, 5, -8); nativeLoad(image, 6, 0, 24); nativeLoad(image, 2, 0, 0); nativeLoad(image, 1, 0, 16); nativeMultiply(image, 2, 1); nativeCall(image, 10);
+    nativeLoad(image, 7, 5, -8); nativeLoad(image, 0, 5, -24); nativeStore(image, 7, 8, 0); nativeLoad(image, 0, 5, -32); nativeStore(image, 7, 24, 0);
+    nativeLabel(image, 1502); nativeLoad(image, 7, 5, -8); nativeLoad(image, 6, 7, 0); nativeLoad(image, 0, 7, 16); nativeMultiply(image, 6, 0);
+    nativeLoad(image, 2, 7, 24); nativeBinary(image, 1, 2, 6); nativeLoad(image, 6, 5, -16); rtCompare(image, 0, 1); nativeBranch(image, 4, 1503);
+    nativeStore(image, 2, 0, 6); nativeJump(image, 1504);
+    nativeLabel(image, 1503); nativeStoreByte(image, 2, 0, 6);
+    nativeLabel(image, 1504); nativeLoad(image, 0, 7, 0); rtAdd(image, 0, 1); nativeStore(image, 7, 0, 0); nativeReturn(image);
+    nativeLabel(image, 16); nativePrologue(image, 4); nativeStore(image, 5, -8, 7); nativeMove(image, 2, 6);
+    nativeLoad(image, 6, 7, 0); rtCompare(image, 6, 0); nativeBranch(image, 4, 1); rtAdd(image, 6, -1); nativeStore(image, 5, -16, 6);
+    nativeCall(image, 12); nativeLoad(image, 7, 5, -8); nativeLoad(image, 1, 5, -16); nativeStore(image, 7, 0, 1); nativeReturn(image);
+}
+private void rtArguments(ref NativeImage image) { while (false) {} 
+    nativeLabel(image, 20); nativePrologue(image, 8); nativeStore(image, 5, -8, 7);
+    nativeLoad(image, 7, 7, 0); rtAdd(image, 7, -1); nativeImm(image, 6, 8); nativeCall(image, 11); nativeStore(image, 5, -16, 0);
+    nativeImm(image, 0, 0); nativeStore(image, 5, -24, 0);
+    nativeLabel(image, 2001); nativeLoad(image, 0, 5, -24); nativeLoad(image, 7, 5, -16); nativeLoad(image, 1, 7, 0); nativeBinary(image, 57, 0, 1); nativeBranch(image, 13, 2004);
+    nativeShift(image, 4, 0, 3); nativeLoad(image, 7, 5, -8); nativeBinary(image, 1, 7, 0); nativeLoad(image, 7, 7, 16); nativeStore(image, 5, -32, 7);
+    nativeImm(image, 6, 0);
+    nativeLabel(image, 2002); nativeLoadByte(image, 0, 7, 0); rtCompare(image, 0, 0); nativeBranch(image, 4, 2003); rtAdd(image, 7, 1); rtAdd(image, 6, 1); nativeJump(image, 2002);
+    nativeLabel(image, 2003); nativeStore(image, 5, -40, 6); nativeMove(image, 7, 6); rtAdd(image, 7, 8); nativeCall(image, 2); nativeStore(image, 5, -48, 0);
+    nativeLoad(image, 2, 5, -40); nativeStore(image, 0, 0, 2); nativeLea(image, 7, 0, 8); nativeLoad(image, 6, 5, -32); nativeCall(image, 10);
+    nativeLoad(image, 7, 5, -16); nativeLoad(image, 6, 5, -24); nativeLoad(image, 2, 5, -48); nativeImm(image, 1, 0); nativeCall(image, 13);
+    nativeLoad(image, 0, 5, -24); rtAdd(image, 0, 1); nativeStore(image, 5, -24, 0); nativeJump(image, 2001);
+    nativeLabel(image, 2004); nativeLoad(image, 0, 5, -16); nativeReturn(image);
+}
+public void nativeRuntime(ref NativeImage image) { while (false) {} 
+    rtCore(image); rtPrint(image); rtStrings(image); rtCollections(image); rtArguments(image);
+    rtText(image, 100, "true"); rtText(image, 101, "false"); rtText(image, 102, "\n");
+}
+// lets dance 

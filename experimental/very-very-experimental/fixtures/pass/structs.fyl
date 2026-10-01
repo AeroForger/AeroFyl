@@ -1,0 +1,22 @@
+use std.io;
+struct Inner { int value; }
+struct Record { int count; string name; Inner inner; list int data; }
+private Record update(Record value) {
+    value.count += 10;
+    return value;
+}
+public void main() {
+    Record original = Record {name: "a", count: 2, data: [3], inner: Inner {value: 7}};
+    Record copied = original;
+    copied.count = 4;
+    Record returned = update(copied);
+    println(original.count);
+    println(copied.count);
+    println(returned.count);
+    copied.data[0] = 9;
+    println(original.data[0]);
+    Inner innerCopy = original.inner;
+    innerCopy.value = 20;
+    println(original.inner.value);
+    println(original);
+}

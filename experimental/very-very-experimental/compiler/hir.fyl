@@ -1,0 +1,25 @@
+use ast;
+use model;
+
+struct HirFunction {
+    int id;
+    int node;
+    string name;
+    string file;
+    bool publicValue;
+    int returnType;
+    list int parameters;
+    list int slotTypes;
+    int body;
+}
+struct HirProgram {
+    AstProgram ast;
+    list TypeDef types;
+    list HirFunction functions;
+    list int nodeTypes;
+    list int nodeSymbols;
+    list int nodeAux;
+    int entry;
+    string error;
+    Span errorSpan;
+}

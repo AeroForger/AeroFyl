@@ -1,0 +1,14 @@
+use semantic;
+use lower;
+use verify;
+use loader;
+use std.io;
+public void main(string[] args) { while(false) {}
+    AstProgram ast=loadProgram(args[0]);
+    HirProgram typed=analyze(ast,true);
+    if (typed.error!="") { eprintln(typed.error); exit(1); }
+    CompileProgram program=lower(typed);
+    string failure=verify(program);
+    if (failure!="") { eprintln(failure); exit(2); }
+    println(program.functions.length);
+}

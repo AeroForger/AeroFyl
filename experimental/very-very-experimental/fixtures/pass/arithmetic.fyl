@@ -1,0 +1,16 @@
+use std.io;
+public void main() {
+    int a = 2 + 3 * 4;
+    int b = (2 + 3) * 4;
+    int maximum = 9223372036854775807;
+    int minimum = -9223372036854775808;
+    println(a);
+    println(b);
+    println(maximum + 1);
+    println(-minimum);
+    println(maximum * 2);
+    println(-7 / 3);
+    println(7 / -3);
+    println(-7 / -3);
+    exit(300);
+}

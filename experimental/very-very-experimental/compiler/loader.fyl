@@ -1,0 +1,127 @@
+// New file-graph loader. Current AeroFyl exposes no canonicalize syscall API;
+// path identity here normalizes '.', '..', and repeated slash components.
+// Empty false-loop preludes avoid the documented existing bootstrap verifier bug.
+use ast;
+use parser;
+use source;
+use diagnostics;
+use std.fs;
+
+struct LoaderState {
+    AstProgram program;
+    list string finished;
+    list string active;
+}
+
+public string normalizePath(string path) {
+    while (false) {}
+    list string parts = [];
+    int offset = 0;
+    bool absolute = path.length > 0 && path.byte(0) == '/';
+    while (offset < path.length) {
+        int start = offset;
+        while (offset < path.length && path.byte(offset) != '/') { offset += 1; }
+        string part = path.slice(start, offset);
+        if (part != "" && part != ".") {
+            if (part == ".." && parts.length > 0 && parts[parts.length - 1] != "..") {
+                string discarded = parts.pop();
+            } else if (part != ".." || !absolute) {
+                parts.push(part);
+            }
+        }
+        offset += 1;
+    }
+    string result = "";
+    if (absolute) { result = "/"; }
+    int index = 0;
+    while (index < parts.length) {
+        if (index > 0) { result = result + "/"; }
+        result = result + parts[index];
+        index += 1;
+    }
+    if (result == "") { return "."; }
+    return result;
+}
+
+private string parentPath(string path) {
+    while (false) {}
+    int index = path.length - 1;
+    while (index >= 0) {
+        if (path.byte(index) == '/') { return path.slice(0, index + 1); }
+        index -= 1;
+    }
+    return "";
+}
+
+private bool containsPath(list string paths, string path) {
+    while (false) {}
+    int index = 0;
+    while (index < paths.length) {
+        if (paths[index] == path) { return true; }
+        index += 1;
+    }
+    return false;
+}
+
+private void visitModule(ref LoaderState state, string path, Span origin) {
+    while (false) {}
+    LoaderState current = state.value;
+    if (containsPath(current.active, path)) { fail(origin, "circular module import"); }
+    if (containsPath(current.finished, path)) { return; }
+    if (current.active.length >= 128) { fail(origin, "module depth exceeds 128"); }
+    if (path.length < 4 || path.slice(path.length - 4, path.length) != ".fyl") {
+        fail(origin, "source files must use .fyl");
+    }
+    if (!exists(path)) { fail(origin, "module file does not exist: " + path); }
+    Source source = load_file(path);
+    int firstImport = current.program.imports.length;
+    current.program = parseInto(source, current.program);
+    int endImport = current.program.imports.length;
+    current.active.push(path);
+    state.value = current;
+    int index = firstImport;
+    while (index < endImport) {
+        current = state.value;
+        AstProgram program = current.program;
+        AstImport dependency = program.imports[index];
+        int other = firstImport;
+        while (other < index) {
+            if (program.imports[other].name == dependency.name) {
+                fail(dependency.span, "duplicate import: " + dependency.name);
+            }
+            other += 1;
+        }
+        if (dependency.name == "std.io" || dependency.name == "std.fs") {
+            if (dependency.selective) {
+                fail(dependency.span, "selective standard-library imports are unspecified");
+            }
+        } else {
+            int dot = 0;
+            while (dot < dependency.name.length) {
+                if (dependency.name.byte(dot) == '.') {
+                    fail(dependency.span, "qualified module names are unsupported");
+                }
+                dot += 1;
+            }
+            dependency.target = normalizePath(parentPath(path) + dependency.name + ".fyl");
+            program.imports[index] = dependency;
+            current.program = program;
+            state.value = current;
+            visitModule(state, dependency.target, dependency.span);
+        }
+        index += 1;
+    }
+    current = state.value;
+    string completed = current.active.pop();
+    current.finished.push(path);
+    state.value = current;
+}
+
+public AstProgram loadProgram(string inputPath) {
+    while (false) {}
+    string root = normalizePath(inputPath);
+    AstProgram program = AstProgram {nodes: [], roots: [], imports: [], rootPath: root};
+    ref LoaderState state = reference(LoaderState {program: program, finished: [], active: []});
+    visitModule(state, root, Span {source: root, start: 0, end: 0});
+    return state.value.program;
+}

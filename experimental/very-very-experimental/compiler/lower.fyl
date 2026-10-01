@@ -1,0 +1,286 @@
+// The empty entry loop avoids the unchanged bootstrap verifier fixed-point bug.
+use hir;
+use types;
+
+struct LowerState {
+    HirProgram source;
+    CompiledFunction function;
+    int nextLabel;
+    list int breaks;
+    list int continues;
+}
+public int lower_slot(ref LowerState state,int ty) { while (false) {}
+    LowerState current=state.value;
+    CompiledFunction function=current.function;
+    int slot=function.valueTypes.length;
+    function.valueTypes.push(ty); function.frameSlots=function.valueTypes.length;
+    current.function=function; state.value=current; return slot;
+}
+public void lower_emit(ref LowerState state,Instruction value) { while (false) {}
+    LowerState current=state.value; CompiledFunction function=current.function;
+    function.instructions.push(value); current.function=function; state.value=current;
+}
+public int lower_label_id(ref LowerState state) { while (false) {}
+    LowerState current=state.value; int label=current.nextLabel; current.nextLabel+=1; state.value=current; return label;
+}
+public void lower_label(ref LowerState state,int label) { while (false) {} lower_emit(state,instruction(Op.label,-1,-1,-1,-1,label,"",0,[])); }
+public void lower_jump(ref LowerState state,int label) { while (false) {} lower_emit(state,instruction(Op.jump,-1,-1,-1,-1,label,"",0,[])); }
+public void lower_branch(ref LowerState state,int condition,int label) { while (false) {} lower_emit(state,instruction(Op.jumpFalse,-1,condition,-1,-1,label,"",2,[])); }
+public int lower_value(ref LowerState state,Op op,int a,int b,int c,int value,string text,int ty,list int args) { while (false) {}
+    int slot=-1; if (ty!=0) { slot=lower_slot(state,ty); }
+    lower_emit(state,instruction(op,slot,a,b,c,value,text,ty,args)); return slot;
+}
+public int integer_bits(string digits) { while (false) {}
+    int value=0;
+    for (int i=0;i<digits.length;i+=1) { value=value*10+digits.byte(i)-48; }
+    return value;
+}
+public Op binary_operation(string operator) { while (false) {}
+    if (operator=="+") { return Op.add; }
+    if (operator=="-") { return Op.sub; }
+    if (operator=="*") { return Op.mul; }
+    if (operator=="/") { return Op.div; }
+    if (operator=="==") { return Op.eq; }
+    if (operator=="!=") { return Op.ne; }
+    if (operator=="<") { return Op.lt; }
+    if (operator=="<=") { return Op.le; }
+    if (operator==">") { return Op.gt; }
+    return Op.ge;
+}
+public int lower_struct_copy(ref LowerState state,int node,int slot) { while (false) {}
+    HirProgram source=state.value.source;
+    int ty=source.nodeTypes[node]; TypeDef definition=source.types[ty]; AstNode syntax=source.ast.nodes[node];
+    bool copyValue=syntax.kind==NodeKind.name;
+    if (syntax.kind==NodeKind.member && source.nodeAux[node]==-4) { copyValue=true; }
+    if (syntax.kind==NodeKind.call && source.nodeSymbols[node]==-35) { copyValue=true; }
+    if (definition.kind==TypeTag.record && copyValue) { return lower_value(state,Op.structCopy,slot,-1,-1,0,"",ty,[]); }
+    return slot;
+}
+public int lower_expression(ref LowerState state,int id) { while (false) {}
+    HirProgram source=state.value.source; AstNode node=source.ast.nodes[id]; int ty=source.nodeTypes[id];
+    if (node.kind==NodeKind.integer) { return lower_value(state,Op.constant,-1,-1,-1,integer_bits(node.text),"",ty,[]); }
+    if (node.kind==NodeKind.boolean || node.kind==NodeKind.character) { return lower_value(state,Op.constant,-1,-1,-1,node.number,"",ty,[]); }
+    if (node.kind==NodeKind.stringValue) { return lower_value(state,Op.stringConstant,-1,-1,-1,0,node.text,4,[]); }
+    if (node.kind==NodeKind.name) { return lower_value(state,Op.copy,source.nodeSymbols[id],-1,-1,0,"",ty,[]); }
+    if (node.kind==NodeKind.unary) {
+        int operand=lower_expression(state,node.children[0]); Op operation=Op.neg; if (node.text=="!") { operation=Op.notValue; }
+        return lower_value(state,operation,operand,-1,-1,0,"",ty,[]);
+    }
+    if (node.kind==NodeKind.binary) {
+        int left=lower_expression(state,node.children[0]);
+        if (node.text=="&&" || node.text=="||") {
+            int result=lower_slot(state,2); int other=lower_label_id(state); int done=lower_label_id(state);
+            if (node.text=="&&") {
+                lower_emit(state,instruction(Op.constant,result,-1,-1,-1,0,"",2,[])); lower_branch(state,left,done);
+                int right=lower_expression(state,node.children[1]); lower_emit(state,instruction(Op.copy,result,right,-1,-1,0,"",2,[])); lower_label(state,done);
+            } else {
+                lower_emit(state,instruction(Op.constant,result,-1,-1,-1,1,"",2,[])); lower_branch(state,left,other); lower_jump(state,done);
+                lower_label(state,other); int right=lower_expression(state,node.children[1]); lower_emit(state,instruction(Op.copy,result,right,-1,-1,0,"",2,[])); lower_label(state,done);
+            }
+            return result;
+        }
+        int right=lower_expression(state,node.children[1]);
+        if (source.nodeTypes[node.children[0]]==4) {
+            if (node.text=="+") { return lower_value(state,Op.stringConcat,left,right,-1,0,"",4,[]); }
+            int equal=1; if (node.text=="!=") { equal=0; }
+            return lower_value(state,Op.stringEqual,left,right,-1,equal,"",2,[]);
+        }
+        return lower_value(state,binary_operation(node.text),left,right,-1,0,"",ty,[]);
+    }
+    if (node.kind==NodeKind.collection) {
+        list int arguments=[];
+        for (int i=0;i<node.children.length;i+=1) { arguments.push(lower_expression(state,node.children[i])); }
+        Op operation=Op.arrayValue; if (source.types[ty].kind==TypeTag.sequence) { operation=Op.listValue; }
+        return lower_value(state,operation,-1,-1,-1,node.children.length,"",ty,arguments);
+    }
+    if (node.kind==NodeKind.structValue) {
+        TypeDef definition=source.types[ty]; list int arguments=[];
+        for (int field=0;field<definition.members.length;field+=1) { arguments.push(-1); }
+        for (int i=0;i<node.names.length;i+=1) {
+            int field=member_index(definition,node.names[i]);
+            arguments[field]=lower_expression(state,node.children[i]);
+        }
+        return lower_value(state,Op.structValue,-1,-1,-1,0,"",ty,arguments);
+    }
+    if (node.kind==NodeKind.index) {
+        int base=lower_expression(state,node.children[0]); int index=lower_expression(state,node.children[1]);
+        return lower_value(state,Op.indexLoad,base,index,source.nodeTypes[node.children[0]],0,"",ty,[]);
+    }
+    if (node.kind==NodeKind.member) {
+        if (source.nodeSymbols[id]>=0) { return lower_value(state,Op.enumValue,-1,-1,-1,source.nodeAux[id],"",ty,[]); }
+        int declaredBase=source.nodeTypes[node.children[0]];
+        if (source.nodeAux[id]==-2 && source.types[declaredBase].kind==TypeTag.array) { return lower_value(state,Op.constant,-1,-1,-1,source.types[declaredBase].length,"",1,[]); }
+        int base=lower_expression(state,node.children[0]); int baseType=source.nodeTypes[node.children[0]]; int field=source.nodeAux[id];
+        if (field==-2) { return lower_value(state,Op.length,base,-1,baseType,0,"",1,[]); }
+        if (field==-3) { return lower_value(state,Op.optionalHas,base,-1,baseType,0,"",2,[]); }
+        if (field==-4) {
+            Op operation=Op.optionalValue; if (source.types[baseType].kind==TypeTag.referenceType) { operation=Op.referenceLoad; }
+            return lower_value(state,operation,base,-1,baseType,0,"",ty,[]);
+        }
+        return lower_value(state,Op.fieldLoad,base,-1,baseType,field,"",ty,[]);
+    }
+    if (node.kind==NodeKind.call) { return lower_call(state,id); }
+    return -1;
+}
+public int lower_call(ref LowerState state,int id) { while (false) {}
+    HirProgram source=state.value.source; AstNode node=source.ast.nodes[id]; AstNode callee=source.ast.nodes[node.children[0]];
+    int symbol=source.nodeSymbols[id]; int ty=source.nodeTypes[id]; list int arguments=[];
+    if (symbol>=0) {
+        for (int i=1;i<node.children.length;i+=1) {
+            int child=node.children[i]; int argument=lower_expression(state,child);
+            if (source.types[source.nodeTypes[child]].kind==TypeTag.record) { argument=lower_value(state,Op.structCopy,argument,-1,-1,0,"",source.nodeTypes[child],[]); }
+            arguments.push(argument);
+        }
+        return lower_value(state,Op.call,-1,-1,-1,symbol,"",ty,arguments);
+    }
+    if (symbol>=-13 && symbol<=-10) {
+        int child=node.children[1]; AstNode value=source.ast.nodes[child];
+        if (value.kind==NodeKind.interpolated) {
+            for (int i=0;i<value.names.length;i+=1) {
+                int text=lower_value(state,Op.stringConstant,-1,-1,-1,0,value.names[i],4,[]);
+                int stream=0; if (symbol<=-12) { stream=2; }
+                bool finalSegment=i==value.names.length-1;
+                if (finalSegment && (symbol==-11 || symbol==-13)) { stream+=1; }
+                lower_emit(state,instruction(Op.output,-1,text,-1,-1,stream,"",4,[]));
+                if (i<value.children.length) {
+                    int variable=value.children[i]; int slot=lower_expression(state,variable);
+                    int variableStream=0; if (symbol<=-12) { variableStream=2; }
+                    lower_emit(state,instruction(Op.output,-1,slot,-1,-1,variableStream,"",source.nodeTypes[variable],[]));
+                }
+            }
+        } else {
+            int slot=lower_expression(state,child); int mode=-10-symbol;
+            lower_emit(state,instruction(Op.output,-1,slot,-1,-1,mode,"",source.nodeTypes[child],[]));
+        }
+        return -1;
+    }
+    if (symbol==-14) { return lower_value(state,Op.inputValue,-1,-1,-1,0,"",ty,[]); }
+    if (symbol==-15) { int code=lower_expression(state,node.children[1]); lower_emit(state,instruction(Op.exitValue,-1,code,-1,-1,0,"",0,[])); return -1; }
+    if (symbol==-17) { return lower_value(state,Op.optionalNone,-1,-1,-1,0,"",ty,[]); }
+    if (symbol==-16 || symbol==-18) {
+        int value=lower_expression(state,node.children[1]); Op operation=Op.optionalSome; if (symbol==-18) { operation=Op.referenceValue; }
+        return lower_value(state,operation,value,-1,-1,0,"",ty,[]);
+    }
+    if (symbol>=-21 && symbol<=-19) {
+        int operand=lower_expression(state,node.children[1]); int from=source.nodeTypes[node.children[1]];
+        return lower_value(state,Op.convert,operand,-1,from,from,"",ty,[]);
+    }
+    if (symbol>=-26 && symbol<=-22) {
+        int path=lower_expression(state,node.children[1]); int data=-1;
+        if (node.children.length>2) { data=lower_expression(state,node.children[2]); }
+        Op operation=Op.readFileValue;
+        if (symbol==-23) { operation=Op.readBytesValue; }
+        if (symbol==-24) { operation=Op.writeFileValue; }
+        if (symbol==-25) { operation=Op.writeBytesValue; }
+        if (symbol==-26) { operation=Op.existsValue; }
+        return lower_value(state,operation,path,data,-1,0,"",ty,[]);
+    }
+    if (symbol==-40) {
+        int payload=-1; if (node.children.length>1) { payload=lower_expression(state,node.children[1]); }
+        return lower_value(state,Op.enumValue,payload,-1,-1,source.nodeAux[id],"",ty,[]);
+    } //:p do not delete this comment it will break the compiler
+    int receiver=lower_expression(state,callee.children[0]); int receiverType=source.nodeTypes[callee.children[0]];
+    int argument=-1; int second=-1;
+    if (symbol!=-34 && symbol!=-35 && node.children.length>1) { argument=lower_expression(state,node.children[1]); }
+    if (node.children.length>2) { second=lower_expression(state,node.children[2]); }
+    Op operation=Op.stringByte;
+    if (symbol==-31) { operation=Op.stringSlice; }
+    if (symbol==-32) { operation=Op.listPush; }
+    if (symbol==-33) { operation=Op.listPop; }
+    if (symbol==-34) { operation=Op.enumIs; }
+    if (symbol==-35) { operation=Op.enumPayload; }
+    int metadata=receiverType; if (symbol==-31) { metadata=second; }
+    int resultType=ty; if (symbol==-32) { resultType=source.types[receiverType].inner; }
+    int dest=-1; if (ty!=0) { dest=lower_slot(state,ty); }
+    lower_emit(state,instruction(operation,dest,receiver,argument,metadata,source.nodeAux[id],"",resultType,[]));
+    return dest;
+}
+
+public int lower_arithmetic(ref LowerState state,string operator,int left,int right,int ty) { while (false) {}
+    if (ty==4) { return lower_value(state,Op.stringConcat,left,right,-1,0,"",4,[]); }
+    return lower_value(state,binary_operation(operator.slice(0,1)),left,right,-1,0,"",ty,[]);
+}
+public void lower_store(ref LowerState state,int id) { while (false) {}
+    HirProgram source=state.value.source; AstNode node=source.ast.nodes[id];
+    int targetId=node.children[0]; AstNode target=source.ast.nodes[targetId]; int ty=source.nodeTypes[targetId];
+    int base=-1; int index=-1; int old=-1; int baseType=-1;
+    if (target.kind==NodeKind.index || target.kind==NodeKind.member) {
+        base=lower_expression(state,target.children[0]); baseType=source.nodeTypes[target.children[0]];
+        if (target.kind==NodeKind.index) { index=lower_expression(state,target.children[1]); }
+    }
+    if (node.text!="=") {
+        if (target.kind==NodeKind.name) { old=lower_value(state,Op.copy,source.nodeSymbols[targetId],-1,-1,0,"",ty,[]); }
+        if (target.kind==NodeKind.index) { old=lower_value(state,Op.indexLoad,base,index,baseType,0,"",ty,[]); }
+        if (target.kind==NodeKind.member) {
+            Op operation=Op.fieldLoad; if (source.types[baseType].kind==TypeTag.referenceType) { operation=Op.referenceLoad; }
+            old=lower_value(state,operation,base,-1,baseType,source.nodeAux[targetId],"",ty,[]);
+        }
+    }
+    int value=lower_expression(state,node.children[1]);
+    if (node.text!="=") { value=lower_arithmetic(state,node.text,old,value,ty); }
+    if (target.kind==NodeKind.name) {
+        value=lower_struct_copy(state,node.children[1],value);
+        lower_emit(state,instruction(Op.copy,source.nodeSymbols[targetId],value,-1,-1,0,"",ty,[]));
+    } else if (target.kind==NodeKind.index) {
+        lower_emit(state,instruction(Op.indexStore,-1,base,index,baseType,value,"",ty,[]));
+    } else {
+        Op operation=Op.fieldStore; if (source.types[baseType].kind==TypeTag.referenceType) { operation=Op.referenceStore; }
+        lower_emit(state,instruction(operation,-1,base,value,baseType,source.nodeAux[targetId],"",ty,[]));
+    }
+}
+public void lower_block(ref LowerState state,int id) { while (false) {}
+    AstNode node=state.value.source.ast.nodes[id];
+    for (int i=0;i<node.children.length;i+=1) { lower_statement(state,node.children[i]); }
+}
+public void lower_statement(ref LowerState state,int id) { while (false) {}
+    HirProgram source=state.value.source; AstNode node=source.ast.nodes[id];
+    if (node.kind==NodeKind.variable) {
+        int value=lower_expression(state,node.children[1]); value=lower_struct_copy(state,node.children[1],value);
+        lower_emit(state,instruction(Op.copy,source.nodeSymbols[id],value,-1,-1,0,"",source.nodeTypes[id],[]));
+    } else if (node.kind==NodeKind.assignment) { lower_store(state,id); }
+    else if (node.kind==NodeKind.expressionStatement) { lower_expression(state,node.children[0]); }
+    else if (node.kind==NodeKind.returnValue) {
+        if (node.children.length==0) { lower_emit(state,instruction(Op.returnVoid,-1,-1,-1,-1,0,"",0,[])); }
+        else {
+            int value=lower_expression(state,node.children[0]); value=lower_struct_copy(state,node.children[0],value);
+            lower_emit(state,instruction(Op.returnValue,-1,value,-1,-1,0,"",source.nodeTypes[node.children[0]],[]));
+        }
+    } else if (node.kind==NodeKind.ifStatement) {
+        int other=lower_label_id(state); int done=lower_label_id(state); int condition=lower_expression(state,node.children[0]); lower_branch(state,condition,other);
+        lower_block(state,node.children[1]); lower_jump(state,done); lower_label(state,other);
+        if (node.children.length==3) { lower_block(state,node.children[2]); }
+        lower_label(state,done);
+    } else if (node.kind==NodeKind.whileStatement || node.kind==NodeKind.forStatement) {
+        int conditionLabel=lower_label_id(state); int continueLabel=conditionLabel; int done=lower_label_id(state);
+        int conditionNode=node.children[0]; int bodyNode=node.children[1];
+        if (node.kind==NodeKind.forStatement) {
+            lower_statement(state,node.children[0]); conditionNode=node.children[1]; bodyNode=node.children[3]; continueLabel=lower_label_id(state);
+        }
+        LowerState current=state.value; current.breaks.push(done); current.continues.push(continueLabel); state.value=current;
+        lower_label(state,conditionLabel); int condition=lower_expression(state,conditionNode); lower_branch(state,condition,done);
+        lower_block(state,bodyNode);
+        if (node.kind==NodeKind.forStatement) { lower_label(state,continueLabel); lower_statement(state,node.children[2]); }
+        lower_jump(state,conditionLabel); lower_label(state,done);
+        current=state.value; current.breaks.pop(); current.continues.pop(); state.value=current;
+    } else if (node.kind==NodeKind.breakStatement) {
+        LowerState current=state.value; lower_jump(state,current.breaks[current.breaks.length-1]);
+    } else if (node.kind==NodeKind.continueStatement) {
+        LowerState current=state.value; lower_jump(state,current.continues[current.continues.length-1]);
+    }
+}
+public CompileProgram lower(HirProgram source) { while (false) {}
+    CompileProgram program=CompileProgram{types:source.types,functions:[],entry:source.entry,error:source.error};
+    if (source.error!="") { return program; }
+    for (int i=0;i<source.functions.length;i+=1) {
+        HirFunction function=source.functions[i]; list int slots=[]; list int locals=[]; list int parameters=[];
+        for (int j=0;j<function.slotTypes.length;j+=1) { slots.push(function.slotTypes[j]); locals.push(function.slotTypes[j]); }
+        for (int j=0;j<function.parameters.length;j+=1) { parameters.push(function.parameters[j]); }
+        CompiledFunction compiled=CompiledFunction{id:i,name:function.name,returnType:function.returnType,parameters:parameters,localTypes:locals,valueTypes:slots,instructions:[],frameSlots:slots.length};
+        ref LowerState state=reference(LowerState{source:source,function:compiled,nextLabel:0,breaks:[],continues:[]});
+        lower_block(state,function.body);
+        if (function.returnType==0) { lower_emit(state,instruction(Op.returnVoid,-1,-1,-1,-1,0,"",0,[])); }
+        compiled=state.value.function; program.functions.push(compiled);
+    }
+    return program;
+}
+// my code looks better than ai's code, but i reviewed the ai's work so its okay

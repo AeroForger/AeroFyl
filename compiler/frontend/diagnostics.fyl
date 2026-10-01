@@ -1,62 +1,15 @@
 
 //same problem as token.fyl i dont have using yet
 use source;
+use ErrorType;
+use WarningType;
+
 
 public enum DiagnosticLevel {
     Error(ErrorType),
     Warning(WarningType),
     Note,
 }
-public enum ErrorType {
-    SyntaxError,
-    LexicalError,
-    TypeError,
-    ReferenceError,
-    CompilationError,
-    
-    RuntimeError,
-    NullPointerError,
-    IndexOutOfBoundsError,
-    DivisionByZeroError,
-    StackOverflowError,
-    OutOfMemoryError,
-    
-    LogicError,
-    SemanticError,
-    
-    FileReadError,
-    FileWriteError,
-    
-    DeadlockError,
-    RaceConditionError,
-
-    ValidationError,
-}
-public enum WarningType {
-    DeprecationWarning,
-    UnusedVariableWarning,
-    UnusedImportWarning,
-    DeadCodeWarning,
-    MagicNumberWarning,
-    
-    UncheckedCastWarning,
-    RawTypesWarning,
-    NullabilityWarning,
-    
-    StyleWarning,
-    NamingConventionWarning,
-    MissingOverrideWarning,
-    SerialVersionUIDWarning,
-    
-    SecurityWarning,
-    InsecureCryptoWarning,
-    HardcodedCredentialWarning,
-    
-    ConcurrencyWarning,
-    ThreadSafetyWarning,
-    VolatileUsageWarning
-}
-
 
 public struct Diagnostic {
     DiagnosticLevel level;

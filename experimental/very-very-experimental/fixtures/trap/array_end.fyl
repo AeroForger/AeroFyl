@@ -1,0 +1,1 @@
+public void main() { int[1] values = [1]; values[1] = 2; }

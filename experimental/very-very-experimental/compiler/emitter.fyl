@@ -1,0 +1,155 @@
+// Independent x86-64 byte encoding. Registers use hardware numbering.
+struct NativeImage {
+    list byte code;
+    list int labels;
+    list int positions;
+    list int patches;
+    list int targets;
+}
+
+public NativeImage newNativeImage() { while (false) {} 
+    return NativeImage {code: [], labels: [], positions: [], patches: [], targets: []};
+}
+public int nativeOffset(ref NativeImage image) { while (false) {}  return image.value.code.length; }
+public void nativeByte(ref NativeImage image, int value) { while (false) {} 
+    NativeImage state = image.value;
+    state.code.push(byte(value));
+    image.value = state;
+}
+public void nativeLE(ref NativeImage image, int value, int width) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    NativeImage state = image.value;
+    for (int i = 0; i < width; i += 1) {
+        int low = value - (value / 256) * 256;
+        if (low < 0) { low += 256; }
+        state.code.push(byte(low));
+        value = (value - low) / 256;
+    }
+    image.value = state;
+}
+public void nativeLabel(ref NativeImage image, int label) { while (false) {} 
+    NativeImage state = image.value;
+    state.labels.push(label);
+    state.positions.push(state.code.length);
+    image.value = state;
+}
+public void nativeFixup(ref NativeImage image, int target) { while (false) {} 
+    NativeImage state = image.value;
+    state.patches.push(state.code.length);
+    state.targets.push(target);
+    image.value = state;
+    nativeLE(image, 0, 4);
+}
+public list byte nativeFinish(ref NativeImage image) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    NativeImage state = image.value;
+    for (int i = 0; i < state.patches.length; i += 1) {
+        int target = -1;
+        for (int j = 0; j < state.labels.length; j += 1) {
+            if (state.labels[j] == state.targets[i]) { target = state.positions[j]; }
+        }
+        if (target < 0) { exit(71); }
+        int delta = target - state.patches[i] - 4;
+        for (int k = 0; k < 4; k += 1) {
+            int low = delta - (delta / 256) * 256;
+            if (low < 0) { low += 256; }
+            state.code[state.patches[i] + k] = byte(low);
+            delta = (delta - low) / 256;
+        }
+    }
+    image.value = state;
+    return state.code;
+}
+public int nativeLow(int register) { while (false) {}  return register - (register / 8) * 8; }
+public void nativeRex(ref NativeImage image, int reg, int base) { while (false) {} 
+    nativeByte(image, 72 + (reg / 8) * 4 + base / 8);
+}
+public void nativeImm(ref NativeImage image, int register, int value) { while (false) {} 
+    nativeByte(image, 72 + register / 8);
+    nativeByte(image, 184 + nativeLow(register));
+    nativeLE(image, value, 8);
+}
+public void nativeMove(ref NativeImage image, int destination, int source) { while (false) {} 
+    nativeRex(image, source, destination);
+    nativeByte(image, 137);
+    nativeByte(image, 192 + nativeLow(source) * 8 + nativeLow(destination));
+}
+public void nativeMemory(ref NativeImage image, int opcode, int reg, int base, int offset) { while (false) {} 
+    nativeRex(image, reg, base);
+    nativeByte(image, opcode);
+    nativeByte(image, 128 + nativeLow(reg) * 8 + nativeLow(base));
+    if (nativeLow(base) == 4) { nativeByte(image, 36); }
+    nativeLE(image, offset, 4);
+}
+public void nativeLoad(ref NativeImage image, int reg, int base, int offset) { while (false) {} 
+    nativeMemory(image, 139, reg, base, offset);
+}
+public void nativeStore(ref NativeImage image, int base, int offset, int reg) { while (false) {} 
+    nativeMemory(image, 137, reg, base, offset);
+}
+public void nativeLea(ref NativeImage image, int reg, int base, int offset) { while (false) {} 
+    nativeMemory(image, 141, reg, base, offset);
+}
+public void nativeLoadByte(ref NativeImage image, int reg, int base, int offset) { while (false) {} 
+    nativeRex(image, reg, base);
+    nativeByte(image, 15); nativeByte(image, 182);
+    nativeByte(image, 128 + nativeLow(reg) * 8 + nativeLow(base));
+    if (nativeLow(base) == 4) { nativeByte(image, 36); }
+    nativeLE(image, offset, 4);
+}
+public void nativeStoreByte(ref NativeImage image, int base, int offset, int reg) { while (false) {} 
+    nativeRex(image, reg, base); nativeByte(image, 136);
+    nativeByte(image, 128 + nativeLow(reg) * 8 + nativeLow(base));
+    if (nativeLow(base) == 4) { nativeByte(image, 36); }
+    nativeLE(image, offset, 4);
+}
+public void nativeBinary(ref NativeImage image, int opcode, int destination, int source) { while (false) {} 
+    nativeRex(image, source, destination); nativeByte(image, opcode);
+    nativeByte(image, 192 + nativeLow(source) * 8 + nativeLow(destination));
+}
+public void nativeMultiply(ref NativeImage image, int destination, int source) { while (false) {} 
+    nativeRex(image, destination, source); nativeByte(image, 15); nativeByte(image, 175);
+    nativeByte(image, 192 + nativeLow(destination) * 8 + nativeLow(source));
+}
+public void nativeUnary(ref NativeImage image, int operation, int register) { while (false) {} 
+    nativeRex(image, 0, register); nativeByte(image, 247);
+    nativeByte(image, 192 + operation * 8 + nativeLow(register));
+}
+public void nativeShift(ref NativeImage image, int operation, int register, int count) { while (false) {} 
+    nativeRex(image, 0, register); nativeByte(image, 193);
+    nativeByte(image, 192 + operation * 8 + nativeLow(register)); nativeByte(image, count);
+}
+public void nativePush(ref NativeImage image, int register) { while (false) {} 
+    if (register >= 8) { nativeByte(image, 65); }
+    nativeByte(image, 80 + nativeLow(register));
+}
+public void nativePop(ref NativeImage image, int register) { while (false) {} 
+    if (register >= 8) { nativeByte(image, 65); }
+    nativeByte(image, 88 + nativeLow(register));
+}
+public void nativeCall(ref NativeImage image, int label) { while (false) {} 
+    nativeByte(image, 232); nativeFixup(image, label);
+}
+public void nativeJump(ref NativeImage image, int label) { while (false) {} 
+    nativeByte(image, 233); nativeFixup(image, label);
+}
+public void nativeBranch(ref NativeImage image, int condition, int label) { while (false) {} 
+    nativeByte(image, 15); nativeByte(image, 128 + condition); nativeFixup(image, label);
+}
+public void nativeSet(ref NativeImage image, int condition) { while (false) {} 
+    nativeByte(image, 15); nativeByte(image, 144 + condition); nativeByte(image, 192);
+    nativeByte(image, 72); nativeByte(image, 15); nativeByte(image, 182); nativeByte(image, 192);
+}
+public void nativeAddress(ref NativeImage image, int label) { while (false) {} 
+    nativeByte(image, 72); nativeByte(image, 141); nativeByte(image, 5); nativeFixup(image, label);
+}
+public void nativePrologue(ref NativeImage image, int slots) { while (false) {} 
+    nativePush(image, 5); nativeMove(image, 5, 4);
+    nativeImm(image, 0, slots * 8); nativeBinary(image, 41, 4, 0);
+}
+public void nativeReturn(ref NativeImage image) { while (false) {} 
+    nativeByte(image, 201); nativeByte(image, 195);
+}
+public void nativeSyscall(ref NativeImage image) { while (false) {}  nativeByte(image, 15); nativeByte(image, 5); }

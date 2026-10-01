@@ -1,0 +1,1 @@
+public void main() { int[1] values = [1]; int value = values[-1]; }

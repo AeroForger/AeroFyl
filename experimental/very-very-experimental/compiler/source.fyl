@@ -1,0 +1,33 @@
+/*
+To whoever is reading this - i want to eat but i am forced
+to work on this experimental compiler. please give me food
+*/
+
+
+// Reused from compiler/frontend/source.fyl; original user code is preserved.
+// ai stealing my code, atleast i got credited
+
+use std.fs;
+
+
+//File reading:
+struct Source {
+    string path;
+    string text;
+}
+public Source load_file(string path){
+    while (false) { }
+    return Source {
+        path: path,
+        text: readFile(path)
+    };
+}
+/*--------*/
+
+//span
+struct Span {
+    string source;
+    int start;
+    int end;
+}
+/*--------*/

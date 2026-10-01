@@ -1,0 +1,2 @@
+use helper;
+public void main() { int value = privateFunction(); }

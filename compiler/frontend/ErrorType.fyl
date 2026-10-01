@@ -1,0 +1,25 @@
+public enum ErrorType {
+    SyntaxError,
+    LexicalError,
+    TypeError,
+    ReferenceError,
+    CompilationError,
+    
+    RuntimeError,
+    NullPointerError,
+    IndexOutOfBoundsError,
+    DivisionByZeroError,
+    StackOverflowError,
+    OutOfMemoryError,
+    
+    LogicError,
+    SemanticError,
+    
+    FileReadError,
+    FileWriteError,
+    
+    DeadlockError,
+    RaceConditionError,
+
+    ValidationError,
+}

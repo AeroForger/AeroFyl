@@ -1,0 +1,1 @@
+public void main() { optional int value = none(); int missing = value.value; }

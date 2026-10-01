@@ -1,0 +1,6 @@
+use std.io;
+public void main(string[] args) {
+    println(args.length);
+    if (args.length > 0) { println(args[0]); }
+    if (args.length > 1) { println(args[1]); }
+}

@@ -1,0 +1,13 @@
+State.running
+1
+true
+Result.ok(42)
+true
+42
+some(3)
+none()
+3
+false
+ref(9)
+4
+10

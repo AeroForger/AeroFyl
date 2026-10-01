@@ -1,0 +1,3 @@
+using helper: Result, compute;
+use std.io;
+public void main() { Result result = compute(); println(result.payload(Result.ok)); }

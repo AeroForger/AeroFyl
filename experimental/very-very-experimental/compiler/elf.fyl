@@ -1,0 +1,22 @@
+use emitter;
+
+// One read/execute PT_LOAD; all mutable storage is mmap-backed.
+public list byte nativeElf(list byte code) {
+    // Bootstrap verifier entry workaround; no source behavior.
+    while (false) {}
+    ref NativeImage file = reference(newNativeImage());
+    nativeByte(file, 127); nativeByte(file, 69); nativeByte(file, 76); nativeByte(file, 70);
+    nativeByte(file, 2); nativeByte(file, 1); nativeByte(file, 1); nativeByte(file, 0);
+    for (int i = 0; i < 8; i += 1) { nativeByte(file, 0); }
+    nativeLE(file, 2, 2); nativeLE(file, 62, 2); nativeLE(file, 1, 4);
+    nativeLE(file, 4198400, 8); nativeLE(file, 64, 8); nativeLE(file, 0, 8);
+    nativeLE(file, 0, 4); nativeLE(file, 64, 2); nativeLE(file, 56, 2);
+    nativeLE(file, 1, 2); nativeLE(file, 0, 2); nativeLE(file, 0, 2); nativeLE(file, 0, 2);
+    nativeLE(file, 1, 4); nativeLE(file, 5, 4);
+    nativeLE(file, 0, 8); nativeLE(file, 4194304, 8); nativeLE(file, 4194304, 8);
+    nativeLE(file, code.length + 4096, 8); nativeLE(file, code.length + 4096, 8);
+    nativeLE(file, 4096, 8);
+    while (nativeOffset(file) < 4096) { nativeByte(file, 0); }
+    for (int i = 0; i < code.length; i += 1) { nativeByte(file, int(code[i])); }
+    return file.value.code;
+}

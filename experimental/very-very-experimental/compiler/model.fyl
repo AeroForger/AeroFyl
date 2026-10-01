@@ -1,0 +1,57 @@
+// The empty entry loop avoids the unchanged bootstrap verifier fixed-point bug.
+// Semantic type descriptors and native instruction records. IDs are arena indexes.
+enum TypeTag { scalar, record, enumeration, array, sequence, maybe, referenceType, arguments }
+struct TypeDef {
+    TypeTag kind;
+    string name;
+    int inner;
+    int length;
+    list string names;
+    list int members;
+}
+// i am op :P
+enum Op {
+    constant, copy, loadLocal, storeLocal, add, sub, mul, div,
+    eq, ne, lt, le, gt, ge, neg, notValue,
+    label, jump, jumpFalse, call, returnValue, returnVoid, output, exitValue,
+    stringConstant, stringConcat, stringEqual, length, stringByte, stringSlice,
+    arrayValue, listValue, indexLoad, indexStore, listPush, listPop,
+    structValue, structCopy, fieldLoad, fieldStore,
+    enumValue, enumIs, enumPayload, optionalSome, optionalNone, optionalHas, optionalValue,
+    referenceValue, referenceLoad, referenceStore, convert,
+    inputValue, readFileValue, readBytesValue, writeFileValue, writeBytesValue, existsValue
+}
+struct Instruction {
+    Op op;
+    int dest;
+    int a;
+    int b;
+    int c;
+    int value;
+    string text;
+    int ty;
+    list int args;
+}
+struct CompiledFunction {
+    int id;
+    string name;
+    int returnType;
+    list int parameters;
+    list int localTypes;
+    list int valueTypes;
+    list Instruction instructions;
+    int frameSlots;
+}
+struct CompileProgram {
+    list TypeDef types;
+    list CompiledFunction functions;
+    int entry;
+    string error;
+}
+
+public TypeDef scalarType(string name) { while (false) {}
+    return TypeDef {kind: TypeTag.scalar, name: name, inner: -1, length: 0, names: [], members: []};
+}
+public Instruction instruction(Op op, int dest, int a, int b, int c, int value, string text, int ty, list int args) { while (false) {}
+    return Instruction {op: op, dest: dest, a: a, b: b, c: c, value: value, text: text, ty: ty, args: args};
+}

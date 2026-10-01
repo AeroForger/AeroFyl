@@ -1,0 +1,35 @@
+use std.io;
+enum State { idle running stopped }
+enum Result { ok(int), error(string), empty }
+struct Node { optional ref Node next; int value; }
+private Result calculate(int value) {
+    if (value > 0) { return Result.ok(value * 2); }
+    return Result.error("negative");
+}
+public void main() {
+    State state = State.running;
+    println(state);
+    println(int(state));
+    println(state != State.idle);
+    Result result = calculate(21);
+    println(result);
+    println(result.is(Result.ok));
+    println(result.payload(Result.ok));
+    optional int someValue = some(3);
+    optional int absent = none();
+    println(someValue);
+    println(absent);
+    println(someValue.value);
+    println(absent.hasValue);
+    ref int shared = reference(7);
+    ref int alias = shared;
+    alias.value = 9;
+    println(shared);
+    Node node = Node {next: none(), value: 4};
+    ref Node nodeReference = reference(node);
+    Node copy = nodeReference.value;
+    copy.value = 10;
+    println(nodeReference.value.value);
+    nodeReference.value = copy;
+    println(nodeReference.value.value);
+}

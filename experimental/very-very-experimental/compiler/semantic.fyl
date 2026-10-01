@@ -1,0 +1,668 @@
+// The empty entry loop avoids the unchanged bootstrap verifier fixed-point bug.
+use hir;
+use resolution;
+use types;
+
+struct Binding { string name; int slot; int ty; int depth; bool parameterValue; }
+struct SemanticState { HirProgram program; list Binding bindings; int depth; int functionId; int loopDepth; }
+
+public void semantic_error(ref SemanticState state, string message, Span span) { while (false) {}
+    SemanticState current = state.value;
+    HirProgram program = current.program;
+    if (program.error == "") { program.error = message; program.errorSpan = span; }
+    current.program = program;
+    state.value = current;
+}
+public AstNode semantic_node(ref SemanticState state, int id) { while (false) {} return state.value.program.ast.nodes[id]; }
+public void annotate(ref SemanticState state, int id, int ty, int symbol, int auxiliary) { while (false) {}
+    SemanticState current = state.value;
+    HirProgram program = current.program;
+    program.nodeTypes[id] = ty;
+    program.nodeSymbols[id] = symbol;
+    program.nodeAux[id] = auxiliary;
+    current.program = program;
+    state.value = current;
+}
+public int intern_type(ref SemanticState state, TypeTag kind, int inner, int length) { while (false) {}
+    HirProgram program = state.value.program;
+    for (int i = 0; i < program.types.length; i += 1) {
+        TypeDef found = program.types[i];
+        if (found.kind == kind && found.inner == inner && found.length == length) { return i; }
+    }
+    string name = "aggregate";
+    int id = program.types.length;
+    program.types.push(TypeDef {kind: kind, name: name, inner: inner, length: length, names: [], members: []});
+    SemanticState current = state.value;
+    current.program = program;
+    state.value = current;
+    return id;
+}
+public void check_type_visibility(ref SemanticState state,string name,Span span) { while (false) {}
+    AstProgram ast=state.value.program.ast;
+    for (int i=0;i<ast.roots.length;i+=1) {
+        AstNode declaration=ast.nodes[ast.roots[i]];
+        if ((declaration.kind==NodeKind.structDeclaration || declaration.kind==NodeKind.enumDeclaration) && declaration.text==name) {
+            if (!import_visible(ast,span.source,declaration.span.source,name)) { semantic_error(state,"type was not imported: "+name,span); }
+        }
+    }
+}
+public int resolve_type_node(ref SemanticState state, int id) { while (false) {}
+    AstNode node = semantic_node(state, id);
+    int primitive = -1;
+    if (node.text == "void") { primitive = 0; }
+    if (node.text == "int") { primitive = 1; }
+    if (node.text == "bool") { primitive = 2; }
+    if (node.text == "char") { primitive = 3; }
+    if (node.text == "string") { primitive = 4; }
+    if (node.text == "byte") { primitive = 5; }
+    if (primitive != -1) { annotate(state,id,primitive,-1,-1); return primitive; }
+    if (node.text == "float" || node.text == "dynamic" || node.text == "tuple") {
+        semantic_error(state,"this type has no executable lowering in the reference language",node.span);
+        return 1;
+    }
+    if (node.text == "cliargs") {
+        int ty = intern_type(state,TypeTag.arguments,4,0);
+        annotate(state,id,ty,-1,-1);
+        return ty;
+    }
+    if (node.text == "array" || node.text == "list" || node.text == "optional" || node.text == "ref") {
+        if (node.children.length != 1) { semantic_error(state,"invalid compound type",node.span); return 1; }
+        int inner = resolve_type_node(state,node.children[0]);
+        if (inner == 0 || state.value.program.types[inner].kind==TypeTag.arguments) { semantic_error(state,"this type cannot be stored in an aggregate",node.span); }
+        TypeTag kind = TypeTag.array;
+        if (node.text == "list") { kind = TypeTag.sequence; }
+        if (node.text == "optional") { kind = TypeTag.maybe; }
+        if (node.text == "ref") { kind = TypeTag.referenceType; }
+        if (kind == TypeTag.array && inner == 5) { semantic_error(state,"byte arrays are not supported by the reference compiler",node.span); }
+        int ty = intern_type(state,kind,inner,node.number);
+        annotate(state,id,ty,-1,-1);
+        return ty;
+    }
+    HirProgram program = state.value.program;
+    int ty = named_type(program.types,node.text);
+    if (ty == -1) { semantic_error(state,"unknown type: " + node.text,node.span); return 1; }
+    for (int i = 0; i < program.ast.roots.length; i += 1) {
+        AstNode declaration = program.ast.nodes[program.ast.roots[i]];
+        if ((declaration.kind == NodeKind.structDeclaration || declaration.kind == NodeKind.enumDeclaration) && declaration.text == node.text) {
+            if (!import_visible(program.ast,node.span.source,declaration.span.source,node.text)) {
+                semantic_error(state,"type was not imported: " + node.text,node.span);
+            }
+        }
+    }
+    annotate(state,id,ty,-1,-1);
+    return ty;
+}
+public int find_binding(ref SemanticState state, string name) { while (false) {}
+    SemanticState current = state.value;
+    int i = current.bindings.length - 1;
+    while (i >= 0) { if (current.bindings[i].name == name) { return i; } i -= 1; }
+    return -1;
+}
+public int define_binding(ref SemanticState state, string name, int ty, bool parameterValue, Span span) { while (false) {}
+    SemanticState current = state.value;
+    for (int i = 0; i < current.bindings.length; i += 1) {
+        if (current.bindings[i].depth == current.depth && current.bindings[i].name == name) {
+            semantic_error(state,"duplicate declaration: " + name,span);
+        }
+    }
+    current = state.value;
+    HirProgram program = current.program;
+    HirFunction function = program.functions[current.functionId];
+    int slot = function.slotTypes.length;
+    function.slotTypes.push(ty);
+    if (parameterValue) { function.parameters.push(slot); }
+    program.functions[current.functionId] = function;
+    current.program = program;
+    current.bindings.push(Binding {name:name,slot:slot,ty:ty,depth:current.depth,parameterValue:parameterValue});
+    state.value = current;
+    return slot;
+}
+public int function_index(ref SemanticState state, string name) { while (false) {}
+    HirProgram program = state.value.program;
+    for (int i = 0; i < program.functions.length; i += 1) { if (program.functions[i].name == name) { return i; } }
+    return -1;
+}
+public void expect_type(ref SemanticState state, int actual, int expected, Span span) { while (false) {}
+    if (expected >= 0 && actual != expected) { semantic_error(state,"type mismatch: expected " + state.value.program.types[expected].name + ", found " + state.value.program.types[actual].name,span); }
+}
+
+public int check_integer(ref SemanticState state, AstNode node, bool negativeMinimum, int expected) { while (false) {}
+    int maximumDigits = 19;
+    string maximum = "9223372036854775807";
+    if (negativeMinimum) { maximum = "9223372036854775808"; }
+    int offset = 0;
+    while (offset < node.text.length - 1 && node.text.byte(offset) == 48) { offset += 1; }
+    string magnitude = node.text.slice(offset,node.text.length);
+    bool tooLarge = magnitude.length > maximumDigits;
+    if (magnitude.length == maximumDigits) {
+        bool equal = true;
+        for (int i = 0; i < magnitude.length; i += 1) {
+            if (equal && magnitude.byte(i) > maximum.byte(i)) { tooLarge = true; }
+            if (magnitude.byte(i) != maximum.byte(i)) { equal = false; }
+        }
+    }
+    if (tooLarge) { semantic_error(state,"integer literal is outside the signed 64-bit range",node.span); }
+    int ty = 1;
+    if (expected == 5) {
+        bool validByte = magnitude.length < 3;
+        if (magnitude.length == 3) {
+            int octet = (magnitude.byte(0)-48)*100 + (magnitude.byte(1)-48)*10 + magnitude.byte(2)-48;
+            validByte = octet <= 255;
+        }
+        if (!validByte) { semantic_error(state,"byte literal is outside 0...255",node.span); }
+        ty = 5;
+    }
+    return ty;
+}
+
+public int check_scalar_expression(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id);
+    if (node.kind==NodeKind.integer) { return check_integer(state,node,false,expected); }
+    if (node.kind==NodeKind.boolean) { return 2; }
+    if (node.kind==NodeKind.character) { if (expected==1) { return 1; } return 3; }
+    if (node.kind==NodeKind.stringValue) { return 4; }
+    if (node.kind==NodeKind.name) {
+        int binding=find_binding(state,node.text);
+        if (binding<0) { semantic_error(state,"undefined variable: "+node.text,node.span); return 1; }
+        Binding found=state.value.bindings[binding]; int auxiliary=0;
+        if (found.parameterValue) { auxiliary=1; }
+        annotate(state,id,found.ty,found.slot,auxiliary); return found.ty;
+    }
+    semantic_error(state,"floating-point execution is unsupported by the reference compiler",node.span); return 1;
+}
+public int check_unary_expression(ref SemanticState state,int id) { while (false) {}
+    AstNode node=semantic_node(state,id); int child=node.children[0]; AstNode operand=semantic_node(state,child);
+    if (node.text=="-") {
+        if (operand.kind==NodeKind.integer) { check_integer(state,operand,true,1); annotate(state,child,1,-1,-1); }
+        else { check_expression(state,child,1); }
+        return 1;
+    }
+    check_expression(state,child,2); return 2;
+}
+public int check_binary_expression(ref SemanticState state,int id) { while (false) {}
+    AstNode node=semantic_node(state,id); int left=node.children[0]; int right=node.children[1];
+    if (node.text=="&&" || node.text=="||") { check_expression(state,left,2); check_expression(state,right,2); return 2; }
+    if (node.text=="-" || node.text=="*" || node.text=="/") { check_expression(state,left,1); check_expression(state,right,1); return 1; }
+    int leftType=check_expression(state,left,-1); check_expression(state,right,leftType);
+    if (node.text=="+") { if (leftType!=1 && leftType!=4) { semantic_error(state,"addition requires int or string operands",node.span); } return leftType; }
+    if (node.text=="==" || node.text=="!=") { if (!equality_type(state.value.program.types,leftType)) { semantic_error(state,"equality is not defined for these values",node.span); } }
+    else if (leftType!=1 && leftType!=5) { semantic_error(state,"ordering requires int or byte operands",node.span); }
+    return 2;
+}
+public int check_collection_expression(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id);
+    if (expected<0) { semantic_error(state,"collection literals require an explicit array or list type",node.span); return 1; }
+    TypeDef definition=state.value.program.types[expected];
+    if (definition.kind!=TypeTag.array && definition.kind!=TypeTag.sequence) { semantic_error(state,"collection literal requires array or list type",node.span); return 1; }
+    if (definition.kind==TypeTag.array && node.children.length!=definition.length) { semantic_error(state,"array literal length does not match its type",node.span); }
+    for (int i=0;i<node.children.length;i+=1) { check_expression(state,node.children[i],definition.inner); }
+    return expected;
+}
+public int check_struct_expression(ref SemanticState state,int id) { while (false) {}
+    AstNode node=semantic_node(state,id); int ty=named_type(state.value.program.types,node.text);
+    if (ty<0) { semantic_error(state,"unknown struct: "+node.text,node.span); return 1; }
+    check_type_visibility(state,node.text,node.span);
+    TypeDef definition=state.value.program.types[ty];
+    if (definition.kind!=TypeTag.record) { semantic_error(state,"construction requires a struct type",node.span); return ty; }
+    list int seen=[];
+    for (int i=0;i<node.children.length;i+=1) {
+        int field=member_index(definition,node.names[i]);
+        if (field<0) { semantic_error(state,"unknown struct field: "+node.names[i],node.span); }
+        else {
+            for (int j=0;j<seen.length;j+=1) { if (seen[j]==field) { semantic_error(state,"duplicate struct field: "+node.names[i],node.span); } }
+            seen.push(field); check_expression(state,node.children[i],definition.members[field]);
+        }
+    }
+    if (seen.length!=definition.members.length) { semantic_error(state,"struct construction must initialize every field",node.span); }
+    return ty;
+}
+public int check_index_expression(ref SemanticState state,int id) { while (false) {}
+    AstNode node=semantic_node(state,id); int base=check_expression(state,node.children[0],-1); check_expression(state,node.children[1],1);
+    TypeDef definition=state.value.program.types[base];
+    if (definition.kind==TypeTag.array || definition.kind==TypeTag.sequence) { return definition.inner; }
+    if (definition.kind==TypeTag.arguments) { return 4; }
+    semantic_error(state,"indexed access requires an array or list; strings use byte()",node.span); return 1;
+}
+public int check_expression(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); int ty=1;
+    if (node.kind==NodeKind.unary) { ty=check_unary_expression(state,id); }
+    else if (node.kind==NodeKind.binary) { ty=check_binary_expression(state,id); }
+    else if (node.kind==NodeKind.collection) { ty=check_collection_expression(state,id,expected); }
+    else if (node.kind==NodeKind.structValue) { ty=check_struct_expression(state,id); }
+    else if (node.kind==NodeKind.member) { ty=check_member(state,id); }
+    else if (node.kind==NodeKind.index) { ty=check_index_expression(state,id); }
+    else if (node.kind==NodeKind.call) { ty=check_call(state,id,expected); }
+    else if (node.kind==NodeKind.interpolated) { semantic_error(state,"interpolation is only supported as a direct output argument",node.span); ty=4; }
+    else { ty=check_scalar_expression(state,id,expected); }
+    annotate(state,id,ty,state.value.program.nodeSymbols[id],state.value.program.nodeAux[id]); expect_type(state,ty,expected,node.span); return ty;
+}
+
+public int check_member(ref SemanticState state, int id) { while (false) {}
+    AstNode node = semantic_node(state,id);
+    AstNode base = semantic_node(state,node.children[0]);
+    int named = -1;
+    if (base.kind == NodeKind.name) { named = named_type(state.value.program.types,base.text); }
+    if (named >= 0 && state.value.program.types[named].kind == TypeTag.enumeration) {
+        check_type_visibility(state,base.text,base.span);
+        TypeDef definition = state.value.program.types[named];
+        int variant = member_index(definition,node.text);
+        if (variant < 0) { semantic_error(state,"unknown enum variant: " + node.text,node.span); variant = 0; }
+        else if (definition.members[variant] >= 0) { semantic_error(state,"payload enum variants require an argument",node.span); }
+        annotate(state,id,named,named,variant);
+        return named;
+    }
+    int baseType = check_expression(state,node.children[0],-1);
+    TypeDef definition = state.value.program.types[baseType];
+    int ty = 1;
+    int field = -1;
+    if (node.text == "length" && (baseType == 4 || definition.kind == TypeTag.array || definition.kind == TypeTag.sequence || definition.kind == TypeTag.arguments)) { ty = 1; field = -2; }
+    else if (definition.kind == TypeTag.maybe && node.text == "hasValue") { ty = 2; field = -3; }
+    else if ((definition.kind == TypeTag.maybe || definition.kind == TypeTag.referenceType) && node.text == "value") { ty = definition.inner; field = -4; }
+    else if (definition.kind == TypeTag.record) {
+        field = member_index(definition,node.text);
+        if (field < 0) { semantic_error(state,"unknown struct field: " + node.text,node.span); }
+        else { ty = definition.members[field]; }
+    } else { semantic_error(state,"invalid member access: " + node.text,node.span); }
+    annotate(state,id,ty,-1,field);
+    return ty;
+}
+public int enum_marker(ref SemanticState state, int id, int expectedEnum) { while (false) {}
+    AstNode marker = semantic_node(state,id);
+    if (marker.kind != NodeKind.member) { semantic_error(state,"enum inspection expects Enum.Variant",marker.span); return 0; }
+    AstNode owner = semantic_node(state,marker.children[0]);
+    int enumType = named_type(state.value.program.types,owner.text);
+    if (enumType != expectedEnum) { semantic_error(state,"enum variant has the wrong enum type",marker.span); return 0; }
+    check_type_visibility(state,owner.text,owner.span);
+    int variant = member_index(state.value.program.types[enumType],marker.text);
+    if (variant < 0) { semantic_error(state,"unknown enum variant",marker.span); return 0; }
+    annotate(state,id,enumType,enumType,variant);
+    return variant;
+}
+public void check_arity(ref SemanticState state, AstNode node, int expected) { while (false) {}
+    if (node.children.length - 1 != expected) { semantic_error(state,"incorrect argument count",node.span); }
+}
+public int check_method_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]);
+    string name=callee.text; int ty=1; int symbol=-1; int auxiliary=-1;
+
+        AstNode receiver = semantic_node(state,callee.children[0]);
+        int named = -1;
+        if (receiver.kind == NodeKind.name) { named = named_type(state.value.program.types,receiver.text); }
+        if (named >= 0 && state.value.program.types[named].kind == TypeTag.enumeration) {
+            check_type_visibility(state,receiver.text,receiver.span);
+            TypeDef definition = state.value.program.types[named];
+            int variant = member_index(definition,callee.text);
+            if (variant < 0) { semantic_error(state,"unknown enum variant",callee.span); }
+            else {
+                int payload = definition.members[variant];
+                if (payload < 0) { check_arity(state,node,0); }
+                else { check_arity(state,node,1); if (node.children.length > 1) { check_expression(state,node.children[1],payload); } }
+                auxiliary = variant;
+            }
+            ty = named; symbol = -40;
+        } else {
+            int receiverType = check_expression(state,callee.children[0],-1);
+            TypeDef definition = state.value.program.types[receiverType];
+            if (receiverType == 4 && callee.text == "byte") {
+                check_arity(state,node,1); if (node.children.length > 1) { check_expression(state,node.children[1],1); }
+                ty = 1; symbol = -30;
+            } else if (receiverType == 4 && callee.text == "slice") {
+                check_arity(state,node,2);
+                for (int i = 1; i < node.children.length; i += 1) { check_expression(state,node.children[i],1); }
+                ty = 4; symbol = -31;
+            } else if (definition.kind == TypeTag.sequence && (callee.text == "push" || callee.text == "pop")) {
+                if (receiver.kind == NodeKind.name) {
+                    int binding = find_binding(state,receiver.text);
+                    if (binding >= 0 && state.value.bindings[binding].parameterValue) { semantic_error(state,"list parameters are read-only",receiver.span); }
+                }
+                if (callee.text == "push") {
+                    check_arity(state,node,1); if (node.children.length > 1) { check_expression(state,node.children[1],definition.inner); }
+                    if (receiver.kind != NodeKind.name && receiver.kind != NodeKind.member && receiver.kind != NodeKind.index) { semantic_error(state,"list push requires an assignable receiver",receiver.span); }
+                    ty = 0; symbol = -32;
+                } else { check_arity(state,node,0); ty = definition.inner; symbol = -33; }
+            } else if (definition.kind == TypeTag.enumeration && (callee.text == "is" || callee.text == "payload")) {
+                check_arity(state,node,1);
+                int variant = 0; if (node.children.length > 1) { variant = enum_marker(state,node.children[1],receiverType); }
+                auxiliary = variant;
+                if (callee.text == "is") { ty = 2; symbol = -34; }
+                else { symbol = -35; ty=1; if (variant>=0 && variant<definition.members.length) { ty = definition.members[variant]; } if (ty < 0) { semantic_error(state,"this enum variant has no payload",node.span); ty = 1; } }
+            } else { semantic_error(state,"unsupported method: " + callee.text,callee.span); }
+        }
+    
+    annotate(state,id,ty,symbol,auxiliary); return ty;
+}
+public int check_user_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]);
+    string name=callee.text; int ty=1; int symbol=-1; int auxiliary=-1;
+    int functionId=function_index(state,name);
+
+            HirFunction function = state.value.program.functions[functionId];
+            if (function.file != callee.span.source && !function.publicValue) { semantic_error(state,"private function is not visible: " + name,callee.span); }
+            if (!import_visible(state.value.program.ast,callee.span.source,function.file,name)) { semantic_error(state,"function was not imported: " + name,callee.span); }
+            check_arity(state,node,function.parameters.length);
+            for (int i = 1; i < node.children.length; i += 1) {
+                int parameterType = -1;
+                if (i - 1 < function.parameters.length) { parameterType = function.slotTypes[function.parameters[i-1]]; }
+                check_expression(state,node.children[i],parameterType);
+            }
+            ty = function.returnType; symbol = functionId;
+        
+    annotate(state,id,ty,symbol,auxiliary); return ty;
+}
+public int check_output_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]);
+    string name=callee.text; int ty=1; int symbol=-1; int auxiliary=-1;
+
+            if (!has_standard_import(state.value.program.ast,"std.io")) { semantic_error(state,"output requires use std.io",callee.span); }
+            check_arity(state,node,1);
+            if (node.children.length > 1) {
+                int argument=node.children[1]; AstNode value=semantic_node(state,argument);
+                if (value.kind==NodeKind.interpolated) {
+                    for (int i=0;i<value.children.length;i+=1) { int valueType=check_expression(state,value.children[i],-1); if (valueType==0) { semantic_error(state,"cannot print void",value.span); } }
+                    annotate(state,argument,4,-1,-1);
+                } else { int valueType = check_expression(state,argument,-1); if (valueType == 0) { semantic_error(state,"cannot print void",node.span); } }
+            }
+            ty = 0; symbol = -10;
+            if (name == "println") { symbol = -11; }
+            if (name == "eprint") { symbol = -12; }
+            if (name == "eprintln") { symbol = -13; }
+        
+    annotate(state,id,ty,symbol,auxiliary); return ty;
+}
+public int check_optional_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]);
+    string name=callee.text; int ty=1; int symbol=-1; int auxiliary=-1;
+
+            if (expected < 0) { semantic_error(state,"optional constructor requires optional type context",node.span); }
+            else {
+                TypeDef definition = state.value.program.types[expected];
+                if (definition.kind != TypeTag.maybe) { semantic_error(state,"optional constructor requires optional type context",node.span); }
+                else { ty = expected; if (name == "some") { check_arity(state,node,1); if (node.children.length > 1) { check_expression(state,node.children[1],definition.inner); } } else { check_arity(state,node,0); } }
+            }
+            symbol = -16; if (name == "none") { symbol = -17; }
+        
+    annotate(state,id,ty,symbol,auxiliary); return ty;
+}
+public int check_reference_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]);
+    string name=callee.text; int ty=1; int symbol=-1; int auxiliary=-1;
+
+            check_arity(state,node,1);
+            int inner = 1; int expectedInner = -1;
+            if (expected >= 0 && state.value.program.types[expected].kind == TypeTag.referenceType) { expectedInner = state.value.program.types[expected].inner; }
+            if (node.children.length > 1) { inner = check_expression(state,node.children[1],expectedInner); }
+            ty = intern_type(state,TypeTag.referenceType,inner,0); symbol = -18;
+        
+    annotate(state,id,ty,symbol,auxiliary); return ty;
+}
+public int check_conversion_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]);
+    string name=callee.text; int ty=1; int symbol=-1; int auxiliary=-1;
+
+            check_arity(state,node,1); int source = 1;
+            if (node.children.length > 1) { source = check_expression(state,node.children[1],-1); }
+            ty = 1; symbol = -19;
+            if (name == "char") { ty = 3; symbol = -20; }
+            if (name == "byte") { ty = 5; symbol = -21; }
+            bool permitted = source == ty;
+            if (ty == 1 && (source == 3 || source == 5)) { permitted = true; }
+            if (ty==1 && state.value.program.types[source].kind==TypeTag.enumeration && equality_type(state.value.program.types,source)) { permitted=true; }
+            if ((ty == 3 || ty == 5) && source == 1) { permitted = true; }
+            if (!permitted) { semantic_error(state,"unsupported explicit conversion",node.span); }
+        
+    annotate(state,id,ty,symbol,auxiliary); return ty;
+}
+public int check_input_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]);
+    string name=callee.text; int ty=1; int symbol=-1; int auxiliary=-1;
+
+            if (!has_standard_import(state.value.program.ast,"std.io")) { semantic_error(state,"input requires use std.io",callee.span); }
+            ty = 4; symbol = -14;
+            if (node.children.length > 2) { semantic_error(state,"input expects zero or one type argument",node.span); }
+            if (node.children.length == 2) {
+                AstNode argument = semantic_node(state,node.children[1]);
+                ty = named_type(state.value.program.types,argument.text);
+                if (argument.kind != NodeKind.name || ty < 1 || ty > 4) { semantic_error(state,"input expects string, int, bool or char",argument.span); ty = 4; }
+            }
+        
+    annotate(state,id,ty,symbol,auxiliary); return ty;
+}
+public int check_file_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]);
+    string name=callee.text; int ty=1; int symbol=-1; int auxiliary=-1;
+
+            if (!has_standard_import(state.value.program.ast,"std.fs")) { semantic_error(state,"filesystem calls require use std.fs",callee.span); }
+            int count = 1; if (name == "writeFile" || name == "writeBytes") { count = 2; }
+            check_arity(state,node,count); if (node.children.length > 1) { check_expression(state,node.children[1],4); }
+            ty = 4; symbol = -22;
+            if (name == "readBytes") { ty = intern_type(state,TypeTag.sequence,5,0); symbol = -23; }
+            if (name == "writeFile") { ty = 0; symbol = -24; if (node.children.length > 2) { check_expression(state,node.children[2],4); } }
+            if (name == "writeBytes") { ty = 0; symbol = -25; if (node.children.length > 2) { check_expression(state,node.children[2],intern_type(state,TypeTag.sequence,5,0)); } }
+            if (name == "exists") { ty = 2; symbol = -26; }
+        
+    annotate(state,id,ty,symbol,auxiliary); return ty;
+}
+public int check_call(ref SemanticState state,int id,int expected) { while (false) {}
+    AstNode node=semantic_node(state,id); AstNode callee=semantic_node(state,node.children[0]); string name=callee.text;
+    if (callee.kind==NodeKind.member) { return check_method_call(state,id,expected); }
+    if (callee.kind!=NodeKind.name) { semantic_error(state,"call target must be a function name or supported method",callee.span); return 1; }
+    if (find_binding(state,name)>=0) { semantic_error(state,"a variable is not callable",callee.span); }
+    if (function_index(state,name)>=0) { return check_user_call(state,id,expected); }
+    if (name=="print" || name=="println" || name=="eprint" || name=="eprintln") { return check_output_call(state,id,expected); }
+    if (name=="some" || name=="none") { return check_optional_call(state,id,expected); }
+    if (name=="reference") { return check_reference_call(state,id,expected); }
+    if (name=="int" || name=="char" || name=="byte") { return check_conversion_call(state,id,expected); }
+    if (name=="input") { return check_input_call(state,id,expected); }
+    if (name=="readFile" || name=="readBytes" || name=="writeFile" || name=="writeBytes" || name=="exists") { return check_file_call(state,id,expected); }
+    if (name=="exit") { check_arity(state,node,1); if (node.children.length>1) { check_expression(state,node.children[1],1); } annotate(state,id,0,-15,-1); return 0; }
+    semantic_error(state,"undefined function: "+name,callee.span); return 1;
+}
+
+public bool definitely_returns(ref SemanticState state, int block) { while (false) {}
+    AstNode node = semantic_node(state,block);
+    for (int i = 0; i < node.children.length; i += 1) {
+        AstNode statement = semantic_node(state,node.children[i]);
+        if (statement.kind == NodeKind.returnValue) { return true; }
+        if (statement.kind == NodeKind.expressionStatement) {
+            AstNode expression = semantic_node(state,statement.children[0]);
+            if (expression.kind == NodeKind.call && state.value.program.nodeSymbols[statement.children[0]] == -15) { return true; }
+        }
+        if (statement.kind == NodeKind.ifStatement && statement.children.length == 3) {
+            if (definitely_returns(state,statement.children[1]) && definitely_returns(state,statement.children[2])) { return true; }
+        }
+    }
+    return false;
+}
+public void enter_scope(ref SemanticState state) { while (false) {} SemanticState current=state.value; current.depth+=1; state.value=current; }
+public void leave_scope(ref SemanticState state) { while (false) {}
+    SemanticState current=state.value;
+    while (current.bindings.length>0 && current.bindings[current.bindings.length-1].depth==current.depth) { current.bindings.pop(); }
+    current.depth-=1; state.value=current;
+}
+public void check_block(ref SemanticState state,int id,bool nested) { while (false) {}
+    if (nested) { enter_scope(state); }
+    AstNode block=semantic_node(state,id);
+    for (int i=0;i<block.children.length;i+=1) { check_statement(state,block.children[i]); }
+    if (nested) { leave_scope(state); }
+}
+public void check_statement(ref SemanticState state,int id) { while (false) {}
+    AstNode node=semantic_node(state,id);
+    if (node.kind==NodeKind.variable) {
+        int ty=resolve_type_node(state,node.children[0]);
+        if (ty==0 || state.value.program.types[ty].kind==TypeTag.arguments) { semantic_error(state,"invalid local variable type",node.span); }
+        AstNode initializer=semantic_node(state,node.children[1]);
+        if (state.value.program.types[ty].kind==TypeTag.sequence && initializer.kind!=NodeKind.collection && initializer.kind!=NodeKind.call) { semantic_error(state,"whole-list cloning is unsupported",node.span); }
+        check_expression(state,node.children[1],ty);
+        int slot=define_binding(state,node.text,ty,false,node.span);
+        annotate(state,id,ty,slot,-1);
+    } else if (node.kind==NodeKind.assignment) {
+        int targetId=node.children[0]; AstNode target=semantic_node(state,targetId);
+        int ty=check_expression(state,targetId,-1);
+        if (target.kind==NodeKind.name) {
+            if (state.value.program.types[ty].kind==TypeTag.sequence) { semantic_error(state,"whole-list assignment is unsupported",target.span); }
+        } else if (target.kind==NodeKind.index) {
+            int baseType=state.value.program.nodeTypes[target.children[0]];
+            if (state.value.program.types[baseType].kind==TypeTag.arguments) { semantic_error(state,"command-line arguments are read-only",target.span); }
+            AstNode base=semantic_node(state,target.children[0]);
+            if (state.value.program.types[baseType].kind==TypeTag.sequence && base.kind==NodeKind.name) {
+                int binding=find_binding(state,base.text);
+                if (binding>=0 && state.value.bindings[binding].parameterValue) { semantic_error(state,"list parameters are read-only",target.span); }
+            }
+        } else if (target.kind==NodeKind.member) {
+            AstNode base=semantic_node(state,target.children[0]);
+            int baseType=state.value.program.nodeTypes[target.children[0]];
+            TypeDef definition=state.value.program.types[baseType];
+            if (definition.kind==TypeTag.referenceType && target.text=="value") { }
+            else if (definition.kind!=TypeTag.record || base.kind!=NodeKind.name) { semantic_error(state,"field assignment requires a local struct variable",target.span); }
+        } else { semantic_error(state,"invalid assignment target",target.span); }
+        if (node.text!="=") {
+            if (node.text=="+=" && ty==4) { }
+            else if (ty!=1) { semantic_error(state,"compound arithmetic requires int operands",node.span); }
+        }
+        check_expression(state,node.children[1],ty); annotate(state,id,ty,-1,-1);
+    } else if (node.kind==NodeKind.expressionStatement) { check_expression(state,node.children[0],-1); }
+    else if (node.kind==NodeKind.returnValue) {
+        int ty=state.value.program.functions[state.value.functionId].returnType;
+        if (node.children.length==0) { if (ty!=0) { semantic_error(state,"return value required",node.span); } }
+        else { check_expression(state,node.children[0],ty); }
+    } else if (node.kind==NodeKind.ifStatement) {
+        check_expression(state,node.children[0],2); check_block(state,node.children[1],true);
+        if (node.children.length==3) { check_block(state,node.children[2],true); }
+    } else if (node.kind==NodeKind.whileStatement) {
+        check_expression(state,node.children[0],2);
+        SemanticState current=state.value; current.loopDepth+=1; state.value=current;
+        check_block(state,node.children[1],true);
+        current=state.value; current.loopDepth-=1; state.value=current;
+    } else if (node.kind==NodeKind.forStatement) {
+        enter_scope(state); check_statement(state,node.children[0]); check_expression(state,node.children[1],2); check_statement(state,node.children[2]);
+        SemanticState current=state.value; current.loopDepth+=1; state.value=current;
+        check_block(state,node.children[3],true);
+        current=state.value; current.loopDepth-=1; state.value=current; leave_scope(state);
+    } else if (node.kind==NodeKind.breakStatement || node.kind==NodeKind.continueStatement) {
+        if (state.value.loopDepth==0) { semantic_error(state,"break and continue require a loop",node.span); }
+    } else { semantic_error(state,"unsupported statement",node.span); }
+}
+
+public bool direct_record_cycle(list TypeDef types,int current,int target,list int visiting) { while (false) {}
+    if (current==target) { return true; }
+    for (int i=0;i<visiting.length;i+=1) { if (visiting[i]==current) { return false; } }
+    // A read-only list parameter cannot grow: make a fresh traversal list.
+    list int next=[];
+    for (int i=0;i<visiting.length;i+=1) { next.push(visiting[i]); }
+    next.push(current);
+    TypeDef definition=types[current];
+    for (int i=0;i<definition.members.length;i+=1) {
+        int member=definition.members[i];
+        if (member>=0 && types[member].kind==TypeTag.record) { if (direct_record_cycle(types,member,target,next)) { return true; } }
+    }
+    return false;
+}
+public void collect_declarations(ref SemanticState state) { while (false) {}
+    HirProgram program=state.value.program;
+    for (int i=0;i<program.ast.roots.length;i+=1) {
+        int id=program.ast.roots[i]; AstNode node=program.ast.nodes[id];
+        if (node.kind==NodeKind.structDeclaration || node.kind==NodeKind.enumDeclaration) {
+            if (named_type(program.types,node.text)>=0) { semantic_error(state,"duplicate type declaration: "+node.text,node.span); }
+            else {
+                TypeTag kind=TypeTag.record; if (node.kind==NodeKind.enumDeclaration) { kind=TypeTag.enumeration; }
+                program=state.value.program;
+                program.types.push(TypeDef{kind:kind,name:node.text,inner:-1,length:0,names:[],members:[]});
+                SemanticState current=state.value; current.program=program; state.value=current;
+            }
+        }
+    }
+    program=state.value.program;
+    for (int i=0;i<program.ast.roots.length;i+=1) {
+        int id=program.ast.roots[i]; AstNode node=program.ast.nodes[id];
+        if (node.kind==NodeKind.structDeclaration || node.kind==NodeKind.enumDeclaration) {
+            int ty=named_type(state.value.program.types,node.text);
+            TypeDef definition=state.value.program.types[ty];
+            for (int j=0;j<node.children.length;j+=1) {
+                AstNode member=semantic_node(state,node.children[j]);
+                if (member_index(definition,member.text)>=0) { semantic_error(state,"duplicate member: "+member.text,member.span); }
+                int memberType=-1;
+                if (member.children.length>0) { memberType=resolve_type_node(state,member.children[0]); if (memberType==0 || state.value.program.types[memberType].kind==TypeTag.arguments) { semantic_error(state,"invalid stored value type",member.span); } }
+                definition.names.push(member.text); definition.members.push(memberType);
+            }
+            program=state.value.program; program.types[ty]=definition;
+            SemanticState current=state.value; current.program=program; state.value=current;
+            annotate(state,id,ty,-1,-1);
+        }
+    }
+    program=state.value.program;
+    for (int i=6;i<program.types.length;i+=1) {
+        TypeDef definition=program.types[i];
+        if (definition.kind==TypeTag.record) {
+            for (int j=0;j<definition.members.length;j+=1) {
+                int member=definition.members[j];
+                if (program.types[member].kind==TypeTag.record) {
+                    list int visiting=[];
+                    if (direct_record_cycle(program.types,member,i,visiting)) { semantic_error(state,"direct recursive struct fields require explicit indirection",program.ast.nodes[program.ast.roots[0]].span); }
+                }
+            }
+        }
+    }
+    for (int i=0;i<program.ast.roots.length;i+=1) {
+        int id=program.ast.roots[i]; AstNode node=program.ast.nodes[id];
+        if (node.kind==NodeKind.function) {
+            if (function_index(state,node.text)>=0) { semantic_error(state,"duplicate function: "+node.text,node.span); }
+            int returnType=resolve_type_node(state,node.children[0]);
+            if (state.value.program.types[returnType].kind==TypeTag.arguments) { semantic_error(state,"string[] cannot be returned",node.span); }
+            list int parameters=[]; list int slots=[];
+            for (int j=1;j<node.children.length-1;j+=1) {
+                AstNode parameter=semantic_node(state,node.children[j]); int ty=resolve_type_node(state,parameter.children[0]);
+                if (ty==0) { semantic_error(state,"void parameter is invalid",parameter.span); }
+                if (state.value.program.types[ty].kind==TypeTag.arguments && (node.text!="main" || node.number!=1 || returnType!=0 || node.children.length!=3)) { semantic_error(state,"string[] is reserved for public void main",parameter.span); }
+                parameters.push(j-1); slots.push(ty);
+            }
+            program=state.value.program; int functionId=program.functions.length;
+            program.functions.push(HirFunction{id:functionId,node:id,name:node.text,file:node.span.source,publicValue:node.number==1,returnType:returnType,parameters:parameters,slotTypes:slots,body:node.children[node.children.length-1]});
+            SemanticState current=state.value; current.program=program; state.value=current;
+        }
+    }
+    program=state.value.program;
+    for (int i=0;i<program.ast.imports.length;i+=1) {
+        AstImport dependency=program.ast.imports[i];
+        if (dependency.selective) {
+            for (int j=0;j<dependency.selected.length;j+=1) {
+                bool found=false;
+                for (int k=0;k<program.ast.roots.length;k+=1) {
+                    AstNode node=program.ast.nodes[program.ast.roots[k]];
+                    if (node.span.source==dependency.target && node.text==dependency.selected[j]) {
+                        found=true; if (node.kind==NodeKind.function && node.number==0) { semantic_error(state,"cannot select private function",dependency.span); }
+                    }
+                }
+                if (!found) { semantic_error(state,"module does not declare selected name: "+dependency.selected[j],dependency.span); }
+            }
+        }
+    }
+}
+
+public HirProgram analyze(AstProgram ast,bool requireMain) { while (false) {}
+    list TypeDef definitions=[scalarType("void"),scalarType("int"),scalarType("bool"),scalarType("char"),scalarType("string"),scalarType("byte")];
+    HirProgram program=HirProgram{ast:ast,types:definitions,functions:[],nodeTypes:[],nodeSymbols:[],nodeAux:[],entry:-1,error:"",errorSpan:Span{source:ast.rootPath,start:0,end:0}};
+    for (int i=0;i<ast.nodes.length;i+=1) { program.nodeTypes.push(-1); program.nodeSymbols.push(-1); program.nodeAux.push(-1); }
+    ref SemanticState state=reference(SemanticState{program:program,bindings:[],depth:0,functionId:0,loopDepth:0});
+    collect_declarations(state);
+    if (state.value.program.error!="") { return state.value.program; }
+    for (int i=0;i<state.value.program.functions.length;i+=1) {
+        SemanticState current=state.value; current.functionId=i; current.depth=0; current.loopDepth=0;
+        list Binding fresh=[]; current.bindings=fresh; state.value=current;
+        HirFunction function=state.value.program.functions[i]; AstNode declaration=semantic_node(state,function.node);
+        for (int j=0;j<function.parameters.length;j+=1) {
+            AstNode parameter=semantic_node(state,declaration.children[j+1]);
+            if (find_binding(state,parameter.text)>=0) { semantic_error(state,"duplicate parameter: "+parameter.text,parameter.span); }
+            current=state.value; current.bindings.push(Binding{name:parameter.text,slot:j,ty:function.slotTypes[j],depth:0,parameterValue:true}); state.value=current;
+            annotate(state,declaration.children[j+1],function.slotTypes[j],j,1);
+        }
+        check_block(state,function.body,false);
+        if (function.returnType!=0 && !definitely_returns(state,function.body)) { semantic_error(state,"non-void function requires a return on every path",declaration.span); }
+        if (function.name=="main" && function.file==ast.rootPath) {
+            if (function.publicValue && function.returnType==0 && (function.parameters.length==0 || (function.parameters.length==1 && state.value.program.types[function.slotTypes[0]].kind==TypeTag.arguments))) {
+                current=state.value; program=current.program; program.entry=i; current.program=program; state.value=current;
+            } else if (requireMain) { semantic_error(state,"entry must be public void main() or public void main(string[] args)",declaration.span); }
+        }
+    }
+    if (requireMain && state.value.program.entry<0) { semantic_error(state,"root module requires public void main",Span{source:ast.rootPath,start:0,end:0}); }
+    return state.value.program;
+}

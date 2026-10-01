@@ -1,0 +1,232 @@
+// New native syscall helpers emitted by the AeroFyl compiler, not executed
+// while compiling. Labels 30000..39999 are reserved for this module.
+// Empty false-loop preludes avoid the documented existing bootstrap verifier bug.
+// okay :P
+// sorry for the factual comments
+use emitter;
+
+private void ioCompare(ref NativeImage image, int reg, int value) {
+    while (false) {}
+    nativeImm(image, 1, value); nativeBinary(image, 57, reg, 1);
+}
+private void ioAdd(ref NativeImage image, int reg, int value) {
+    while (false) {}
+    nativeImm(image, 1, value); nativeBinary(image, 1, reg, 1);
+}
+private void ioText(ref NativeImage image, int label, string text) {
+    while (false) {}
+    nativeLabel(image, label);
+    for (int i = 0; i < text.length; i += 1) { nativeByte(image, text.byte(i)); }
+}
+private void ioWriteText(ref NativeImage image, int label, int length) {
+    while (false) {}
+    nativeAddress(image, label); nativeMove(image, 6, 0);
+    nativeImm(image, 7, 2); nativeImm(image, 2, length); nativeCall(image, 4);
+}
+
+private void ioPathHelper(ref NativeImage image) {
+    while (false) {}
+    // RDI length-prefixed path -> RAX newly allocated NUL-terminated path.
+    nativeLabel(image, 30000); nativePrologue(image, 8);
+    nativeStore(image, 5, -8, 7); nativeLoad(image, 0, 7, 0);
+    nativeStore(image, 5, -16, 0); nativeMove(image, 7, 0); ioAdd(image, 7, 1);
+    nativeCall(image, 2); nativeStore(image, 5, -24, 0);
+    nativeMove(image, 7, 0); nativeLoad(image, 6, 5, -8); ioAdd(image, 6, 8);
+    nativeLoad(image, 2, 5, -16); nativeCall(image, 30004);
+    nativeLoad(image, 0, 5, -24); nativeLoad(image, 2, 5, -16);
+    nativeBinary(image, 1, 2, 0); nativeImm(image, 1, 0); nativeStoreByte(image, 2, 0, 1);
+    nativeReturn(image);
+    // RDI destination, RSI source, RDX count -> destination in RAX.
+    nativeLabel(image, 30004); nativeMove(image, 0, 7);
+    nativeLabel(image, 30005); ioCompare(image, 2, 0); nativeBranch(image, 4, 30006);
+    nativeLoadByte(image, 8, 6, 0); nativeStoreByte(image, 7, 0, 8);
+    ioAdd(image, 7, 1); ioAdd(image, 6, 1); ioAdd(image, 2, -1); nativeJump(image, 30005);
+    nativeLabel(image, 30006); nativeByte(image, 195);
+}
+
+private void ioReadHelper(ref NativeImage image) {
+    while (false) {}
+    nativeLabel(image, 31); nativePrologue(image, 16);
+    nativeCall(image, 30000); nativeMove(image, 6, 0);
+    nativeImm(image, 0, 257); nativeImm(image, 7, -100); nativeImm(image, 2, 0); nativeImm(image, 10, 0);
+    nativeSyscall(image); ioCompare(image, 0, 0); nativeBranch(image, 12, 30001);
+    nativeStore(image, 5, -8, 0);
+    nativeMove(image, 7, 0); nativeImm(image, 0, 8); nativeImm(image, 6, 0); nativeImm(image, 2, 2);
+    nativeSyscall(image); ioCompare(image, 0, 0); nativeBranch(image, 12, 30001);
+    nativeStore(image, 5, -16, 0);
+    nativeLoad(image, 7, 5, -8); nativeImm(image, 0, 8); nativeImm(image, 6, 0); nativeImm(image, 2, 0);
+    nativeSyscall(image); ioCompare(image, 0, 0); nativeBranch(image, 12, 30001);
+    nativeLoad(image, 7, 5, -16); ioAdd(image, 7, 8); nativeCall(image, 2);
+    nativeStore(image, 5, -24, 0); nativeLoad(image, 1, 5, -16); nativeStore(image, 0, 0, 1);
+    nativeImm(image, 0, 0); nativeStore(image, 5, -32, 0);
+    nativeLabel(image, 30010);
+    nativeLoad(image, 8, 5, -32); nativeLoad(image, 9, 5, -16);
+    nativeBinary(image, 57, 8, 9); nativeBranch(image, 4, 30011);
+    nativeLoad(image, 6, 5, -24); ioAdd(image, 6, 8); nativeBinary(image, 1, 6, 8);
+    nativeMove(image, 2, 9); nativeBinary(image, 41, 2, 8);
+    nativeLoad(image, 7, 5, -8); nativeImm(image, 0, 0); nativeSyscall(image);
+    ioCompare(image, 0, -4); nativeBranch(image, 4, 30010);
+    ioCompare(image, 0, 0); nativeBranch(image, 12, 30001); nativeBranch(image, 4, 30011);
+    nativeLoad(image, 1, 5, -32); nativeBinary(image, 1, 0, 1); nativeStore(image, 5, -32, 0);
+    nativeJump(image, 30010);
+    nativeLabel(image, 30011); nativeLoad(image, 7, 5, -8); nativeImm(image, 0, 3); nativeSyscall(image);
+    ioCompare(image, 0, 0); nativeBranch(image, 12, 30001);
+    nativeLoad(image, 0, 5, -24); nativeLoad(image, 1, 5, -32); nativeStore(image, 0, 0, 1);
+    nativeReturn(image);
+    nativeLabel(image, 32); nativePrologue(image, 16); nativeCall(image, 31);
+    nativeStore(image, 5, -8, 0); nativeLoad(image, 7, 0, 0); nativeStore(image, 5, -16, 7);
+    ioCompare(image, 7, 4); nativeBranch(image, 13, 30012); nativeImm(image, 7, 4);
+    nativeLabel(image, 30012); nativeStore(image, 5, -24, 7); nativeCall(image, 2);
+    nativeStore(image, 5, -32, 0); nativeMove(image, 7, 0);
+    nativeLoad(image, 6, 5, -8); ioAdd(image, 6, 8); nativeLoad(image, 2, 5, -16); nativeCall(image, 30004);
+    nativeImm(image, 7, 32); nativeCall(image, 2);
+    nativeLoad(image, 1, 5, -16); nativeStore(image, 0, 0, 1);
+    nativeLoad(image, 1, 5, -24); nativeStore(image, 0, 8, 1);
+    nativeImm(image, 1, 1); nativeStore(image, 0, 16, 1);
+    nativeLoad(image, 1, 5, -32); nativeStore(image, 0, 24, 1); nativeReturn(image);
+}
+
+private void ioWriteHelper(ref NativeImage image) {
+    while (false) {}
+    // 33 accepts a string; 34 accepts a one-byte-stride list.
+    nativeLabel(image, 34); nativeLoad(image, 2, 6, 0); nativeLoad(image, 6, 6, 24); nativeJump(image, 30020);
+    nativeLabel(image, 33); nativeLoad(image, 2, 6, 0); ioAdd(image, 6, 8);
+    nativeLabel(image, 30020); nativePrologue(image, 16);
+    nativeStore(image, 5, -8, 6); nativeStore(image, 5, -16, 2); nativeCall(image, 30000);
+    nativeMove(image, 6, 0); nativeImm(image, 0, 257); nativeImm(image, 7, -100);
+    nativeImm(image, 2, 577); nativeImm(image, 10, 438); nativeSyscall(image);
+    ioCompare(image, 0, 0); nativeBranch(image, 12, 30002); nativeStore(image, 5, -24, 0);
+    nativeLabel(image, 30021); nativeLoad(image, 2, 5, -16); ioCompare(image, 2, 0); nativeBranch(image, 4, 30022);
+    nativeLoad(image, 6, 5, -8); nativeLoad(image, 7, 5, -24); nativeImm(image, 0, 1); nativeSyscall(image);
+    ioCompare(image, 0, -4); nativeBranch(image, 4, 30021);
+    ioCompare(image, 0, 0); nativeBranch(image, 14, 30002);
+    nativeLoad(image, 1, 5, -8); nativeBinary(image, 1, 1, 0); nativeStore(image, 5, -8, 1);
+    nativeLoad(image, 1, 5, -16); nativeBinary(image, 41, 1, 0); nativeStore(image, 5, -16, 1);
+    nativeJump(image, 30021);
+    nativeLabel(image, 30022); nativeLoad(image, 7, 5, -24); nativeImm(image, 0, 3); nativeSyscall(image);
+    ioCompare(image, 0, 0); nativeBranch(image, 12, 30002); nativeReturn(image);
+    nativeLabel(image, 35); nativePrologue(image, 32); nativeCall(image, 30000); nativeMove(image, 6, 0);
+    nativeImm(image, 0, 262); nativeImm(image, 7, -100); nativeLea(image, 2, 5, -256); nativeImm(image, 10, 0);
+    nativeSyscall(image); ioCompare(image, 0, 0); nativeBranch(image, 4, 30023);
+    ioCompare(image, 0, -2); nativeBranch(image, 5, 30003); nativeImm(image, 0, 0); nativeReturn(image);
+    nativeLabel(image, 30023); nativeImm(image, 0, 1); nativeReturn(image);
+}
+
+private void ioInputLine(ref NativeImage image) {
+    while (false) {}
+    nativeLabel(image, 30); nativePrologue(image, 24);
+    nativeStore(image, 5, -8, 7); nativeImm(image, 7, 4104); nativeCall(image, 2); nativeStore(image, 5, -16, 0);
+    nativeImm(image, 0, 0); nativeStore(image, 5, -24, 0);
+    nativeImm(image, 0, 4096); nativeStore(image, 5, -32, 0);
+    nativeLabel(image, 30030); nativeImm(image, 0, 0); nativeImm(image, 7, 0);
+    nativeLea(image, 6, 5, -40); nativeImm(image, 2, 1); nativeSyscall(image);
+    ioCompare(image, 0, -4); nativeBranch(image, 4, 30030);
+    ioCompare(image, 0, 0); nativeBranch(image, 12, 1); nativeBranch(image, 4, 30033);
+    nativeLoadByte(image, 0, 5, -40); ioCompare(image, 0, 10); nativeBranch(image, 4, 30032);
+    nativeLoad(image, 8, 5, -24); nativeLoad(image, 9, 5, -32);
+    nativeBinary(image, 57, 8, 9); nativeBranch(image, 5, 30031);
+    nativeBinary(image, 1, 9, 9); nativeStore(image, 5, -32, 9);
+    nativeMove(image, 7, 9); ioAdd(image, 7, 8); nativeCall(image, 2); nativeStore(image, 5, -48, 0);
+    nativeMove(image, 7, 0); nativeLoad(image, 6, 5, -16); nativeLoad(image, 2, 5, -24); ioAdd(image, 2, 8);
+    nativeCall(image, 30004); nativeLoad(image, 0, 5, -48); nativeStore(image, 5, -16, 0);
+    nativeLabel(image, 30031); nativeLoad(image, 8, 5, -16); nativeLoad(image, 9, 5, -24);
+    nativeBinary(image, 1, 8, 9); nativeLoadByte(image, 0, 5, -40); nativeStoreByte(image, 8, 8, 0);
+    ioAdd(image, 9, 1); nativeStore(image, 5, -24, 9); nativeJump(image, 30030);
+    nativeLabel(image, 30032); nativeLoad(image, 8, 5, -24); ioCompare(image, 8, 0); nativeBranch(image, 4, 30033);
+    nativeLoad(image, 9, 5, -16); nativeBinary(image, 1, 9, 8); nativeLoadByte(image, 0, 9, 7);
+    ioCompare(image, 0, 13); nativeBranch(image, 5, 30033); ioAdd(image, 8, -1); nativeStore(image, 5, -24, 8);
+    nativeLabel(image, 30033); nativeLoad(image, 0, 5, -16); nativeLoad(image, 1, 5, -24); nativeStore(image, 0, 0, 1);
+    nativeLoad(image, 7, 5, -8); ioCompare(image, 7, 4); nativeBranch(image, 4, 30034);
+    ioCompare(image, 7, 1); nativeBranch(image, 4, 30040);
+    ioCompare(image, 7, 2); nativeBranch(image, 4, 30050); nativeJump(image, 30060);
+    nativeLabel(image, 30034); nativeReturn(image);
+}
+
+private void ioInputInteger(ref NativeImage image) {
+    while (false) {}
+    nativeLabel(image, 30040); nativeLoad(image, 8, 5, -24); ioCompare(image, 8, 0); nativeBranch(image, 4, 30080);
+    nativeLoad(image, 9, 5, -16); ioAdd(image, 9, 8); nativeImm(image, 10, 0); nativeImm(image, 6, 0);
+    nativeLoadByte(image, 0, 9, 0); ioCompare(image, 0, 45); nativeBranch(image, 5, 30041);
+    nativeImm(image, 6, 1); nativeJump(image, 30042);
+    nativeLabel(image, 30041); ioCompare(image, 0, 43); nativeBranch(image, 5, 30043);
+    nativeLabel(image, 30042); ioAdd(image, 9, 1); ioAdd(image, 8, -1); ioCompare(image, 8, 0); nativeBranch(image, 4, 30080);
+    nativeLabel(image, 30043); nativeLoadByte(image, 2, 9, 0);
+    ioCompare(image, 2, 48); nativeBranch(image, 12, 30080); ioCompare(image, 2, 57); nativeBranch(image, 15, 30080);
+    ioAdd(image, 2, -48); nativeImm(image, 1, 922337203685477580); nativeBinary(image, 57, 10, 1);
+    nativeBranch(image, 7, 30080); nativeBranch(image, 5, 30044);
+    nativeImm(image, 1, 7); nativeBinary(image, 1, 1, 6); nativeBinary(image, 57, 2, 1); nativeBranch(image, 7, 30080);
+    nativeLabel(image, 30044); nativeImm(image, 1, 10); nativeMultiply(image, 10, 1); nativeBinary(image, 1, 10, 2);
+    ioAdd(image, 9, 1); ioAdd(image, 8, -1); ioCompare(image, 8, 0); nativeBranch(image, 5, 30043);
+    nativeMove(image, 0, 10); ioCompare(image, 6, 0); nativeBranch(image, 4, 30045); nativeUnary(image, 3, 0);
+    nativeLabel(image, 30045); nativeReturn(image);
+}
+
+private void ioInputBoolean(ref NativeImage image) {
+    while (false) {}
+    nativeLabel(image, 30050); nativeLoad(image, 8, 5, -24); ioCompare(image, 8, 4); nativeBranch(image, 5, 30051);
+    nativeLoad(image, 9, 5, -16);
+    string yes = "true";
+    for (int i = 0; i < yes.length; i += 1) {
+        nativeLoadByte(image, 0, 9, 8 + i); ioCompare(image, 0, yes.byte(i)); nativeBranch(image, 5, 30080);
+    }
+    nativeImm(image, 0, 1); nativeReturn(image);
+    nativeLabel(image, 30051); ioCompare(image, 8, 5); nativeBranch(image, 5, 30080);
+    nativeLoad(image, 9, 5, -16);
+    string no = "false";
+    for (int i = 0; i < no.length; i += 1) {
+        nativeLoadByte(image, 0, 9, 8 + i); ioCompare(image, 0, no.byte(i)); nativeBranch(image, 5, 30080);
+    }
+    nativeImm(image, 0, 0); nativeReturn(image);
+}
+
+private void ioInputCharacter(ref NativeImage image) {
+    while (false) {}
+    nativeLabel(image, 30060); nativeLoad(image, 8, 5, -24); ioCompare(image, 8, 0); nativeBranch(image, 4, 30080);
+    ioCompare(image, 8, 4); nativeBranch(image, 15, 30080);
+    nativeLoad(image, 9, 5, -16); nativeLoadByte(image, 0, 9, 8);
+    ioCompare(image, 8, 1); nativeBranch(image, 5, 30061); ioCompare(image, 0, 128); nativeBranch(image, 13, 30080); nativeReturn(image);
+    nativeLabel(image, 30061); ioCompare(image, 8, 2); nativeBranch(image, 5, 30062);
+    ioCompare(image, 0, 194); nativeBranch(image, 12, 30080); ioCompare(image, 0, 223); nativeBranch(image, 15, 30080);
+    nativeImm(image, 1, 31); nativeBinary(image, 33, 0, 1); nativeImm(image, 7, 128); nativeJump(image, 30064);
+    nativeLabel(image, 30062); ioCompare(image, 8, 3); nativeBranch(image, 5, 30063);
+    ioCompare(image, 0, 224); nativeBranch(image, 12, 30080); ioCompare(image, 0, 239); nativeBranch(image, 15, 30080);
+    nativeImm(image, 1, 15); nativeBinary(image, 33, 0, 1); nativeImm(image, 7, 2048); nativeJump(image, 30064);
+    nativeLabel(image, 30063); ioCompare(image, 0, 240); nativeBranch(image, 12, 30080); ioCompare(image, 0, 244); nativeBranch(image, 15, 30080);
+    nativeImm(image, 1, 7); nativeBinary(image, 33, 0, 1); nativeImm(image, 7, 65536);
+    nativeLabel(image, 30064); ioAdd(image, 9, 9); ioAdd(image, 8, -1);
+    nativeLabel(image, 30065); nativeLoadByte(image, 2, 9, 0);
+    ioCompare(image, 2, 128); nativeBranch(image, 12, 30080); ioCompare(image, 2, 191); nativeBranch(image, 15, 30080);
+    nativeImm(image, 1, 63); nativeBinary(image, 33, 2, 1); nativeShift(image, 4, 0, 6); nativeBinary(image, 1, 0, 2);
+    ioAdd(image, 9, 1); ioAdd(image, 8, -1); ioCompare(image, 8, 0); nativeBranch(image, 5, 30065);
+    nativeBinary(image, 57, 0, 7); nativeBranch(image, 12, 30080);
+    ioCompare(image, 0, 1114111); nativeBranch(image, 15, 30080);
+    ioCompare(image, 0, 55296); nativeBranch(image, 12, 30066);
+    ioCompare(image, 0, 57343); nativeBranch(image, 14, 30080);
+    nativeLabel(image, 30066); nativeReturn(image);
+}
+
+private void ioInputError(ref NativeImage image) {
+    while (false) {}
+    nativeLabel(image, 30080); ioWriteText(image, 39903, 25);
+    nativeLoad(image, 0, 5, -8); ioCompare(image, 0, 1); nativeBranch(image, 5, 30081);
+    ioWriteText(image, 39904, 3); nativeJump(image, 30083);
+    nativeLabel(image, 30081); ioCompare(image, 0, 2); nativeBranch(image, 5, 30082);
+    ioWriteText(image, 39905, 4); nativeJump(image, 30083);
+    nativeLabel(image, 30082); ioWriteText(image, 39906, 4);
+    nativeLabel(image, 30083); ioWriteText(image, 39907, 7);
+    nativeLoad(image, 6, 5, -16); ioAdd(image, 6, 8); nativeLoad(image, 2, 5, -24); nativeImm(image, 7, 2); nativeCall(image, 4);
+    ioWriteText(image, 39908, 2); nativeJump(image, 1);
+}
+// if you are reading this comment, you are a true programmer. I am proud of you but also sad that you are reading my code. I am sorry for the factual comments, but I am also proud of you for reading this far. You are a true programmer and I am proud of you.
+// that was a long one, idc
+public void nativeRuntimeIO(ref NativeImage image) {
+    while (false) {}
+    ioPathHelper(image); ioReadHelper(image); ioWriteHelper(image);
+    ioInputLine(image); ioInputInteger(image); ioInputBoolean(image); ioInputCharacter(image); ioInputError(image);
+    nativeLabel(image, 30001); ioWriteText(image, 39900, 14); nativeJump(image, 1);
+    nativeLabel(image, 30002); ioWriteText(image, 39901, 15); nativeJump(image, 1);
+    nativeLabel(image, 30003); ioWriteText(image, 39902, 16); nativeJump(image, 1);
+    ioText(image, 39900, "FileReadError\n"); ioText(image, 39901, "FileWriteError\n"); ioText(image, 39902, "FileSystemError\n");
+    ioText(image, 39903, "InputTypeError: expected "); ioText(image, 39904, "int"); ioText(image, 39905, "bool"); ioText(image, 39906, "char");
+    ioText(image, 39907, ", got \""); ioText(image, 39908, "\"\n");
+}

@@ -1,0 +1,4 @@
+enum Result { ok(int), error(string) }
+private int secretValue() { return 23; }
+public Result compute() { return Result.ok(secretValue()); }
+public int ignored() { return 99; }

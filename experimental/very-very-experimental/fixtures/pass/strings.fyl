@@ -1,0 +1,18 @@
+use std.io;
+public void main() {
+    string text = "a" + "é" + "\0z";
+    println(text.length);
+    println(text.byte(1));
+    println(text.byte(2));
+    println(text.slice(1, 3));
+    println(text.slice(0, 0) == "");
+    println(text == "aé\0z");
+    char value = char(233);
+    println(value);
+    println(int(value));
+    byte octet = byte(255);
+    println(int(octet));
+    println('é');
+    println('\n' == '\n');
+    println(text.byte(0) == 'a');
+}

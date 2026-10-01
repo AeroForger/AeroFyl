@@ -1,0 +1,7 @@
+use std.io;
+struct Node { optional ref Node next; int value; }
+public void main() {
+    ref Node self = reference(Node {next: none(), value: 1});
+    self.value = Node {next: some(self), value: 2};
+    println(self);
+}

@@ -1,0 +1,26 @@
+use std.io;
+enum Flavor { vanilla chocolate }
+struct Packet { list string names; optional byte marker; Flavor flavor; }
+public void main() {
+    println(-9223372036854775808);
+    println(9223372036854775807);
+    println(0);
+    println(char(0));
+    println(char(127));
+    println(char(128));
+    println(char(2047));
+    println(char(2048));
+    println(char(65535));
+    println(char(65536));
+    println(char(1114111));
+    list string names = ["a\"b", "a\\b", "x\ny", "\r\t\0"];
+    println(names);
+    Packet packet = Packet {names: names, marker: some(byte(255)), flavor: Flavor.chocolate};
+    println(packet);
+    list Flavor flavors = [Flavor.vanilla, Flavor.chocolate];
+    println(flavors);
+    print("");
+    println("");
+    eprint("error:");
+    eprintln(false);
+}

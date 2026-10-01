@@ -1,0 +1,8 @@
+use lexer;
+use std.io;
+public void main(string[] args) {
+    while (false) { }
+    LexResult result = lex(args[0]);
+    println(result.tokens.length);
+    println(result.diagnostics.length);
+}

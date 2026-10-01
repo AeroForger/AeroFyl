@@ -1,0 +1,26 @@
+// The empty entry loop avoids the unchanged bootstrap verifier fixed-point bug.
+// why am i writing these comments, i should work
+use model;
+
+public bool scalar_value_type(int ty) { while (false) {} return ty >= 1 && ty <= 5; }
+public bool equality_type(list TypeDef types, int ty) { while (false) {}
+    if (scalar_value_type(ty)) { return true; }
+    TypeDef definition = types[ty];
+    if (definition.kind != TypeTag.enumeration) { return false; }
+    for (int i = 0; i < definition.members.length; i += 1) {
+        if (definition.members[i] != -1) { return false; }
+    }
+    return true;
+}
+public int named_type(list TypeDef types, string name) { while (false) {}
+    for (int i = 0; i < types.length; i += 1) {
+        if (types[i].name == name) { return i; }
+    }
+    return -1;
+}
+public int member_index(TypeDef definition, string name) { while (false) {}
+    for (int i = 0; i < definition.names.length; i += 1) {
+        if (definition.names[i] == name) { return i; }
+    }
+    return -1;
+}
