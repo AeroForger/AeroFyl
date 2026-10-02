@@ -66,6 +66,38 @@ private TokenKind keywordOrIdentifier(string word) {
     return TokenKind.Identifier(word);
 }
 
+// Decode one UTF-8 scalar for character literals. Strings and spans stay
+// byte-oriented; malformed/overlong sequences and surrogates are rejected.
+struct LexCharacter {
+    int value;
+    int width;
+}
+
+private LexCharacter lexCharacter(string text, int offset) {
+    while (offset >= text.length) { return LexCharacter { value: -1, width: 1 }; }
+    int first = text.byte(offset);
+    if (first < 128) { return LexCharacter { value: first, width: 1 }; }
+    int width = 1;
+    int value = 0;
+    int minimum = 0;
+    if (first >= 194 && first <= 223) { width = 2; value = first - 192; minimum = 128; }
+    else if (first >= 224 && first <= 239) { width = 3; value = first - 224; minimum = 2048; }
+    else if (first >= 240 && first <= 244) { width = 4; value = first - 240; minimum = 65536; }
+    else { return LexCharacter { value: -1, width: 1 }; }
+    if (offset + width > text.length) { return LexCharacter { value: -1, width: 1 }; }
+    int i = 1;
+    while (i < width) {
+        int next = text.byte(offset + i);
+        if (next < 128 || next > 191) { return LexCharacter { value: -1, width: 1 }; }
+        value = value * 64 + next - 128;
+        i += 1;
+    }
+    if (value < minimum || value > 1114111 || (value >= 55296 && value <= 57343)) {
+        return LexCharacter { value: -1, width: 1 };
+    }
+    return LexCharacter { value: value, width: width };
+}
+
 //token spans use byte offsets matching Source.texts byte-oriented API
 struct LexResult {
     list Token tokens;
@@ -73,7 +105,15 @@ struct LexResult {
 }
 
 public LexResult lex(string path) {
-    Source s = load_file(path);
+    return lexSource(load_file(path));
+}
+
+public LexResult lexSource(Source s) {
+    // An empty-source early return also keeps the bootstrap verifier's entry
+    // block free of value definitions before the scanner's loops.
+    while (s.text.length == 0) {
+        return LexResult { tokens: [makeToken(TokenKind.Eof, s, 0, 0)], diagnostics: [] };
+    }
     string source = s.text;
     list Token tokens = [];
     list Diagnostic diagnostics = [];
@@ -146,6 +186,78 @@ public LexResult lex(string path) {
             continue;
         }
 
+        if (current == int('\\') && offset + 2 < source.length
+            && source.byte(offset + 1) == int('v') && source.byte(offset + 2) == int('"')) {
+            offset += 3;
+            list InterpolationPart parts = [];
+            string value = "";
+            int textStart = offset;
+            bool valid = true;
+            bool closed = false;
+            while (offset < source.length && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) {
+                int next = source.byte(offset);
+                if (next == int('"')) {
+                    if (value.length > 0) {
+                        parts.push(InterpolationPart { variable: false, text: value, span: span(s, textStart, offset) });
+                    }
+                    offset += 1;
+                    closed = true;
+                    break;
+                }
+                if (next == int('{')) {
+                    if (value.length > 0) {
+                        parts.push(InterpolationPart { variable: false, text: value, span: span(s, textStart, offset) });
+                        value = "";
+                    }
+                    offset += 1;
+                    int nameStart = offset;
+                    if (offset < source.length && isLetter(source.byte(offset))) {
+                        offset += 1;
+                        while (offset < source.length && (isLetter(source.byte(offset)) || isDigit(source.byte(offset)))) { offset += 1; }
+                    } else { valid = false; }
+                    if (offset >= source.length || source.byte(offset) != int('}')) {
+                        valid = false;
+                        // Scan forward to the quote/newline without interpreting a
+                        // malformed placeholder as ordinary interpolation text.
+                        while (offset < source.length && source.byte(offset) != int('"')
+                               && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) { offset += 1; }
+                        continue;
+                    }
+                    parts.push(InterpolationPart { variable: true, text: source.slice(nameStart, offset), span: span(s, nameStart, offset) });
+                    offset += 1;
+                    textStart = offset;
+                    continue;
+                }
+                if (next == int('}')) { valid = false; }
+                if (next == int('\\')) {
+                    offset += 1;
+                    if (offset >= source.length || source.byte(offset) == int('\n') || source.byte(offset) == int('\r')) { break; }
+                    int escape = source.byte(offset);
+                    if (escape == int('n')) { value = value + "\n"; }
+                    else if (escape == int('r')) { value = value + "\r"; }
+                    else if (escape == int('t')) { value = value + "\t"; }
+                    else if (escape == int('0')) { value = value + "\0"; }
+                    else if (escape == int('\\')) { value = value + "\\"; }
+                    else if (escape == int('"')) { value = value + "\""; }
+                    else if (escape == int('{')) { value = value + "{"; }
+                    else if (escape == int('}')) { value = value + "}"; }
+                    else { valid = false; }
+                    offset += 1;
+                } else {
+                    value = value + source.slice(offset, offset + 1);
+                    offset += 1;
+                }
+            }
+            if (!closed) {
+                diagnostics.push(error(ErrorType.LexicalError, "unterminated interpolated string literal", span(s, start, offset)));
+            } else if (!valid) {
+                diagnostics.push(error(ErrorType.LexicalError, "invalid interpolated string placeholder or escape", span(s, start, offset)));
+            } else {
+                tokens.push(makeToken(TokenKind.InterpolatedString(Interpolation { parts: parts }), s, start, offset));
+            }
+            continue;
+        }
+
         //escapes
         if (current == int('"')) {
             offset = offset + 1;
@@ -206,6 +318,12 @@ public LexResult lex(string path) {
 
             int value = source.byte(offset);
             bool valid = true;
+            if (value >= 128) {
+                LexCharacter decoded = lexCharacter(source, offset);
+                value = decoded.value;
+                valid = value >= 0;
+                offset += decoded.width - 1;
+            }
             if (value == int('\\')) {
                 offset = offset + 1;
                 if (offset >= source.length
@@ -288,7 +406,7 @@ public LexResult lex(string path) {
             else { tokens.push(makeToken(TokenKind.Slash, s, start, start + 1)); }
         }
         else{
-            diagnostics.push(error(ErrorType.LexicalError, "unexpected char", span(s, start, offset)));
+            diagnostics.push(error(ErrorType.LexicalError, "unexpected char", span(s, start, offset + 1)));
         }
         offset = offset + 1;
     }

@@ -1,0 +1,212 @@
+use parser;
+use std.io;
+
+private void require(bool condition, string message) {
+    if (!condition) { eprintln(message); exit(70); }
+}
+
+private ParseResult parseText(string text) {
+    Source source = Source { path: "test.fyl", text: text };
+    LexResult tokens = lexSource(source);
+    if (tokens.diagnostics.length > 0) {
+        return ParseResult { program: empty_program(), diagnostics: tokens.diagnostics };
+    }
+    return parseTokens(source, tokens.tokens);
+}
+
+private AstNode child(AstProgram program, AstNode node, int index) {
+    return program.nodes[node.children[index]];
+}
+
+private AstNode body(AstProgram program, int root) {
+    AstNode function = program.nodes[program.roots[root]];
+    return child(program, function, function.children.length - 1);
+}
+
+private AstProgram valid(string text) {
+    ParseResult result = parseText(text);
+    require(result.diagnostics.length == 0, "valid source rejected");
+    return result.program;
+}
+
+private void expressions() {
+    AstProgram program = valid("public bool main() { return -1 + 2 * 3 - 4 / 2 == 3 || true && !false; }");
+    AstNode block = body(program, 0);
+    AstNode ret = child(program, block, 0);
+    require(ret.kind == NodeKind.returnValue, "return node");
+    AstNode logical = child(program, ret, 0);
+    require(logical.kind == NodeKind.binary && logical.text == "||", "or precedence");
+    AstNode equality = child(program, logical, 0);
+    require(equality.text == "==", "equality precedence");
+    AstNode subtraction = child(program, equality, 0);
+    require(subtraction.text == "-", "subtraction precedence");
+    AstNode addition = child(program, subtraction, 0);
+    require(addition.text == "+", "left associativity");
+    AstNode negation = child(program, addition, 0);
+    require(negation.kind == NodeKind.unary && negation.text == "-", "unary minus");
+    require(child(program, addition, 1).text == "*", "multiplication precedence");
+    require(child(program, subtraction, 1).text == "/", "division precedence");
+    AstNode logicalAnd = child(program, logical, 1);
+    require(logicalAnd.text == "&&", "and precedence");
+    require(child(program, logicalAnd, 1).text == "!", "logical negation");
+
+    program = valid("private void f() { int a = 10 - 3 - 2; (a + 1); int(a); float(a); bool(a); byte(a); char(a); string(a); print(a); input(); }");
+    block = body(program, 0);
+    AstNode variable = child(program, block, 0);
+    AstNode subtract = child(program, variable, 1);
+    require(subtract.text == "-" && child(program, subtract, 0).text == "-", "subtraction associates left");
+    require(child(program, block, 1).kind == NodeKind.expressionStatement, "parenthesized expression statement");
+    AstNode conversion = child(program, child(program, block, 2), 0);
+    require(conversion.kind == NodeKind.call && child(program, conversion, 0).text == "int", "conversion disambiguation");
+
+    program = valid("public void f() { int n = 999999999999999999999999999; float x = 1.25; string s = \"a\\n\\0\"; char c = '\\n'; bool b = false; }");
+    block = body(program, 0);
+    require(child(program, child(program, block, 0), 1).text == "999999999999999999999999999", "integer text preserved without overflow");
+    AstNode decimal = child(program, child(program, block, 1), 1);
+    require(decimal.kind == NodeKind.floatValue && decimal.text == "1.25", "float text");
+    require(child(program, child(program, block, 2), 1).text == "a\n\0", "string escapes");
+    require(child(program, child(program, block, 3), 1).number == 10, "character codepoint");
+    require(child(program, child(program, block, 4), 1).number == 0, "false value");
+    program = valid("public void f() { char a = 'é'; char b = '€'; char c = '🙂'; }");
+    block = body(program, 0);
+    AstNode unicode = child(program, child(program, block, 0), 1);
+    require(unicode.number == 233 && unicode.span.end - unicode.span.start == 4, "two-byte character and byte span");
+    require(child(program, child(program, block, 1), 1).number == 8364, "three-byte character");
+    require(child(program, child(program, block, 2), 1).number == 128578, "four-byte character");
+}
+
+private void declarations() {
+    AstProgram program = valid("use std.io; using helper: Thing, run; struct Node { optional ref Node next; int[2][3] values; } enum Result { ok(list int), error(string), empty, } public (int, string) run(ref Node node, string[] args) { return; } private void stop() { return; }");
+    require(program.rootPath == "test.fyl" && program.roots.length == 4, "module roots");
+    require(program.imports.length == 2 && program.imports[0].name == "std.io", "imports");
+    AstImport selection = program.imports[1];
+    require(selection.selective && selection.selected[0] == "Thing" && selection.selected[1] == "run", "selected names");
+    require(selection.target == "", "imports remain unresolved");
+    AstNode record = program.nodes[program.roots[0]];
+    require(record.kind == NodeKind.structDeclaration && record.text == "Node", "struct declaration");
+    AstNode next = child(program, record, 0);
+    AstNode optionalType = child(program, next, 0);
+    require(optionalType.text == "optional" && child(program, optionalType, 0).text == "ref", "optional reference type");
+    AstNode array = child(program, child(program, record, 1), 0);
+    require(array.text == "array" && array.names[0] == "3", "outer array dimension");
+    require(child(program, array, 0).names[0] == "2", "inner array dimension");
+    AstNode enumeration = program.nodes[program.roots[1]];
+    require(enumeration.kind == NodeKind.enumDeclaration && enumeration.children.length == 3, "payload enum");
+    AstNode variant = child(program, enumeration, 0);
+    require(variant.number == 0 && child(program, variant, 0).text == "list", "variant payload type");
+    require(child(program, enumeration, 2).number == 2, "variant order");
+    AstNode function = program.nodes[program.roots[2]];
+    require(function.kind == NodeKind.function && function.number == 1, "public function");
+    require(child(program, function, 0).text == "tuple", "tuple return type");
+    require(child(program, function, 1).kind == NodeKind.parameter, "parameter node");
+    AstNode argsType = child(program, child(program, function, 2), 0);
+    require(argsType.text == "args" && child(program, argsType, 0).text == "string", "CLI argument type");
+    require(program.nodes[program.roots[3]].number == 0, "private function");
+
+    program = valid("enum Adjacent { first second } struct Empty {} public void f() { Node[2] nodes = []; list optional ref Node items = []; }");
+    AstNode namedArray = child(program, child(program, body(program, 2), 0), 0);
+    require(namedArray.text == "array" && child(program, namedArray, 0).text == "Node", "named array declaration lookahead");
+    AstNode listType = child(program, child(program, body(program, 2), 1), 0);
+    require(listType.text == "list" && child(program, listType, 0).text == "optional", "nested prefix types");
+}
+
+private void statements() {
+    AstProgram program = valid("public void f() { int x = 0; if (x < 1) { x += 2; } else if (x == 1) { x -= 1; } else { x *= 3; } while (x > 0) { x /= 2; break; } for (int i = 0; i < 2; i += 1) { continue; } for (x = 0; x < 2; int next = x + 1) { x = next; } return; }");
+    AstNode block = body(program, 0);
+    AstNode conditional = child(program, block, 1);
+    require(conditional.kind == NodeKind.ifStatement && conditional.children.length == 3, "if with else");
+    AstNode nested = child(program, conditional, 2);
+    require(nested.kind == NodeKind.ifStatement && nested.children.length == 3, "else if structure");
+    AstNode assignment = child(program, child(program, conditional, 1), 0);
+    require(assignment.kind == NodeKind.assignment && assignment.text == "+=", "compound operator retained");
+    AstNode loop = child(program, block, 2);
+    require(loop.kind == NodeKind.whileStatement && loop.children.length == 2, "while children");
+    require(child(program, child(program, loop, 1), 1).kind == NodeKind.breakStatement, "break node");
+    loop = child(program, block, 3);
+    require(loop.kind == NodeKind.forStatement && loop.children.length == 4, "for children");
+    require(child(program, loop, 0).kind == NodeKind.variable, "for initializer");
+    require(child(program, loop, 2).text == "+=", "for increment");
+    require(child(program, child(program, loop, 3), 0).kind == NodeKind.continueStatement, "continue node");
+    loop = child(program, block, 4);
+    require(child(program, loop, 0).kind == NodeKind.assignment && child(program, loop, 2).kind == NodeKind.variable, "for clause alternatives");
+    require(child(program, block, 5).children.length == 0, "bare return");
+}
+
+private void postfix() {
+    AstProgram program = valid("public void f() { Node node = Node { value: some(2), items: [1, 2] }; node.items[0] = 3; node.items.push(4); string s = \"abc\"; int b = s.byte(0); Result r = Result.ok(42); ref Node copy = reference(node); }");
+    AstNode block = body(program, 0);
+    AstNode record = child(program, child(program, block, 0), 1);
+    require(record.kind == NodeKind.structValue && record.text == "Node", "struct literal");
+    require(record.names[0] == "value" && record.names[1] == "items", "struct field names align with children");
+    require(child(program, record, 1).kind == NodeKind.collection, "collection literal");
+    AstNode target = child(program, child(program, block, 1), 0);
+    require(target.kind == NodeKind.index && child(program, target, 0).text == "items", "indexed member assignment");
+    AstNode method = child(program, child(program, block, 2), 0);
+    require(method.kind == NodeKind.call && child(program, method, 0).text == "push", "method call");
+    AstNode byteCall = child(program, child(program, block, 4), 1);
+    require(child(program, byteCall, 0).text == "byte", "soft byte keyword");
+    AstNode payload = child(program, child(program, block, 5), 1);
+    require(child(program, payload, 0).text == "ok", "enum payload constructor");
+}
+
+private void interpolation() {
+    AstProgram program = valid("use std.io; public void f() { println(\\v\"value={x} \\{ok\\}\\n\"); }");
+    AstNode call = child(program, child(program, body(program, 0), 0), 0);
+    AstNode interpolated = child(program, call, 1);
+    require(interpolated.kind == NodeKind.interpolated && interpolated.children.length == 3, "interpolation parts");
+    require(child(program, interpolated, 0).text == "value=", "interpolation text");
+    AstNode variable = child(program, interpolated, 1);
+    require(variable.kind == NodeKind.name && variable.text == "x", "interpolation variable");
+    require(child(program, interpolated, 2).text == " {ok}\n", "interpolation escaped braces");
+    require(variable.span.end - variable.span.start == 1, "interpolation variable span");
+}
+
+private void diagnosticsAndSpans() {
+    while (parseText("").diagnostics.length != 0) {
+        eprintln("empty source rejected");
+        exit(70);
+    }
+    string text = "public int f() { return (1 + 2); }";
+    AstProgram program = valid(text);
+    AstNode function = program.nodes[program.roots[0]];
+    require(function.span.source == "test.fyl" && function.span.start == 0 && function.span.end == text.length, "function byte span");
+    AstNode value = child(program, child(program, body(program, 0), 0), 0);
+    require(text.slice(value.span.start, value.span.end) == "(1 + 2)", "parenthesized expression span");
+    ParseResult result = parseText("public int f() { return 1 }");
+    require(result.diagnostics.length == 1 && result.program.nodes.length == 0, "failed AST discarded");
+    Diagnostic diagnostic = result.diagnostics[0];
+    require(diagnostic.level.is(DiagnosticLevel.Error), "error diagnostic");
+    require(diagnostic.level.payload(DiagnosticLevel.Error) == ErrorType.SyntaxError, "syntax category");
+    require(diagnostic.span.start == 26 && diagnostic.span.end == 27, "missing semicolon diagnostic span");
+    result = parseText("@");
+    require(result.diagnostics.length == 1 && result.diagnostics[0].span.end == 1, "lexical span is nonempty");
+    require(result.diagnostics[0].level.payload(DiagnosticLevel.Error) == ErrorType.LexicalError, "lexical category");
+    result = parseText("using helper: chosen, chosen;");
+    require(result.diagnostics.length == 1 && result.diagnostics[0].span.start == 22, "duplicate selection span");
+    result = parseText("use helper; use helper;");
+    require(result.diagnostics.length == 1 && result.diagnostics[0].span.start == 16, "duplicate import span");
+    result = parseTokens(Source { path: "empty.fyl", text: "" }, []);
+    require(result.program.rootPath == "empty.fyl" && result.program.roots.length == 0 && result.diagnostics.length == 0, "empty token stream");
+    Source source = Source { path: "tokens.fyl", text: "public void f() {}" };
+    LexResult lexed = lexSource(source);
+    list Token tokens = [];
+    int i = 0;
+    while (i + 1 < lexed.tokens.length) { tokens.push(lexed.tokens[i]); i += 1; }
+    result = parseTokens(source, tokens);
+    require(result.program.roots.length == 1 && result.diagnostics.length == 0, "missing EOF synthesized");
+    require(tokens.length + 1 == lexed.tokens.length, "caller tokens remain unchanged");
+    tokens.push(lexed.tokens[lexed.tokens.length - 1]);
+    tokens.push(lexed.tokens[0]);
+    result = parseTokens(source, tokens);
+    require(result.diagnostics.length == 1, "tokens after EOF rejected");
+}
+
+public void main() {
+    expressions();
+    declarations();
+    statements();
+    postfix();
+    interpolation();
+    diagnosticsAndSpans();
+    println("parser AST tests passed");
+}

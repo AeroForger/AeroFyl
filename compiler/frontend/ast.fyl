@@ -1,0 +1,65 @@
+use source;
+
+enum NodeKind {
+    integer,
+    floatValue,
+    stringValue,
+    interpolated,
+    boolean,
+    character,
+    name,
+    unary,
+    binary,
+    call,
+    member,
+    index,
+    collection,
+    structValue,
+    block,
+    variable,
+    assignment,
+    expressionStatement,
+    returnValue,
+    ifStatement,
+    whileStatement,
+    forStatement,
+    breakStatement,
+    continueStatement,
+    function,
+    parameter,
+    structDeclaration,
+    fieldDeclaration,
+    enumDeclaration,
+    variantDeclaration,
+    typeSyntax
+}
+
+// Children and roots are arena indices, never pointers. See README.md for
+// each node kind's child order and text/number/names fields.
+struct AstNode {
+    NodeKind kind;
+    Span span;
+    string text;
+    int number;
+    list int children;
+    list string names;
+}
+
+struct AstImport {
+    string name;
+    string target;
+    bool selective;
+    list string selected;
+    Span span;
+}
+
+struct AstProgram {
+    string rootPath;
+    list AstNode nodes;
+    list int roots;
+    list AstImport imports;
+}
+
+public AstProgram empty_program() {
+    return AstProgram { rootPath: "", nodes: [], roots: [], imports: [] };
+}

@@ -5,13 +5,13 @@ use ErrorType;
 use WarningType;
 
 
-public enum DiagnosticLevel {
+enum DiagnosticLevel {
     Error(ErrorType),
     Warning(WarningType),
     Note,
 }
 
-public struct Diagnostic {
+struct Diagnostic {
     DiagnosticLevel level;
     string message;
     Span span;

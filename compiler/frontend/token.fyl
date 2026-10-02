@@ -42,6 +42,7 @@ enum TokenKind {
     Integer(string),
     Float(string),
     String(string),
+    InterpolatedString(Interpolation),
     Char(char),
     Keyword(Keyword),
     LeftParen,
@@ -78,4 +79,15 @@ enum TokenKind {
 struct Token {
     TokenKind kind;
     Span span;
+}
+
+// Interpolation retains decoded text and source spans for variable references.
+struct InterpolationPart {
+    bool variable;
+    string text;
+    Span span;
+}
+
+struct Interpolation {
+    list InterpolationPart parts;
 }
