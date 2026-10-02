@@ -34,8 +34,7 @@ enum NodeKind {
     typeSyntax
 }
 
-// Children and roots are arena indices, never pointers. See README.md for
-// each node kind's child order and text/number/names fields.
+// see the readme for extra info 
 struct AstNode {
     NodeKind kind;
     Span span;

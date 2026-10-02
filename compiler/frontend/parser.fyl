@@ -129,11 +129,6 @@ private Span pJoin(Span first, Span last) {
     return Span { source: first.source, start: first.start, end: last.end };
 }
 
-// Loop-bearing helpers use a returning while guard for failed state. Its body
-// executes at most once, and leaves the Rust bootstrap's entry block without
-// value definitions so its definite-value analysis converges for loop CFGs.
-// Stop at the first syntax error. Callers propagate -1 rather than indexing
-// an invalid arena entry; diagnostics always point at the offending token.
 private void pError(ref ParserState state, string message) {
     pErrorAt(state, pPeek(state).span, message);
 }
@@ -368,7 +363,6 @@ private int pPrimary(ref ParserState state) {
             result = pAdd(state, NodeKind.collection, pJoin(token.span, pLast(state)), "", 0, values, []);
         }
     } else {
-        // pTake has advanced, so report the primary's own span.
         ParserState s = state.value;
         s.diagnostics.push(error(ErrorType.SyntaxError, "expected expression", token.span));
         s.failed = true;
@@ -419,8 +413,6 @@ private int pPrimary(ref ParserState state) {
     return result;
 }
 
-// Look ahead through array suffixes without consuming tokens. This separates
-// Named[4] values = ... from values[index] = ..., and conversions from types.
 private bool pVariableStart(ref ParserState state) {
     while (state.value.failed) { return false; }
     Token first = pPeek(state);
@@ -452,7 +444,6 @@ private bool pVariableStart(ref ParserState state) {
 
 private bool pAssignable(ref ParserState state, int id) {
     while (state.value.failed) { return false; }
-    // A call/literal cannot be an assignment root, even through a member/index.
     int cursor = id;
     while (true) {
         AstNode node = pNode(state, cursor);
@@ -618,7 +609,6 @@ private int pEnum(ref ParserState state) {
         if (!state.value.failed) {
             variants.push(pAdd(state, NodeKind.variantDeclaration, pJoin(variant.span, pLast(state)), pSpelling(variant), variants.length, payload, []));
         }
-        // The bootstrap accepts both comma-separated and adjacent variants.
         pAccept(state, ",");
     }
     pExpect(state, "}");
@@ -703,9 +693,6 @@ struct ParseResult {
     AstProgram program;
     list Diagnostic diagnostics;
 }
-
-// Token parsing is independent of file loading. An absent EOF is synthesized,
-// including for an empty token list, so lookahead and diagnostics stay bounded.
 public ParseResult parseTokens(Source source, list Token inputTokens) {
     while (inputTokens.length == 0) {
         AstProgram empty = empty_program();

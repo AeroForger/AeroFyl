@@ -34,6 +34,7 @@ private Token makeToken(TokenKind kind, Source source, int start, int end) {
     };
 }
 //Thinking of moving this to token.fyl
+// future me here, im not moving this
 private TokenKind keywordOrIdentifier(string word) {
     if (word == "public") { return TokenKind.Keyword(Keyword.Public); }
     if (word == "private") { return TokenKind.Keyword(Keyword.Private); }
