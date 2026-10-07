@@ -40,6 +40,8 @@ pub struct CompileOutput {
     pub hir: HirModule,
     pub ir: IrModule,
     pub artifact: Option<Vec<u8>>,
+    pub warnings: Vec<Diagnostic>,
+    pub sources: SourceMap,
 }
 
 #[derive(Debug)]
@@ -113,12 +115,14 @@ pub fn compile(
 ) -> Result<CompileOutput, CompileError> {
     let mut sources = SourceMap::new();
     let file = sources.add(path, source);
-    let tokens = crate::frontend::lexer::lex(file, source).map_err(|diagnostics| {
+    let lexed = crate::frontend::lexer::lex(file, source).map_err(|diagnostics| {
         CompileError::Frontend {
             diagnostics,
             sources: sources.clone(),
         }
     })?;
+    let tokens = lexed.tokens;
+    let warnings = lexed.warnings;
     let ast =
         crate::frontend::parser::parse(tokens).map_err(|diagnostics| CompileError::Frontend {
             diagnostics,
@@ -137,13 +141,14 @@ pub fn compile(
             sources,
         });
     }
-    compile_ast(ast, sources, options)
+    compile_ast(ast, sources, options, warnings)
 }
 
 fn compile_ast(
     ast: crate::frontend::ast::Module,
     sources: SourceMap,
     options: CompileOptions,
+    warnings: Vec<Diagnostic>,
 ) -> Result<CompileOutput, CompileError> {
     let hir =
         crate::frontend::semantic::analyze(&ast).map_err(|diagnostics| CompileError::Frontend {
@@ -179,7 +184,13 @@ fn compile_ast(
             )
         }
     };
-    Ok(CompileOutput { hir, ir, artifact })
+    Ok(CompileOutput {
+        hir,
+        ir,
+        artifact,
+        warnings,
+        sources,
+    })
 }
 
 pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutput, CompileError> {
@@ -187,7 +198,16 @@ pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutpu
     let mut modules = Vec::new();
     let mut active = Vec::new();
     let mut loaded = HashMap::new();
-    load_module(path, &mut sources, &mut modules, &mut active, &mut loaded).map_err(|error| {
+    let mut warnings = Vec::new();
+    load_module(
+        path,
+        &mut sources,
+        &mut modules,
+        &mut active,
+        &mut loaded,
+        &mut warnings,
+    )
+    .map_err(|error| {
         match error {
             ModuleLoadError::Load(error) => CompileError::Load(error),
             ModuleLoadError::Frontend(diagnostics) => CompileError::Frontend {
@@ -213,7 +233,7 @@ pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutpu
         merged.enums.extend(module.enums);
         merged.functions.extend(module.functions);
     }
-    compile_ast(merged, sources, options)
+    compile_ast(merged, sources, options, warnings)
 }
 
 enum ModuleLoadError {
@@ -227,6 +247,7 @@ fn load_module(
     modules: &mut Vec<crate::frontend::ast::Module>,
     active: &mut Vec<PathBuf>,
     loaded: &mut HashMap<PathBuf, FileId>,
+    warnings: &mut Vec<Diagnostic>,
 ) -> Result<FileId, ModuleLoadError> {
     let source = load_source(path).map_err(ModuleLoadError::Load)?;
     let canonical = fs::canonicalize(path).map_err(|source| {
@@ -239,8 +260,11 @@ fn load_module(
         return Ok(*file);
     }
     let file = sources.add(&canonical, &source);
-    let tokens = crate::frontend::lexer::lex(file, &source).map_err(ModuleLoadError::Frontend)?;
-    let mut module = crate::frontend::parser::parse(tokens).map_err(ModuleLoadError::Frontend)?;
+    let lexed =
+        crate::frontend::lexer::lex(file, &source).map_err(ModuleLoadError::Frontend)?;
+    warnings.extend(lexed.warnings);
+    let mut module =
+        crate::frontend::parser::parse(lexed.tokens).map_err(ModuleLoadError::Frontend)?;
 
     active.push(canonical.clone());
     let parent = canonical
@@ -297,6 +321,7 @@ fn load_module(
             modules,
             active,
             loaded,
+            warnings,
         )?);
     }
     active.pop();
@@ -517,8 +542,19 @@ mod tests {
     }
 
     #[test]
-    fn interpolation_requires_direct_output_and_variable_placeholders() {
-        let source =
+    fn deprecated_interpolation_prefix_warns_without_failing() {
+        let output = compile(
+            r#"use std.io; public void main() { int result = 2; print(\v"{result}"); }"#,
+            "memory.fyl",
+            CompileOptions::check(),
+        )
+        .unwrap();
+        assert_eq!(output.warnings.len(), 1);
+        assert!(output.warnings[0].message.contains("deprecated"));
+    }
+
+    #[test]
+    fn interpolation_requires_direct_output_and_variable_placeholders() {        let source =
             r#"use std.io; public void main() { int result = 2; string text = \f"{result}"; }"#;
         let error = compile(source, "memory.fyl", CompileOptions::check()).unwrap_err();
         assert!(

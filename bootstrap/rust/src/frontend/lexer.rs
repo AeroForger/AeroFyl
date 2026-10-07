@@ -1,15 +1,22 @@
-use super::diagnostics::Diagnostic;
+use super::diagnostics::{Diagnostic, Severity};
 use super::source::{FileId, Span};
 use super::token::{InterpolationPart, Keyword, Token, TokenKind};
 
 pub type LexError = Diagnostic;
-pub type LexResult = Result<Vec<Token>, Vec<LexError>>;
+pub type LexResult = Result<LexOutput, Vec<LexError>>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LexOutput {
+    pub tokens: Vec<Token>,
+    pub warnings: Vec<Diagnostic>,
+}
 
 pub struct Lexer<'source> {
     file: FileId,
     source: &'source str,
     offset: usize,
     diagnostics: Vec<Diagnostic>,
+    warnings: Vec<Diagnostic>,
     tokens: Vec<Token>,
 }
 
@@ -20,6 +27,7 @@ impl<'source> Lexer<'source> {
             source,
             offset: 0,
             diagnostics: Vec::new(),
+            warnings: Vec::new(),
             tokens: Vec::new(),
         }
     }
@@ -75,7 +83,10 @@ impl<'source> Lexer<'source> {
             Span::empty(self.file, self.offset),
         ));
         if self.diagnostics.is_empty() {
-            Ok(self.tokens)
+            Ok(LexOutput {
+                tokens: std::mem::take(&mut self.tokens),
+                warnings: std::mem::take(&mut self.warnings),
+            })
         } else {
             Err(self.diagnostics)
         }
@@ -239,7 +250,7 @@ impl<'source> Lexer<'source> {
 
     fn lex_interpolated_string(&mut self, start: usize) {
         self.bump(); // backslash
-        self.bump(); // v
+        let marker = self.bump(); // v or f
         self.bump(); // opening quote
         let mut parts = Vec::new();
         let mut text = String::new();
@@ -249,9 +260,17 @@ impl<'source> Lexer<'source> {
                 if !text.is_empty() {
                     parts.push(InterpolationPart::Text(text));
                 }
+                let span = Span::new(self.file, start, self.offset);
+                if marker == Some('v') {
+                    self.warnings.push(Diagnostic {
+                        severity: Severity::Warning,
+                        message: "\\v\" interpolated literals are deprecated, use \\f\" instead".into(),
+                        span: Some(span),
+                    });
+                }
                 self.tokens.push(Token::new(
                     TokenKind::InterpolatedString(parts),
-                    Span::new(self.file, start, self.offset),
+                    span,
                 ));
                 return;
             }
@@ -410,6 +429,7 @@ mod tests {
     fn kinds(source: &str) -> Vec<TokenKind> {
         lex(FileId(0), source)
             .unwrap()
+            .tokens
             .into_iter()
             .map(|token| token.kind)
             .collect()
@@ -517,6 +537,19 @@ mod tests {
             kinds("\"a\\n\\r\\t\\0\\\\\\\"b\""),
             vec![TokenKind::String("a\n\r\t\0\\\"b".into()), TokenKind::Eof]
         );
+    }
+
+    #[test]
+    fn deprecated_prefix_warns_without_failing() {
+        let warned = lex(FileId(0), "\\v\"{value}\"").unwrap();
+        assert_eq!(warned.warnings.len(), 1);
+        assert_eq!(
+            warned.warnings[0].severity,
+            crate::frontend::diagnostics::Severity::Warning
+        );
+        assert!(warned.warnings[0].message.contains("deprecated"));
+        let current = lex(FileId(0), "\\f\"{value}\"").unwrap();
+        assert!(current.warnings.is_empty());
     }
 
     #[test]

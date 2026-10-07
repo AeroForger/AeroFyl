@@ -933,7 +933,7 @@ mod tests {
     use crate::frontend::{lexer::lex, parser::parse, semantic::analyze, source::FileId};
 
     fn lower_source(source: &str) -> IrModule {
-        let ast = parse(lex(FileId(0), source).unwrap()).unwrap();
+        let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
         lower(&analyze(&ast).unwrap())
     }
 

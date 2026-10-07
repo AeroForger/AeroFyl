@@ -2001,7 +2001,7 @@ mod tests {
     use crate::middle::lower as ir_lower;
 
     fn lower_source(source: &str) -> MachineModule {
-        let ast = parse(lex(FileId(0), source).unwrap()).unwrap();
+        let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
         let hir = analyze(&ast).unwrap();
         let ir = ir_lower::lower(&hir);
         let verified = crate::middle::verify::verify_module(&ir).unwrap();
@@ -2308,7 +2308,7 @@ mod tests {
     #[test]
     fn lowers_struct_function_abi() {
         let source = "struct Item { int value; } private Item consume(Item item) { return item; } public void main() { Item item = Item { value: 1 }; Item result = consume(item); }";
-        let ast = parse(lex(FileId(0), source).unwrap()).unwrap();
+        let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
         let hir = analyze(&ast).unwrap();
         let ir = ir_lower::lower(&hir);
         let verified = crate::middle::verify::verify_module(&ir).unwrap();
@@ -2318,7 +2318,7 @@ mod tests {
     #[test]
     fn lowers_whole_struct_copy() {
         let source = "struct Item { int value; } public void main() { Item first = Item { value: 1 }; Item second = first; }";
-        let ast = parse(lex(FileId(0), source).unwrap()).unwrap();
+        let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
         let hir = analyze(&ast).unwrap();
         let ir = ir_lower::lower(&hir);
         let verified = crate::middle::verify::verify_module(&ir).unwrap();

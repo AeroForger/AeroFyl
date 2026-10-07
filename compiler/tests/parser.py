@@ -173,6 +173,12 @@ def main():
         print(f"{len(POSITIVE) + len(IMPROVED) + len(INTERPOLATION_EXPR)} syntax passes, {len(NEGATIVE)} rejections, "
               f"{comparisons} Rust syntax comparisons passed", flush=True)
 
+        # Deprecated \v prefix warns on stderr but still parses with status 0.
+        fixture.write_text(r'''use std.io; public void f() { println(\v"{x}"); }''')
+        result = run([parser, fixture], 0, timeout=5)
+        assert ": warning: " in result.stderr and "deprecated" in result.stderr
+        print("deprecated prefix warning check passed", flush=True)
+
         # Parse the new parser and every other frontend file as real input.
         frontend_files = sorted((ROOT / "compiler/frontend").glob("*.fyl"))
         for path in frontend_files:

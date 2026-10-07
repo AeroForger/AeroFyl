@@ -2366,7 +2366,7 @@ mod tests {
     use crate::frontend::{lexer::lex, parser::parse, source::FileId};
 
     fn analyze_source(source: &str) -> Result<HirModule, Vec<Diagnostic>> {
-        analyze(&parse(lex(FileId(0), source).unwrap()).unwrap())
+        analyze(&parse(lex(FileId(0), source).unwrap().tokens).unwrap())
     }
 
     #[test]

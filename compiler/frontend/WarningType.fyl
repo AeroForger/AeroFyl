@@ -4,22 +4,9 @@ enum WarningType {
     UnusedImportWarning,
     DeadCodeWarning,
     MagicNumberWarning,
-    
-    UncheckedCastWarning,
-    RawTypesWarning,
+
     NullabilityWarning,
-    
+
     StyleWarning,
     NamingConventionWarning,
-    MissingOverrideWarning,
-    SerialVersionUIDWarning,
-    
-    SecurityWarning,
-    InsecureCryptoWarning,
-    HardcodedCredentialWarning,
-    
-    ConcurrencyWarning,
-    ThreadSafetyWarning,
-    VolatileUsageWarning
 }
-// what are you even reading here

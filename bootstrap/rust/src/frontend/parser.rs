@@ -1030,7 +1030,7 @@ mod tests {
     use crate::frontend::source::FileId;
 
     fn parse_source(source: &str) -> Module {
-        parse(lex(FileId(0), source).unwrap()).unwrap()
+        parse(lex(FileId(0), source).unwrap().tokens).unwrap()
     }
 
     #[test]
@@ -1055,13 +1055,13 @@ mod tests {
 
     #[test]
     fn requires_semicolons() {
-        let tokens = lex(FileId(0), "public int f() { return 1 }").unwrap();
+        let tokens = lex(FileId(0), "public int f() { return 1 }").unwrap().tokens;
         assert!(parse(tokens).unwrap_err()[0].message.contains("`;`"));
     }
 
     #[test]
     fn parses_module_import() {
-        let tokens = lex(FileId(0), "use thing;").unwrap();
+        let tokens = lex(FileId(0), "use thing;").unwrap().tokens;
         let module = parse(tokens).unwrap();
         assert_eq!(module.imports.len(), 1);
         assert_eq!(module.imports[0].name.text, "thing");

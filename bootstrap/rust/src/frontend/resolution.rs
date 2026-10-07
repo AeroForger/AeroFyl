@@ -495,7 +495,7 @@ mod tests {
     use crate::frontend::{lexer::lex, parser::parse, source::FileId};
 
     fn resolve_source(source: &str) -> Result<Resolution, Vec<Diagnostic>> {
-        resolve(&parse(lex(FileId(0), source).unwrap()).unwrap())
+        resolve(&parse(lex(FileId(0), source).unwrap().tokens).unwrap())
     }
 
     #[test]

@@ -4,22 +4,15 @@ enum ErrorType {
     TypeError,
     ReferenceError,
     CompilationError,
-    
+    SemanticError,
+
     RuntimeError,
     NullPointerError,
     IndexOutOfBoundsError,
     DivisionByZeroError,
     StackOverflowError,
     OutOfMemoryError,
-    
-    LogicError,
-    SemanticError,
-    
+
     FileReadError,
     FileWriteError,
-    
-    DeadlockError,
-    RaceConditionError,
-
-    ValidationError,
 }

@@ -2832,7 +2832,7 @@ mod tests {
     }
 
     fn lower_source(source: &str) -> IrModule {
-        let ast = parse(lex(FileId(0), source).unwrap()).unwrap();
+        let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
         crate::middle::lower::lower(&analyze(&ast).unwrap())
     }
 

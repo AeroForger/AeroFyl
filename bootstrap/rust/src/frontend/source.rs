@@ -32,7 +32,7 @@ impl Span {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SourceFile {
     id: FileId,
     path: PathBuf,
@@ -97,7 +97,7 @@ pub struct SourceLocation {
     pub column: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
 }

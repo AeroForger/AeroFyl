@@ -1,11 +1,4 @@
-/*
-To whoever is reading this - i want to eat but i am forced
-to work on this experimental compiler. please give me food
-
-future me here, i ate and finished the parser
-*/
-
-
+// File loading and byte-oriented source spans for the frontend.
 use std.fs;
 
 
