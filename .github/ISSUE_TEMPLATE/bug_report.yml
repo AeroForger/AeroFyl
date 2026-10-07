@@ -1,0 +1,50 @@
+name: Bug report
+description: Something executes incorrectly or fails to build
+labels: [bug]
+body:
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproducer
+      description: Smallest source file plus exact commands that show the bug
+      placeholder: |
+        ```fyl
+        public void main() { ... }
+        ```
+        ```
+        cargo run --quiet -p aerofyl-bootstrap -- compile repro.fyl -o repro
+        ./repro; echo $?
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed vs expected
+      description: Actual output and exit status, and what the spec or pillars require instead
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - bootstrap frontend (lex/parse/resolve/check)
+        - bootstrap backend (IR/codegen/ELF)
+        - self-hosted frontend (compiler/frontend)
+        - standard library (std.io/std.fs)
+        - tests or tooling
+        - docs
+    validations:
+      required: true
+  - type: checkboxes
+    id: pillars
+    attributes:
+      label: Pillars
+      description: Which pillar does this bug violate?
+      options:
+        - label: Executable First (runnable behavior is wrong or missing)
+        - label: Speed (pathological slowness or hang)
+        - label: Small binaries (unexpected size or dependency growth)
+        - label: Transparency (bad, missing, or misleading diagnostics)
+        - label: Safety (unsafe behavior instead of a clean failure)

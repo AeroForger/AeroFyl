@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose language or toolchain work tied to the pillars
+labels: [enhancement]
+body:
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should exist that does not? Keep it to one runnable outcome.
+    validations:
+      required: true
+  - type: checkboxes
+    id: pillars
+    attributes:
+      label: Pillars
+      description: Which pillars does this serve, and which does it cost?
+      options:
+        - label: Executable First — ends in programs that run
+        - label: Speed — keeps compilation and execution fast
+        - label: Small binaries — keeps artifacts and dependencies minimal
+        - label: Transparency — improves diagnostics or docs
+        - label: Safety — replaces UB or silent failure with defined behavior
+  - type: textarea
+    id: plan
+    attributes:
+      label: Sketch
+      description: Components touched (spec page, frontend, backend, tests) and how it will be verified executable
+    validations:
+      required: true
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Ground rules
+      options:
+        - label: I am not proposing changes to experimental/ (exploration space, out of scope)
+        - label: I checked this against spec/ and it is not already specified
