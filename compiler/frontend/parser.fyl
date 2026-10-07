@@ -278,14 +278,36 @@ private int pType(ref ParserState state) {
     return result;
 }
 
-private int pPrecedence(string operator) {
-    if (operator == "||") { return 1; }
-    if (operator == "&&") { return 2; }
-    if (operator == "==" || operator == "!=") { return 3; }
-    if (operator == "<" || operator == "<=" || operator == ">" || operator == ">=") { return 4; }
-    if (operator == "+" || operator == "-") { return 5; }
-    if (operator == "*" || operator == "/") { return 6; }
+private int pKindPrecedence(Token token) {
+    if (token.kind.is(TokenKind.PipePipe)) { return 1; }
+    if (token.kind.is(TokenKind.AmpersandAmpersand)) { return 2; }
+    if (token.kind.is(TokenKind.EqualEqual) || token.kind.is(TokenKind.BangEqual)) { return 3; }
+    if (token.kind.is(TokenKind.Less) || token.kind.is(TokenKind.LessEqual) || token.kind.is(TokenKind.Greater) || token.kind.is(TokenKind.GreaterEqual)) { return 4; }
+    if (token.kind.is(TokenKind.Plus) || token.kind.is(TokenKind.Minus)) { return 5; }
+    if (token.kind.is(TokenKind.Star) || token.kind.is(TokenKind.Slash)) { return 6; }
     return 0;
+}
+
+private string pKindOperator(Token token) {
+    if (token.kind.is(TokenKind.PipePipe)) { return "||"; }
+    if (token.kind.is(TokenKind.AmpersandAmpersand)) { return "&&"; }
+    if (token.kind.is(TokenKind.EqualEqual)) { return "=="; }
+    if (token.kind.is(TokenKind.BangEqual)) { return "!="; }
+    if (token.kind.is(TokenKind.Less)) { return "<"; }
+    if (token.kind.is(TokenKind.LessEqual)) { return "<="; }
+    if (token.kind.is(TokenKind.Greater)) { return ">"; }
+    if (token.kind.is(TokenKind.GreaterEqual)) { return ">="; }
+    if (token.kind.is(TokenKind.Bang)) { return "!"; }
+    if (token.kind.is(TokenKind.Plus)) { return "+"; }
+    if (token.kind.is(TokenKind.Minus)) { return "-"; }
+    if (token.kind.is(TokenKind.Star)) { return "*"; }
+    if (token.kind.is(TokenKind.Slash)) { return "/"; }
+    if (token.kind.is(TokenKind.Equal)) { return "="; }
+    if (token.kind.is(TokenKind.PlusEqual)) { return "+="; }
+    if (token.kind.is(TokenKind.MinusEqual)) { return "-="; }
+    if (token.kind.is(TokenKind.StarEqual)) { return "*="; }
+    if (token.kind.is(TokenKind.SlashEqual)) { return "/="; }
+    return "";
 }
 
 private int pExpression(ref ParserState state, int minimum) {
@@ -293,13 +315,14 @@ private int pExpression(ref ParserState state, int minimum) {
     if (!pEnter(state)) { return -1; }
     int left = pUnary(state);
     while (!state.value.failed) {
-        string operator = pSpelling(pPeek(state));
-        int precedence = pPrecedence(operator);
+        Token operator = pPeek(state);
+        int precedence = pKindPrecedence(operator);
         if (precedence < minimum) { break; }
+        string spelling = pKindOperator(operator);
         pTake(state);
         int right = pExpression(state, precedence + 1);
         if (!state.value.failed) {
-            left = pAdd(state, NodeKind.binary, pJoin(pNode(state, left).span, pNode(state, right).span), operator, 0, [left, right], []);
+            left = pAdd(state, NodeKind.binary, pJoin(pNode(state, left).span, pNode(state, right).span), spelling, 0, [left, right], []);
         }
     }
     pLeave(state);
@@ -309,9 +332,10 @@ private int pExpression(ref ParserState state, int minimum) {
 private int pUnary(ref ParserState state) {
     if (!pEnter(state)) { return -1; }
     Token token = pPeek(state);
-    string operator = pSpelling(token);
+    bool isUnary = token.kind.is(TokenKind.Minus) || token.kind.is(TokenKind.Bang);
     int result = -1;
-    if (operator == "-" || operator == "!") {
+    if (isUnary) {
+        string operator = pKindOperator(token);
         pTake(state);
         int operand = pUnary(state);
         if (!state.value.failed) {
@@ -525,16 +549,18 @@ private int pClause(ref ParserState state, bool assignmentRequired) {
     }
     int target = pExpression(state, 1);
     if (state.value.failed) { return -1; }
-    string operator = pSpelling(pPeek(state));
-    if (operator == "=" || operator == "+=" || operator == "-=" || operator == "*=" || operator == "/=") {
+    Token operator = pPeek(state);
+    bool isAssignment = operator.kind.is(TokenKind.Equal) || operator.kind.is(TokenKind.PlusEqual) || operator.kind.is(TokenKind.MinusEqual) || operator.kind.is(TokenKind.StarEqual) || operator.kind.is(TokenKind.SlashEqual);
+    if (isAssignment) {
         if (!pAssignable(state, target)) {
             pErrorAt(state, pNode(state, target).span, "expected assignable name, member, or index");
             return -1;
         }
+        string spelling = pKindOperator(operator);
         pTake(state);
         int value = pExpression(state, 1);
         if (state.value.failed) { return -1; }
-        return pAdd(state, NodeKind.assignment, pJoin(start, pNode(state, value).span), operator, 0, [target, value], []);
+        return pAdd(state, NodeKind.assignment, pJoin(start, pNode(state, value).span), spelling, 0, [target, value], []);
     }
     if (assignmentRequired) {
         pError(state, "for clause requires a declaration or assignment");
@@ -626,9 +652,9 @@ private int pStatement(ref ParserState state) {
         if (!pAt(state, ";")) { children.push(pExpression(state, 1)); }
         pExpect(state, ";");
     } else if (pAtKeyword(state, Keyword.Break) || pAtKeyword(state, Keyword.Continue)) {
-        string word = pSpelling(pTake(state));
+        Token word = pTake(state);
         kind = NodeKind.breakStatement;
-        if (word == "continue") { kind = NodeKind.continueStatement; }
+        if (word.kind.is(TokenKind.Keyword) && word.kind.payload(TokenKind.Keyword) == Keyword.Continue) { kind = NodeKind.continueStatement; }
         pExpect(state, ";");
     } else {
         int clause = pClause(state, false);

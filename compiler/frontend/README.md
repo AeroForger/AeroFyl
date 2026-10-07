@@ -36,8 +36,10 @@ top-level declaration boundaries (`pSynchronizeStatement`,
 token API copies the input token list, synthesizes a missing EOF, handles an
 empty list, and rejects tokens following EOF. It expects tokens produced by the
 lexer, with valid payloads and byte spans. Structural dispatch uses
-`TokenKind`-based helpers (`pAtKeyword`, `pAcceptKeyword`, `pAtEof`); spelling
-comparison remains only for error messages and operators.
+`TokenKind`-based helpers (`pAtKeyword`, `pAcceptKeyword`, `pAtEof`) and
+operator dispatch uses `pKindPrecedence`/`pKindOperator` over token kinds;
+spelling comparison remains only for error messages, identifiers, delimiters,
+and type lookahead.
 
 Recursive type, expression, and control-flow parsing is bounded to 96 active
 nesting-helper entries. Long binary and postfix chains are parsed iteratively.
