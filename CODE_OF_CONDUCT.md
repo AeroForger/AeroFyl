@@ -2,7 +2,7 @@
 
 ## Our pledge
 
-Everyone working on AeroFyl — contributors, reviewers, and maintainers —
+Everyone working on AeroFyl - contributors, reviewers, and maintainers -
 agrees to keep the project a place where technical work comes first. We
 judge ideas by how well they serve the language pillars (see
 `CONTRIBUTING.md`), not by who proposes them.
