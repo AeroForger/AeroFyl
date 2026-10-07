@@ -15,6 +15,10 @@ with unary operators, conversions, named calls, members, methods, indices,
 collections, struct literals, and interpolation parts. Struct literals accept a
 trailing comma. Enum variants follow the bootstrap's comma-separated or adjacent
 forms. Tuple types are supported; tuple value syntax is not specified.
+Interpolated output literals use the `\f"` prefix (the deprecated `\v"` prefix
+is still accepted by the lexer); `{...}` placeholders contain an identifier or
+a full expression with balanced braces, parsed by `pInterpolatedPart` into
+expression nodes.
 
 ## API
 
@@ -25,17 +29,30 @@ forms. Tuple types are supported; tuple value syntax is not specified.
 
 `ParseResult` contains `program` and `diagnostics`. A successful result has no
 diagnostics. A lexical failure preserves the scanner's diagnostics; a syntax
-failure reports the first error and returns an empty AST with `rootPath` set.
-The token API copies the input token list, synthesizes a missing EOF, handles an
+failure returns a partial AST with `rootPath` set plus all diagnostics
+collected via statement-level recovery. Recovery synchronizes at `;`/`}` and
+top-level declaration boundaries (`pSynchronizeStatement`,
+`pSynchronizeTopLevel`) with a progress guard, then continues parsing. The
+token API copies the input token list, synthesizes a missing EOF, handles an
 empty list, and rejects tokens following EOF. It expects tokens produced by the
-lexer, with valid payloads and byte spans.
+lexer, with valid payloads and byte spans. Structural dispatch uses
+`TokenKind`-based helpers (`pAtKeyword`, `pAcceptKeyword`, `pAtEof`); spelling
+comparison remains only for error messages and operators.
 
 Recursive type, expression, and control-flow parsing is bounded to 96 active
 nesting-helper entries. Long binary and postfix chains are parsed iteratively.
 Loop-bearing helpers start with an early-return `while` guard: returning from
 its body executes at most once, while keeping the Rust bootstrap's entry block
 free of value definitions. This avoids a convergence defect in its loop verifier
-without modifying the bootstrap or bypassing verification.
+without modifying the bootstrap or bypassing verification. Endless
+`while (true)` loops are avoided entirely: the bootstrap hangs compiling them,
+so all loops carry an explicit `EOF`/token termination condition. For the same
+reason, recovery synchronizers never write back through their `ref` parameter
+before their scan loop: a whole-struct `state.value = ...` writeback ahead of a
+loop makes bootstrap compilation hang nondeterministically (~25% of builds),
+while the identical writeback after the loop compiles reliably. `continue` and
+`||` in loop conditions were ruled out as triggers by repeated 10+ build
+stability runs during development.
 
 ## AST
 
@@ -52,7 +69,7 @@ ranges in the input file. Parenthesized expressions retain their enclosing span.
 | `unary`, `binary` | Operator spelling | Operand, or left/right |
 | `call` | Empty | Callee, then arguments; method callees are `member` nodes |
 | `member`, `index` | Member name, or empty | Base, or base/index |
-| `collection`, `interpolated` | Empty | Values, or decoded text and variable-name parts |
+| `collection`, `interpolated` | Empty | Values, or decoded text and parsed placeholder-expression parts |
 | `structValue` | Struct name | Values; corresponding field names in `names` |
 | `typeSyntax` | Basic/named type, `list`, `optional`, `ref`, `tuple`, `array`, or `args` | Inner types; array length text in `names[0]` |
 | `variable`, `assignment` | Variable name, or assignment operator | Type/initializer, or target/value |

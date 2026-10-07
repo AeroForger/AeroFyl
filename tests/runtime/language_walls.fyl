@@ -21,5 +21,5 @@ public void main() {
     println(point);
     println(option);
     println(referenced);
-    println(\v"result: {result}, numbers: {numbers}, literal \{brace\}");
+    println(\f"result: {result}, numbers: {numbers}, literal \{brace\}");
 }

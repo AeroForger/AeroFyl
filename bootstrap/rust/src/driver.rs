@@ -507,7 +507,7 @@ mod tests {
         use std::process::Command;
         let directory = write_project(&[(
             "main.fyl",
-            r#"use std.io; public void main() { int value = 42; println(\v"value: {value} \{ok\}"); }"#,
+            r#"use std.io; public void main() { int value = 42; println(\f"value: {value} \{ok\}"); }"#,
         )]);
         let output = directory.join("program");
         compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn interpolation_requires_direct_output_and_variable_placeholders() {
         let source =
-            r#"use std.io; public void main() { int result = 2; string text = \v"{result}"; }"#;
+            r#"use std.io; public void main() { int result = 2; string text = \f"{result}"; }"#;
         let error = compile(source, "memory.fyl", CompileOptions::check()).unwrap_err();
         assert!(
             error
@@ -528,7 +528,7 @@ mod tests {
         );
 
         let source =
-            r#"use std.io; public void main() { int result = 2; print(\v"{result + 1}"); }"#;
+            r#"use std.io; public void main() { int result = 2; print(\f"{result + 1}"); }"#;
         let error = compile(source, "memory.fyl", CompileOptions::check()).unwrap_err();
         assert!(
             error
@@ -591,8 +591,8 @@ mod tests {
                 println(matrix);
                 println(message);
                 println(absent);
-                println(\v"matrix = {matrix}");
-                eprintln(\v"names = {names}");
+                println(\f"matrix = {matrix}");
+                eprintln(\f"names = {names}");
             }
         "#;
         let directory = write_project(&[("main.fyl", source)]);

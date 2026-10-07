@@ -1,6 +1,9 @@
 use std.io;
 
+// The self-hosted syntax frontend accepts \f expression placeholders (see
+// DIVERGED_FIXTURES in compiler/tests/parser.py); full bootstrap compilation
+// must still reject them here.
 public void main() {
     int result = 2;
-    print(\v"result: {result + 1}");
+    print(\f"result: {result + 1}");
 }

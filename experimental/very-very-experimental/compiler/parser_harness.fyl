@@ -27,7 +27,7 @@ private void frontend_tests() {
     frontend_assert(many.roots.length == 3, "aggregate declarations and control flow");
     frontend_assert(many.nodes[many.roots[0]].children.length == 2, "comma-free enum variants");
 
-    Source imports = Source { path: "<frontend-test>", text: "use std.io; using values: add, Point; public void main() { int value = 1; println(\\v\"answer {value}\\{\\}\"); }" };
+    Source imports = Source { path: "<frontend-test>", text: "use std.io; using values: add, Point; public void main() { int value = 1; println(\\f\"answer {value}\\{\\}\"); }" };
     AstProgram imported = parse(imports);
     frontend_assert(imported.imports.length == 2 && imported.imports[1].selective, "selective imports");
     int found = 0;

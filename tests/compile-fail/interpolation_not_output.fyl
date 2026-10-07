@@ -2,6 +2,6 @@ use std.io;
 
 public void main() {
     int result = 2;
-    string text = \v"result: {result}";
+    string text = \f"result: {result}";
     print(text);
 }

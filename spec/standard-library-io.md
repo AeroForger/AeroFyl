@@ -20,9 +20,9 @@ and then write one line-feed byte (`\n`). The non-`ln` forms add nothing.
 Empty strings are valid and sequential calls preserve byte order.
 
 An interpolated output literal can be passed directly to any of the four
-output functions. For example, `print(\v"result: {result}");` writes the
+output functions. For example, `print(\f"result: {result}");` writes the
 literal text and the current value of `result` in order. Placeholders accept
-variables of printable types. `\{` and `\}` write literal braces.
+identifiers and expressions of printable types. `\{` and `\}` write literal braces.
 
 The four functions accept `string`, `char`, `int`, `byte`, `bool`, lists,
 fixed arrays, enums, structs, optionals, and references when their contained

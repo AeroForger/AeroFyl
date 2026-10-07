@@ -113,7 +113,7 @@ use std.io;
 
 void main(string[] args){
   int result = 2;
-  print(\v"result: {result}");
+  print(\f"result: {result}");
   // output result: 2
 }
 ```

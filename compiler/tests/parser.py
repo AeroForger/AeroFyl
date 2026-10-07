@@ -45,8 +45,8 @@ POSITIVE = [
     "public void f() { optional int n = none(); n.hasValue; n.value; }",
     "public void f() { int(a); byte(a); float(a); bool(a); char(a); string(a); input(); }",
     r'''public void f() { char c = '\n'; string s = "a\t\0\\\""; float x = 1.25; }''',
-    r'''use std.io; public void f() { println(\v"value={x} \{ok\}\n"); }''',
-    r'''public void f() { println(\v""); println(\v"{a}{b}"); println(\v"text"); }''',
+    r'''use std.io; public void f() { println(\f"value={x} \{ok\}\n"); }''',
+    r'''public void f() { println(\f""); println(\f"{a}{b}"); println(\f"text"); }''',
     "public void f() { int[18446744073709551615] items = []; }",
     "public void f() { int[00000000000000000000000000001] items = []; }",
     "public void f() { float x = 1.0; true; 'a'; []; Node {}; }",
@@ -61,6 +61,13 @@ IMPROVED = [
     "public void f() { Node[2] nodes = []; }",
     "public void f() { int x = 1; (x + 2); }",
     "public void f() { int(x); }",
+]
+
+# Accepted by the self-hosted frontend (\f with expression placeholders);
+# the Rust bootstrap still accepts \f but only with identifier placeholders.
+INTERPOLATION_EXPR = [
+    r'''use std.io; public void f() { println(\f"{x + 1}"); }''',
+    r'''use std.io; public void f() { println(\f"value={x + 1}"); }''',
 ]
 
 NEGATIVE = [
@@ -98,12 +105,11 @@ NEGATIVE = [
     'public void f() { string s = "unterminated; }',
     r'''public void f() { string s = "\q"; }''',
     "public void f() { char c = 'ab'; }", "/* unterminated", "@",
-    r'''public void f() { println(\v"{x + 1}"); }''',
-    r'''public void f() { println(\v"{}"); }''',
-    r'''public void f() { println(\v"{x"); }''',
-    r'''public void f() { println(\v"}"); }''',
-    r'''public void f() { println(\v"\q"); }''',
-    r'''public void f() { println(\v"unterminated); }''',
+    r'''public void f() { println(\f"{}"); }''',
+    r'''public void f() { println(\f"{x"); }''',
+    r'''public void f() { println(\f"}"); }''',
+    r'''public void f() { println(\f"\q"); }''',
+    r'''public void f() { println(\f"unterminated); }''',
 ]
 
 # Reference accepts assignment-shaped expressions and leaves target checking to
@@ -111,6 +117,13 @@ NEGATIVE = [
 STRICT_TARGETS = {
     "public void f() { 1 = 2; }",
     "public void f() { f().value = 2; }",
+}
+
+# Accepted by the self-hosted frontend but rejected by the Rust bootstrap:
+# \f expression placeholders parse as full expressions ahead of bootstrap
+# support. These fixtures still fail full bootstrap compilation.
+DIVERGED_FIXTURES = {
+    "tests/compile-fail/interpolation_expression.fyl",
 }
 
 REFERENCE = r'''
@@ -142,13 +155,13 @@ def main():
              "-L", ROOT / "target/release/deps", "-o", reference])
         fixture = temporary / "input.fyl"
         comparisons = 0
-        for expected, sources in [(0, POSITIVE + IMPROVED), (1, NEGATIVE)]:
+        for expected, sources in [(0, POSITIVE + IMPROVED + INTERPOLATION_EXPR), (1, NEGATIVE)]:
             for text in sources:
                 fixture.write_text(text)
                 result = run([parser, fixture], expected, timeout=5)
                 if expected == 1:
                     assert f"{fixture}:" in result.stderr and ": error: " in result.stderr
-                if text not in IMPROVED and text not in STRICT_TARGETS:
+                if text not in IMPROVED and text not in STRICT_TARGETS and text not in INTERPOLATION_EXPR:
                     # Conversion expressions also appear in the wider positive
                     # corpus; the Rust parser has the documented lookahead bug.
                     reference_result = subprocess.run([reference, fixture], timeout=5)
@@ -157,7 +170,7 @@ def main():
                     else:
                         assert reference_result.returncode == expected, repr(text)
                         comparisons += 1
-        print(f"{len(POSITIVE) + len(IMPROVED)} syntax passes, {len(NEGATIVE)} rejections, "
+        print(f"{len(POSITIVE) + len(IMPROVED) + len(INTERPOLATION_EXPR)} syntax passes, {len(NEGATIVE)} rejections, "
               f"{comparisons} Rust syntax comparisons passed", flush=True)
 
         # Parse the new parser and every other frontend file as real input.
@@ -173,7 +186,11 @@ def main():
         for path in fixture_files:
             expected = subprocess.run([reference, path], timeout=5).returncode
             assert expected in (0, 1)
-            run([parser, path], expected, timeout=5)
+            if str(path.relative_to(ROOT)) in DIVERGED_FIXTURES:
+                assert expected == 1, repr(str(path))
+                run([parser, path], 0, timeout=5)
+            else:
+                run([parser, path], expected, timeout=5)
         print(f"{len(fixture_files)} repository fixture syntax comparisons passed", flush=True)
 
         deep_sources = [

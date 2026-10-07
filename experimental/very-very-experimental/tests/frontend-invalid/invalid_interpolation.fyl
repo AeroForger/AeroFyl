@@ -1,2 +1,2 @@
 use std.io;
-public void main() { println(\v"{1 + 2}"); }
+public void main() { println(\f"{1 + 2}"); }

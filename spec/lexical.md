@@ -28,13 +28,15 @@ string escapes are errors. A character literal contains exactly one Unicode
 scalar value or one of these escapes: `\n`, `\r`, `\t`, `\0`, `\\`, or `\'`.
 Other character escapes are errors.
 
-An interpolated output literal begins with `\v"` and ends at the next
-unescaped `"`. Its `{variable}` placeholders contain one identifier, not an
+An interpolated output literal begins with `\f"` and ends at the next
+unescaped `"`. Its `{expression}` placeholders contain an identifier or an
 expression. The ordinary string escapes also apply; `\{` and `\}` produce
-literal braces. Unescaped braces without a valid variable placeholder are
+literal braces. Unescaped braces without a valid placeholder are
 errors. Interpolated output literals are accepted only as the direct argument
 to `print`, `println`, `eprint`, or `eprintln`; they are not ordinary `string`
-values.
+values. The self-hosted frontend parses placeholders as full expressions; the
+Rust bootstrap currently accepts identifier placeholders for `\f"` (and the
+deprecated `\v"` prefix).
 
 ## Whitespace and comments
 

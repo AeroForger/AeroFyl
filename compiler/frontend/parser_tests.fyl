@@ -150,7 +150,7 @@ private void postfix() {
 }
 
 private void interpolation() {
-    AstProgram program = valid("use std.io; public void f() { println(\\v\"value={x} \\{ok\\}\\n\"); }");
+    AstProgram program = valid("use std.io; public void f() { println(\\f\"value={x} \\{ok\\}\\n\"); }");
     AstNode call = child(program, child(program, body(program, 0), 0), 0);
     AstNode interpolated = child(program, call, 1);
     require(interpolated.kind == NodeKind.interpolated && interpolated.children.length == 3, "interpolation parts");
@@ -159,6 +159,10 @@ private void interpolation() {
     require(variable.kind == NodeKind.name && variable.text == "x", "interpolation variable");
     require(child(program, interpolated, 2).text == " {ok}\n", "interpolation escaped braces");
     require(variable.span.end - variable.span.start == 1, "interpolation variable span");
+    program = valid("use std.io; public void f() { println(\\f\"{x + 1}\"); }");
+    AstNode exprCall = child(program, child(program, body(program, 0), 0), 0);
+    AstNode exprPart = child(program, child(program, exprCall, 1), 0);
+    require(exprPart.kind == NodeKind.binary && exprPart.text == "+", "interpolation expression");
 }
 
 private void diagnosticsAndSpans() {
@@ -173,7 +177,7 @@ private void diagnosticsAndSpans() {
     AstNode value = child(program, child(program, body(program, 0), 0), 0);
     require(text.slice(value.span.start, value.span.end) == "(1 + 2)", "parenthesized expression span");
     ParseResult result = parseText("public int f() { return 1 }");
-    require(result.diagnostics.length == 1 && result.program.nodes.length == 0, "failed AST discarded");
+    require(result.diagnostics.length >= 1 && result.program.roots.length == 1, "partial AST preserved with diagnostics");
     Diagnostic diagnostic = result.diagnostics[0];
     require(diagnostic.level.is(DiagnosticLevel.Error), "error diagnostic");
     require(diagnostic.level.payload(DiagnosticLevel.Error) == ErrorType.SyntaxError, "syntax category");

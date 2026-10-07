@@ -1,0 +1,28 @@
+use parser;
+use diagnostics;
+use std.io;
+
+public void main(string[] args) {
+    if (args.length != 1) {
+        eprintln("usage: parse_main <file>");
+        exit(2);
+    }
+    ParseResult result = parse(args[0]);
+    if (result.diagnostics.length == 0) {
+        println("parse succeeded");
+        return;
+    }
+    int i = 0;
+    while (i < result.diagnostics.length) {
+        Diagnostic diagnostic = result.diagnostics[i];
+        eprint(diagnostic.span.source);
+        eprint(":");
+        eprint(diagnostic.span.start);
+        eprint("-");
+        eprint(diagnostic.span.end);
+        eprint(": error: ");
+        eprintln(diagnostic.message);
+        i += 1;
+    }
+    exit(1);
+}

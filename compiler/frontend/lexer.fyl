@@ -188,7 +188,8 @@ public LexResult lexSource(Source s) {
         }
 
         if (current == int('\\') && offset + 2 < source.length
-            && source.byte(offset + 1) == int('v') && source.byte(offset + 2) == int('"')) {
+            && (source.byte(offset + 1) == int('v') || source.byte(offset + 1) == int('f'))
+            && source.byte(offset + 2) == int('"')) {
             offset += 3;
             list InterpolationPart parts = [];
             string value = "";
@@ -211,12 +212,40 @@ public LexResult lexSource(Source s) {
                         value = "";
                     }
                     offset += 1;
-                    int nameStart = offset;
-                    if (offset < source.length && isLetter(source.byte(offset))) {
+                    int exprStart = offset;
+                    int braceDepth = 1;
+                    bool exprClosed = false;
+                    while (offset < source.length) {
+                        int inner = source.byte(offset);
+                        if (inner == int('\n') || inner == int('\r')) { break; }
+                        if (inner == int('"')) {
+                            offset += 1;
+                            while (offset < source.length && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) {
+                                if (source.byte(offset) == int('\\') && offset + 1 < source.length) { offset += 2; continue; }
+                                if (source.byte(offset) == int('"')) { offset += 1; break; }
+                                offset += 1;
+                            }
+                            continue;
+                        }
+                        if (inner == int('\'')) {
+                            offset += 1;
+                            while (offset < source.length && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) {
+                                if (source.byte(offset) == int('\\') && offset + 1 < source.length) { offset += 2; continue; }
+                                if (source.byte(offset) == int('\'')) { offset += 1; break; }
+                                offset += 1;
+                            }
+                            continue;
+                        }
+                        if (inner == int('{')) { braceDepth += 1; offset += 1; continue; }
+                        if (inner == int('}')) {
+                            braceDepth -= 1;
+                            if (braceDepth == 0) { exprClosed = true; break; }
+                            offset += 1;
+                            continue;
+                        }
                         offset += 1;
-                        while (offset < source.length && (isLetter(source.byte(offset)) || isDigit(source.byte(offset)))) { offset += 1; }
-                    } else { valid = false; }
-                    if (offset >= source.length || source.byte(offset) != int('}')) {
+                    }
+                    if (!exprClosed) {
                         valid = false;
                         // Scan forward to the quote/newline without interpreting a
                         // malformed placeholder as ordinary interpolation text.
@@ -224,7 +253,21 @@ public LexResult lexSource(Source s) {
                                && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) { offset += 1; }
                         continue;
                     }
-                    parts.push(InterpolationPart { variable: true, text: source.slice(nameStart, offset), span: span(s, nameStart, offset) });
+                    string raw = source.slice(exprStart, offset);
+                    bool blank = true;
+                    int scan = 0;
+                    while (scan < raw.length) {
+                        int unit = raw.byte(scan);
+                        if (unit != int(' ') && unit != int('\t')) { blank = false; break; }
+                        scan += 1;
+                    }
+                    if (blank) {
+                        valid = false;
+                        while (offset < source.length && source.byte(offset) != int('"')
+                               && source.byte(offset) != int('\n') && source.byte(offset) != int('\r')) { offset += 1; }
+                        continue;
+                    }
+                    parts.push(InterpolationPart { variable: true, text: raw, span: span(s, exprStart, offset) });
                     offset += 1;
                     textStart = offset;
                     continue;

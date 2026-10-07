@@ -34,7 +34,8 @@ impl<'source> Lexer<'source> {
                 character if is_identifier_start(character) => self.lex_identifier(start),
                 character if character.is_ascii_digit() => self.lex_number(start),
                 '"' => self.lex_string(start),
-                '\\' if self.source[self.offset..].starts_with("\\v\"") => {
+                '\\' if self.source[self.offset..].starts_with("\\v\"")
+                    || self.source[self.offset..].starts_with("\\f\"") => {
                     self.lex_interpolated_string(start)
                 }
                 '\'' => self.lex_char(start),
