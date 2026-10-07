@@ -1,0 +1,15 @@
+use std.io;
+
+enum Result
+{
+    ok(int),
+    error(string)
+}
+
+public void main()
+{
+    Result good = Result.ok(42);
+    Result bad = Result.error("boom");
+    println(good);
+    println(bad);
+}

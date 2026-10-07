@@ -1,0 +1,23 @@
+use std.io;
+
+public void main()
+{
+    int total = 0;
+    for (int i = 1; i <= 10; i += 1)
+    {
+        total += i;
+    }
+    println(total);
+    for (int i = 10; i > 0; i += -1)
+    {
+        if (i == 3)
+        {
+            continue;
+        }
+        if (i == 1)
+        {
+            break;
+        }
+        println(i);
+    }
+}

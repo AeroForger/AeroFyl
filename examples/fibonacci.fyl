@@ -1,0 +1,24 @@
+use std.io;
+
+public int fib(int n)
+{
+    if (n < 2)
+    {
+        return n;
+    }
+    int a = 0;
+    int b = 1;
+    for (int i = 2; i <= n; i += 1)
+    {
+        int next = a + b;
+        a = b;
+        b = next;
+    }
+    return b;
+}
+
+public void main()
+{
+    println(fib(10));
+    println(fib(20));
+}

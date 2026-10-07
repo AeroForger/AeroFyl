@@ -1,0 +1,13 @@
+use std.io;
+
+public void main()
+{
+    string language = "AeroFyl";
+    int major = 0;
+    println(\f"Hello from {language}!");
+    println(\f"version: {major}, literal \{braces\}");
+    int a = 20;
+    int b = 22;
+    int answer = a + b;
+    println(\f"{a} + {b} = {answer}");
+}

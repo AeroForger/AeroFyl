@@ -1,0 +1,17 @@
+use std.io;
+
+public void main()
+{
+    optional int found = some(42);
+    optional int missing = none();
+    println(found);
+    println(missing);
+    if (found.hasValue)
+    {
+        println(found.value);
+    }
+    if (!missing.hasValue)
+    {
+        println("nothing here");
+    }
+}

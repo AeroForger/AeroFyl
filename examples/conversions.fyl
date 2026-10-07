@@ -1,0 +1,13 @@
+use std.io;
+
+public void main()
+{
+    char letter = char(65);
+    println(letter);
+    int scalar = int(letter);
+    println(scalar);
+    byte octet = byte(255);
+    println(int(octet));
+    bool flag = true;
+    println(flag);
+}

@@ -1,0 +1,11 @@
+use std.io;
+
+public void main()
+{
+    int value = 6;
+    ref int alias = reference(value);
+    println(alias.value);
+    alias.value = 8;
+    println(value);
+    println(alias.value);
+}
