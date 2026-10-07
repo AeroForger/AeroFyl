@@ -54,7 +54,7 @@ only when something executes:
 ### Semi-main: Speed
 
 - No pathological algorithms. The frontend parses 2000-long postfix and
-  binary chains iteratively and caps nesting at 96 — keep it that way.
+  binary chains iteratively and caps nesting at 96 - keep it that way.
 - Watch compile times: the test runner budgets ~30s per bootstrap build
   and ~5s per parse. If your change makes builds flaky or slow, it is a
   regression even if tests pass.
@@ -72,7 +72,7 @@ only when something executes:
 
 - Every failure must explain itself: diagnostics carry source paths and
   byte spans (`path:start-end: error: message`); warnings (`: warning: `)
-  never fail a build silently or loudly — they inform.
+  never fail a build silently or loudly - they inform.
 - No silent behavior changes. If output, exit codes, or accepted syntax
   change, the PR description says so up front and docs are updated.
 - Record known divergences (e.g. `DIVERGED_FIXTURES` in
