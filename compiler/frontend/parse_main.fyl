@@ -8,6 +8,18 @@ public void main(string[] args) {
         exit(2);
     }
     ParseResult result = parse(args[0]);
+    int w = 0;
+    while (w < result.warnings.length) {
+        Diagnostic warning = result.warnings[w];
+        eprint(warning.span.source);
+        eprint(":");
+        eprint(warning.span.start);
+        eprint("-");
+        eprint(warning.span.end);
+        eprint(": warning: ");
+        eprintln(warning.message);
+        w += 1;
+    }
     if (result.diagnostics.length == 0) {
         println("parse succeeded");
         return;

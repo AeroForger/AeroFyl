@@ -27,10 +27,14 @@ expression nodes.
 - `parseTokens(Source source, list Token tokens)` parses a token stream without file I/O.
 - `parse(string path)` loads, lexes, and parses one file.
 
-`ParseResult` contains `program` and `diagnostics`. A successful result has no
-diagnostics. A lexical failure preserves the scanner's diagnostics; a syntax
+`ParseResult` contains `program`, `diagnostics` (errors), and `warnings`. A
+successful result has no diagnostics; warnings never fail compilation. A
+lexical failure preserves the scanner's errors; a syntax
 failure returns a partial AST with `rootPath` set plus all diagnostics
-collected via statement-level recovery. Recovery synchronizes at `;`/`}` and
+collected via statement-level recovery. Lexer warnings (currently the
+deprecated `\v"` prefix, reported as `DeprecationWarning`) merge through
+`parse()` and print as `path:start-end: warning: message` while keeping exit
+status 0. Recovery synchronizes at `;`/`}` and
 top-level declaration boundaries (`pSynchronizeStatement`,
 `pSynchronizeTopLevel`) with a progress guard, then continues parsing. The
 token API copies the input token list, synthesizes a missing EOF, handles an

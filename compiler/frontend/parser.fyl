@@ -355,6 +355,9 @@ private int pInterpolatedPart(ref ParserState state, string raw, Span outer) {
         pErrorAt(state, outer, "invalid interpolated expression");
         return -1;
     }
+    // Inner placeholder warnings (such as a nested deprecated prefix) are
+    // intentionally dropped: the outer literal already spans the placeholder
+    // and re-reporting here would duplicate diagnostics.
     ParserState saved = state.value;
     ref ParserState sub = reference(ParserState {
         source: inner, tokens: lexed.tokens, index: 0, depth: saved.depth,
@@ -850,12 +853,13 @@ private void pSynchronizeTopLevel(ref ParserState state) {
 struct ParseResult {
     AstProgram program;
     list Diagnostic diagnostics;
+    list Diagnostic warnings;
 }
 public ParseResult parseTokens(Source source, list Token inputTokens) {
     while (inputTokens.length == 0) {
         AstProgram empty = empty_program();
         empty.rootPath = source.path;
-        return ParseResult { program: empty, diagnostics: [] };
+        return ParseResult { program: empty, diagnostics: [], warnings: [] };
     }
     list Token tokens = [];
     int copyIndex = 0;
@@ -864,7 +868,7 @@ public ParseResult parseTokens(Source source, list Token inputTokens) {
         if (token.kind.is(TokenKind.Eof) && copyIndex + 1 < inputTokens.length) {
             AstProgram empty = empty_program();
             empty.rootPath = source.path;
-            return ParseResult { program: empty, diagnostics: [error(ErrorType.SyntaxError, "unexpected tokens after EOF", token.span)] };
+            return ParseResult { program: empty, diagnostics: [error(ErrorType.SyntaxError, "unexpected tokens after EOF", token.span)], warnings: [] };
         }
         tokens.push(token);
         copyIndex += 1;
@@ -905,16 +909,34 @@ public ParseResult parseTokens(Source source, list Token inputTokens) {
         }
     }
     program = state.value.program;
-    return ParseResult { program: program, diagnostics: state.value.diagnostics };
+    return ParseResult { program: program, diagnostics: state.value.diagnostics, warnings: [] };
 }
 
 public ParseResult parse(string path) {
     Source source = load_file(path);
     LexResult lexed = lexSource(source);
-    if (lexed.diagnostics.length > 0) {
+    list Diagnostic errors = [];
+    list Diagnostic warnings = [];
+    int i = 0;
+    while (i < lexed.diagnostics.length) {
+        errors.push(lexed.diagnostics[i]);
+        i += 1;
+    }
+    i = 0;
+    while (i < lexed.warnings.length) {
+        warnings.push(lexed.warnings[i]);
+        i += 1;
+    }
+    if (errors.length > 0) {
         AstProgram program = empty_program();
         program.rootPath = path;
-        return ParseResult { program: program, diagnostics: lexed.diagnostics };
+        return ParseResult { program: program, diagnostics: errors, warnings: warnings };
     }
-    return parseTokens(source, lexed.tokens);
+    ParseResult parsed = parseTokens(source, lexed.tokens);
+    i = 0;
+    while (i < parsed.warnings.length) {
+        warnings.push(parsed.warnings[i]);
+        i += 1;
+    }
+    return ParseResult { program: parsed.program, diagnostics: parsed.diagnostics, warnings: warnings };
 }

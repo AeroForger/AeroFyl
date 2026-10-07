@@ -103,6 +103,7 @@ private LexCharacter lexCharacter(string text, int offset) {
 struct LexResult {
     list Token tokens;
     list Diagnostic diagnostics;
+    list Diagnostic warnings;
 }
 
 public LexResult lex(string path) {
@@ -113,11 +114,12 @@ public LexResult lexSource(Source s) {
     // An empty-source early return also keeps the bootstrap verifier's entry
     // block free of value definitions before the scanner's loops.
     while (s.text.length == 0) {
-        return LexResult { tokens: [makeToken(TokenKind.Eof, s, 0, 0)], diagnostics: [] };
+        return LexResult { tokens: [makeToken(TokenKind.Eof, s, 0, 0)], diagnostics: [], warnings: [] };
     }
     string source = s.text;
     list Token tokens = [];
     list Diagnostic diagnostics = [];
+    list Diagnostic warnings = [];
     int offset = 0;
 
     while (offset < source.length) {
@@ -188,8 +190,13 @@ public LexResult lexSource(Source s) {
         }
 
         if (current == int('\\') && offset + 2 < source.length
-            && (source.byte(offset + 1) == int('v') || source.byte(offset + 1) == int('f'))
             && source.byte(offset + 2) == int('"')) {
+            int marker = source.byte(offset + 1);
+            if (marker != int('v') && marker != int('f')) {
+                diagnostics.push(error(ErrorType.LexicalError, "unexpected char", span(s, start, offset + 1)));
+                offset = offset + 1;
+                continue;
+            }
             offset += 3;
             list InterpolationPart parts = [];
             string value = "";
@@ -298,6 +305,9 @@ public LexResult lexSource(Source s) {
                 diagnostics.push(error(ErrorType.LexicalError, "invalid interpolated string placeholder or escape", span(s, start, offset)));
             } else {
                 tokens.push(makeToken(TokenKind.InterpolatedString(Interpolation { parts: parts }), s, start, offset));
+                if (marker == int('v')) {
+                    warnings.push(warning(WarningType.DeprecationWarning, "\\v\" interpolated literals are deprecated, use \\f\" instead", span(s, start, offset)));
+                }
             }
             continue;
         }
@@ -455,5 +465,5 @@ public LexResult lexSource(Source s) {
         offset = offset + 1;
     }
     tokens.push(makeToken(TokenKind.Eof, s, offset, offset));
-    return LexResult { tokens: tokens, diagnostics: diagnostics };
+    return LexResult { tokens: tokens, diagnostics: diagnostics, warnings: warnings };
 }

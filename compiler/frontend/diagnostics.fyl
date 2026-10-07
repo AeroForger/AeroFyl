@@ -1,6 +1,6 @@
-
-//same problem as token.fyl i dont have using yet 
-// future me here, we do have using already
+// Diagnostic carriers shared by the lexer and parser. Diagnostics travelled
+// in one list historically; errors and warnings are now partitioned by level
+// so warnings never fail compilation.
 use source;
 use ErrorType;
 use WarningType;
@@ -38,4 +38,12 @@ public Diagnostic note(string message, Span span) {
         message: message,
         span: span
     };
+}
+
+public bool isErrorDiagnostic(Diagnostic diagnostic) {
+    return diagnostic.level.is(DiagnosticLevel.Error);
+}
+
+public bool isWarningDiagnostic(Diagnostic diagnostic) {
+    return diagnostic.level.is(DiagnosticLevel.Warning);
 }

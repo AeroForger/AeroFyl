@@ -9,9 +9,21 @@ private ParseResult parseText(string text) {
     Source source = Source { path: "test.fyl", text: text };
     LexResult tokens = lexSource(source);
     if (tokens.diagnostics.length > 0) {
-        return ParseResult { program: empty_program(), diagnostics: tokens.diagnostics };
+        return ParseResult { program: empty_program(), diagnostics: tokens.diagnostics, warnings: tokens.warnings };
     }
-    return parseTokens(source, tokens.tokens);
+    ParseResult parsed = parseTokens(source, tokens.tokens);
+    int i = 0;
+    list Diagnostic warnings = [];
+    while (i < tokens.warnings.length) {
+        warnings.push(tokens.warnings[i]);
+        i += 1;
+    }
+    i = 0;
+    while (i < parsed.warnings.length) {
+        warnings.push(parsed.warnings[i]);
+        i += 1;
+    }
+    return ParseResult { program: parsed.program, diagnostics: parsed.diagnostics, warnings: warnings };
 }
 
 private AstNode child(AstProgram program, AstNode node, int index) {
@@ -205,12 +217,27 @@ private void diagnosticsAndSpans() {
     require(result.diagnostics.length == 1, "tokens after EOF rejected");
 }
 
+private void deprecation() {
+    Source source = Source { path: "test.fyl", text: "use std.io; public void f() { println(\\v\"{x}\"); }" };
+    LexResult lexed = lexSource(source);
+    require(lexed.diagnostics.length == 0, "deprecated prefix is not an error");
+    require(lexed.warnings.length == 1, "deprecated prefix warns once");
+    require(isWarningDiagnostic(lexed.warnings[0]), "deprecation warning level");
+    ParseResult result = parseTokens(source, lexed.tokens);
+    require(result.diagnostics.length == 0 && result.program.roots.length == 1, "warned source still parses");
+    ParseResult merged = parseText("use std.io; public void f() { println(\\v\"{x}\"); }");
+    require(merged.diagnostics.length == 0 && merged.warnings.length == 1, "warnings merge through parseText");
+    ParseResult current = parseText("use std.io; public void f() { println(\\f\"{x}\"); }");
+    require(current.diagnostics.length == 0 && current.warnings.length == 0, "current prefix warns never");
+}
+
 public void main() {
     expressions();
     declarations();
     statements();
     postfix();
     interpolation();
+    deprecation();
     diagnosticsAndSpans();
     println("parser AST tests passed");
 }
