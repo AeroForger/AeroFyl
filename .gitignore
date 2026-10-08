@@ -12,5 +12,12 @@
 !.github/
 !.github/**
 
+# Useless files
+test.fyl
+/assets/AeroFyl2.png
+/assets/AeroFyl3.png
+/assets/AeroFyl3.png~
+/assets/AeroFyl5.png
+
 # Scratch
 /scratch/
