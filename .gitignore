@@ -9,6 +9,8 @@
 
 # Keep repository configuration
 !.gitignore
+!.gitattributes
+!.editorconfig
 !.github/
 !.github/**
 
