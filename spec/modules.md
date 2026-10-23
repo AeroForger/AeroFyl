@@ -19,8 +19,10 @@ file resolution rule applies to both forms. A `using` declaration lists names
 separated by commas and ends with `;`. Functions and named types can be
 selected. The language currently has no module-level variable declarations to
 select. Importing a private function from another file remains an error.
-Selecting a name not declared by that file is an error. Selective imports of
-standard-library modules are not specified; use `use std.io;` or `use std.fs;`.
+Selecting a name not declared by that file is an error. Selective standard-library imports exist for `std.os` only:
+`using std.os: process;` selects that module's `process` member. Other
+standard-library modules require a whole-module `use` (for example
+`use std.io;`, `use std.fs;`; see [standard-library-os.md](standard-library-os.md)).
 
 `use lexer;` resolves only to `lexer.fyl` in the importing file's directory.
 The command-line source file is the root module. Imports are recursive, and a

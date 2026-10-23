@@ -2,15 +2,6 @@
 
 Locked in 2026-10-08. Order is sequential unless marked parallel.
 
-## Phase 1: Remake the spec
-
-Rebuild `spec/` so it fits the growing language and is built to change:
-
-- Every rule carries a status: stable, provisional, or experimental.
-- Each spec file keeps short changelog notes so changes are tracked, not silently rewritten.
-- A documented change process: how a rule is proposed, what evidence it needs, and how it moves from experimental to stable.
-- Content covers the full current language as implemented. Undecided behavior is marked explicitly.
-
 ## Phase 2: Add FutureIdeas/ with its own docs
 
 - New top-level `FutureIdeas/` directory with its own README describing what belongs there.

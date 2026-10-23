@@ -1,5 +1,6 @@
 # Optional values
 
+
 `optional T` explicitly represents either a value of exact type `T` or no
 value. It does not make `T` nullable and does not add an implicit conversion.
 

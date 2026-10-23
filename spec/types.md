@@ -1,5 +1,7 @@
 # Types
 
+- 2026-10-23. Spec remake: statuses assigned; no type rule rewritten. The wide `stable` entries are limited to behaviors backed by both implementation and extensive fixtures.
+
 Known basic type names are:
 
 - `int`

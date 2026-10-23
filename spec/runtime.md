@@ -6,7 +6,9 @@ current Linux target. Returning from `main` produces status zero.
 
 Runtime failures use status 70 in the current language subset. They include
 invalid array, list, string-byte, and string-slice bounds; popping an empty
-list; file failures; allocation failures; and integer division failure. This
+list; file failures ([standard-library-fs.md](standard-library-fs.md)); process
+failures ([standard-library-os.md](standard-library-os.md)); allocation
+failures; and integer division failure. This
 provides a defined failure result but not yet a catchable panic value or stack
 trace.
 

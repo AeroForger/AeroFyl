@@ -10,7 +10,8 @@ use std.io;
 
 `std.io` makes `print`, `println`, `eprint`, `eprintln`, and `input` available
 to the program. Using one of these names without importing `std.io` is a
-compile error. Other `std` modules are not yet defined.
+compile error. Other standard-library modules are imported separately:
+`use std.fs;`, `use std.os;`.
 
 ## Output
 
