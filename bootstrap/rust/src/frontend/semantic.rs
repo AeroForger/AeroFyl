@@ -1537,6 +1537,83 @@ impl Analyzer<'_> {
         )
     }
 
+    /// Recognizes the `std.os` `process` namespace in both import forms:
+    /// `os.process` from `use std.os;` and `process` from
+    /// `using std.os: process;`.
+    fn is_std_os_process_namespace(&self, receiver: &Expression) -> bool {
+        match &receiver.kind {
+            ExpressionKind::Identifier(name) => {
+                name.text == "process"
+                    && self.resolution.reference(name.span).map_or(false, |id| {
+                        matches!(
+                            self.resolution.symbol(id).map(|s| &s.kind),
+                            Some(SymbolKind::Builtin)
+                        )
+                    })
+            }
+            ExpressionKind::Member { base, name } => {
+                name.text == "process"
+                    && matches!(
+                        &base.kind,
+                        ExpressionKind::Identifier(base_name) if base_name.text == "os",
+                    )
+                    && self
+                        .resolution
+                        .reference(match &base.kind {
+                            ExpressionKind::Identifier(base_name) => base_name.span,
+                            _ => return false,
+                        })
+                        .map_or(false, |id| {
+                            matches!(
+                                self.resolution.symbol(id).map(|s| &s.kind),
+                                Some(SymbolKind::Builtin)
+                            )
+                        })
+            }
+            _ => false,
+        }
+    }
+
+    fn check_process_execute(
+        &mut self,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        if arguments.len() != 1 {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "`execute` expects exactly one argument, found {}",
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let command = arguments
+            .first()
+            .map(|argument| self.check_expression(argument, Some(&Type::String)))
+            .unwrap_or(HirExpression {
+                kind: HirExpressionKind::StringLiteral(String::new()),
+                ty: Type::Dynamic,
+                span,
+            });
+        for argument in arguments.iter().skip(1) {
+            self.check_expression(argument, None);
+        }
+        let Some(Type::Struct(struct_id)) = self.type_names.get("Process").cloned() else {
+            self.diagnostics.push(Diagnostic::error(
+                "`std.os` did not provide the `Process` type",
+                span,
+            ));
+            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+        };
+        (
+            HirExpressionKind::ProcessExecute {
+                command: Box::new(command),
+            },
+            Type::Struct(struct_id),
+        )
+    }
+
     fn check_member_expression(
         &mut self,
         base: &Expression,
@@ -1795,6 +1872,9 @@ impl Analyzer<'_> {
         arguments: &[Expression],
         span: super::source::Span,
     ) -> (HirExpressionKind, Type) {
+        if method.text == "execute" && self.is_std_os_process_namespace(receiver) {
+            return self.check_process_execute(arguments, span);
+        }
         if let ExpressionKind::Identifier(type_name) = &receiver.kind
             && let Some(Type::Enum(enum_id)) = self.type_names.get(&type_name.text).cloned()
         {
@@ -2136,6 +2216,7 @@ impl Analyzer<'_> {
             Type::Named(name) => {
                 if let Some(&declaration_file) = self.type_sources.get(name)
                     && declaration_file != span.file
+                    && !self.builtin_type_allows(name, span.file)
                     && !import_allows(&self.imports, span.file, declaration_file, name)
                 {
                     self.diagnostics.push(Diagnostic::error(
@@ -2170,6 +2251,7 @@ impl Analyzer<'_> {
     fn check_named_type_visibility(&mut self, name: &str, span: super::source::Span) {
         if let Some(&declaration_file) = self.type_sources.get(name)
             && declaration_file != span.file
+            && !self.builtin_type_allows(name, span.file)
             && !import_allows(&self.imports, span.file, declaration_file, name)
         {
             self.diagnostics.push(Diagnostic::error(
@@ -2177,6 +2259,16 @@ impl Analyzer<'_> {
                 span,
             ));
         }
+    }
+
+    /// `Process` is provided by `std.os` as a compiler-builtin declaration, so
+    /// every module importing it may reference the type directly.
+    fn builtin_type_allows(&self, name: &str, file: super::source::FileId) -> bool {
+        name == "Process"
+            && self
+                .imports
+                .iter()
+                .any(|import| import.name.text == "std.os" && import.span.file == file)
     }
 
     fn is_printable_type(&self, ty: &Type, visited: &mut HashSet<TypeId>) -> bool {

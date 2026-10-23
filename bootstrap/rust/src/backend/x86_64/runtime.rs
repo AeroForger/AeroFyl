@@ -37,6 +37,10 @@ pub const FS_ERROR: SymbolId = SymbolId(u32::MAX - 28);
 pub const OPTIONAL_VALUE: SymbolId = SymbolId(u32::MAX - 29);
 pub const ENUM_PAYLOAD: SymbolId = SymbolId(u32::MAX - 30);
 
+pub const PROCESS_EXECUTE: SymbolId = SymbolId(u32::MAX - 31);
+
+pub const OS_ERROR: SymbolId = SymbolId(u32::MAX - 32);
+
 pub fn functions_for(roots: &HashSet<SymbolId>) -> Vec<MachineFunction> {
     let functions = vec![
         allocate(),
@@ -70,6 +74,8 @@ pub fn functions_for(roots: &HashSet<SymbolId>) -> Vec<MachineFunction> {
         fs_error(),
         optional_value(),
         enum_payload(),
+        process_execute(),
+        os_error(),
     ];
     let runtime_symbols: HashSet<_> = functions.iter().map(|function| function.symbol).collect();
     let mut reachable = HashSet::new();
@@ -3854,6 +3860,714 @@ fn string_slice() -> MachineFunction {
     MachineFunction {
         symbol: STRING_SLICE,
         name: "__aerofyl_string_slice".into(),
+        instructions,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// std.os process execution
+//
+// `execute` runs a command without a shell: the command string is parsed into
+// an argv array (whitespace-separated tokens, where both quote styles group a
+// run of characters so arguments and executable paths may contain spaces), and
+// the child image is replaced with `execve`, so no shell interprets the string.
+// `stdout` and `stderr` are captured through separate non-blocking pipes that
+// are drained in turns, which avoids deadlocks for large or interleaved output.
+// ---------------------------------------------------------------------------
+
+fn pe_mov(dst: Register, value: u64) -> Instruction {
+    Instruction::MoveImmediate64 {
+        destination: dst,
+        value,
+    }
+}
+
+fn pe_reg(dst: Register, src: Register) -> Instruction {
+    Instruction::MoveRegister {
+        destination: dst,
+        source: src,
+    }
+}
+
+fn pe_load(dst: Register, base: Register, displacement: i32) -> Instruction {
+    Instruction::Load64 {
+        destination: dst,
+        base,
+        displacement,
+    }
+}
+
+fn pe_store(base: Register, displacement: i32, src: Register) -> Instruction {
+    Instruction::Store64 {
+        base,
+        displacement,
+        source: src,
+    }
+}
+
+fn pe_byte(base: Register, displacement: i32, src: Register) -> Instruction {
+    Instruction::Store8 {
+        base,
+        displacement,
+        source: src,
+    }
+}
+
+fn pe_load8(dst: Register, base: Register, index: Register, displacement: i32) -> Instruction {
+    Instruction::IndexedLoad8 {
+        destination: dst,
+        base,
+        index,
+        displacement,
+    }
+}
+
+fn pe_store8(base: Register, index: Register, displacement: i32, src: Register) -> Instruction {
+    Instruction::IndexedStore8 {
+        base,
+        index,
+        displacement,
+        source: src,
+    }
+}
+
+fn pe_slot(dst: Register, base: Register, index: Register) -> Instruction {
+    Instruction::IndexedLoad64 {
+        destination: dst,
+        base,
+        index,
+        displacement: 0,
+    }
+}
+
+fn pe_slot_store(base: Register, index: Register, src: Register) -> Instruction {
+    Instruction::IndexedStore64 {
+        base,
+        index,
+        displacement: 0,
+        source: src,
+    }
+}
+
+fn pe_add(dst: Register, src: Register) -> Instruction {
+    Instruction::Add {
+        destination: dst,
+        source: src,
+    }
+}
+
+fn pe_sub(dst: Register, src: Register) -> Instruction {
+    Instruction::Subtract {
+        destination: dst,
+        source: src,
+    }
+}
+
+fn pe_cmp(left: Register, right: Register) -> Instruction {
+    Instruction::Compare { left, right }
+}
+
+fn pe_jcc(condition: Condition, target: BlockId) -> Instruction {
+    Instruction::JumpIf { condition, target }
+}
+
+fn pe_jump(target: BlockId) -> Instruction {
+    Instruction::Jump(target)
+}
+
+fn pe_label(target: BlockId) -> Instruction {
+    Instruction::Label(target)
+}
+
+const PE_HEAD: BlockId = BlockId(0);
+const PE_REG: BlockId = BlockId(1);
+const PE_REGSTART: BlockId = BlockId(2);
+const PE_REGCOPY: BlockId = BlockId(3);
+const PE_SEP: BlockId = BlockId(4);
+const PE_QUOTESTART: BlockId = BlockId(5);
+const PE_QUOTESET: BlockId = BlockId(6);
+const PE_INQUOTE: BlockId = BlockId(7);
+const PE_ADV: BlockId = BlockId(8);
+const PE_TOKEND: BlockId = BlockId(9);
+const PE_SETNB: BlockId = BlockId(10);
+const PE_MAINLOOP: BlockId = BlockId(11);
+const PE_READOUT: BlockId = BlockId(12);
+const PE_OUTEOF: BlockId = BlockId(13);
+const PE_OUTGROWCHK: BlockId = BlockId(14);
+const PE_OUTALLOC: BlockId = BlockId(15);
+const PE_OUTCOPY: BlockId = BlockId(16);
+const PE_OUTDONE: BlockId = BlockId(17);
+const PE_PREERR: BlockId = BlockId(18);
+const PE_READERR: BlockId = BlockId(19);
+const PE_ERREOF: BlockId = BlockId(20);
+const PE_ERRGROWCHK: BlockId = BlockId(21);
+const PE_ERRALLOC: BlockId = BlockId(22);
+const PE_ERRCOPY: BlockId = BlockId(23);
+const PE_ERRDONE: BlockId = BlockId(24);
+const PE_ENDCHECK: BlockId = BlockId(25);
+const PE_OUTSTR: BlockId = BlockId(26);
+const PE_ERRSTR: BlockId = BlockId(27);
+const PE_WAIT: BlockId = BlockId(28);
+const PE_CODEZERO: BlockId = BlockId(29);
+const PE_BUILD: BlockId = BlockId(30);
+const PE_EPILOGUE: BlockId = BlockId(31);
+const PE_QCLOSE: BlockId = BlockId(32);
+const PE_OUTAGAIN: BlockId = BlockId(33);
+const PE_ERRAGAIN: BlockId = BlockId(34);
+const PE_CHILD: BlockId = BlockId(35);
+const PE_ERR_EMPTY: BlockId = BlockId(36);
+const PE_ERR_QUOTE: BlockId = BlockId(37);
+const PE_ERR_SIG: BlockId = BlockId(38);
+const PE_SRCCOPY: BlockId = BlockId(39);
+const PE_SRCDONE: BlockId = BlockId(40);
+
+/// Frame offsets for the process-execution helper (relative to `Rbp`):
+///   +0 child pid, +8 wait status, +16/+24 stdout read/write fds,
+///   +32/+40 stderr read/write fds, +48 token count, +56 stdout string,
+///   +64 stderr string, +72/+88 EOF flags, +96 stderr buffer.
+const PE_FRAME: u32 = 112;
+
+fn process_execute() -> MachineFunction {
+    let mut c: Vec<Instruction> = Vec::new();
+    build_process_execute(&mut c);
+    MachineFunction {
+        symbol: PROCESS_EXECUTE,
+        name: "__aerofyl_process_exec".into(),
+        instructions: c,
+    }
+}
+
+fn build_process_execute(c: &mut Vec<Instruction>) {
+    // ---- prologue ----------------------------------------------------------
+    c.extend([
+        Instruction::Push(Register::Rbx),
+        Instruction::Push(Register::R12),
+        Instruction::Push(Register::R13),
+        Instruction::Push(Register::R14),
+        Instruction::Push(Register::R15),
+        Instruction::Push(Register::Rbp),
+        Instruction::StackAllocate(PE_FRAME),
+        pe_reg(Register::Rbp, Register::Rsp),
+        pe_reg(Register::R12, Register::Rdi),
+        pe_load(Register::Rbx, Register::R12, 0),
+        pe_mov(Register::Rdi, 0),
+        pe_cmp(Register::Rbx, Register::Rdi),
+        pe_jcc(Condition::Equal, PE_ERR_EMPTY),
+    ]);
+
+    // ---- working copy of the command string + argv array --------------------
+    c.extend([
+        pe_reg(Register::Rdi, Register::Rbx),
+        pe_mov(Register::Rax, 1),
+        pe_add(Register::Rdi, Register::Rax),
+        Instruction::Call(ALLOC),
+        pe_reg(Register::R13, Register::Rax),
+        pe_mov(Register::R14, 0),
+        pe_label(PE_SRCCOPY),
+        pe_cmp(Register::R14, Register::Rbx),
+        pe_jcc(Condition::GreaterEqual, PE_SRCDONE),
+        pe_load8(Register::Rax, Register::R12, Register::R14, 8),
+        pe_store8(Register::R13, Register::R14, 0, Register::Rax),
+        pe_mov(Register::Rax, 1),
+        pe_add(Register::R14, Register::Rax),
+        pe_jump(PE_SRCCOPY),
+        pe_label(PE_SRCDONE),
+        pe_mov(Register::Rcx, 0),
+        pe_store8(Register::R13, Register::R14, 0, Register::Rcx),
+        pe_reg(Register::R12, Register::R13),
+        // argv array: (len + 2) pointer slots; the terminator is stored later.
+        pe_reg(Register::Rdi, Register::Rbx),
+        pe_mov(Register::Rax, 2),
+        pe_add(Register::Rdi, Register::Rax),
+        pe_mov(Register::Rdx, 8),
+        Instruction::MultiplySigned {
+            destination: Register::Rdi,
+            source: Register::Rdx,
+        },
+        Instruction::Call(ALLOC),
+        pe_reg(Register::R13, Register::Rax),
+        // tokenizer state: i = R14, j = R15, open quote = R9, in-token = Rcx,
+        // token count at [rbp + 48]; Rdi stays zero inside the tokenizer.
+        pe_mov(Register::Rdx, 0),
+        pe_store(Register::Rbp, 48, Register::Rdx),
+        pe_mov(Register::R14, 0),
+        pe_mov(Register::R15, 0),
+        pe_mov(Register::R9, 0),
+        pe_mov(Register::Rcx, 0),
+    ]);
+
+    // ---- tokenizer ----------------------------------------------------------
+    // The separator/quote constants are reloaded on every pass because several
+    // are on scratch registers reused inside the loop.
+    c.extend([
+        pe_label(PE_HEAD),
+        pe_mov(Register::R8, 32),
+        pe_mov(Register::R10, 9),
+        pe_mov(Register::R11, 10),
+        pe_mov(Register::Rsi, 39),
+        pe_mov(Register::Rdx, 34),
+        pe_cmp(Register::R14, Register::Rbx),
+        pe_jcc(Condition::GreaterEqual, PE_TOKEND),
+        pe_load8(Register::Rax, Register::R12, Register::R14, 0),
+        pe_cmp(Register::R9, Register::Rdi),
+        pe_jcc(Condition::NotEqual, PE_INQUOTE),
+        pe_cmp(Register::Rax, Register::R8),
+        pe_jcc(Condition::Equal, PE_SEP),
+        pe_cmp(Register::Rax, Register::R10),
+        pe_jcc(Condition::Equal, PE_SEP),
+        pe_cmp(Register::Rax, Register::R11),
+        pe_jcc(Condition::Equal, PE_SEP),
+        pe_cmp(Register::Rax, Register::Rsi),
+        pe_jcc(Condition::Equal, PE_QUOTESTART),
+        pe_cmp(Register::Rax, Register::Rdx),
+        pe_jcc(Condition::Equal, PE_QUOTESTART),
+        // plain character: open a token if needed, then append the byte
+        pe_label(PE_REG),
+        pe_cmp(Register::Rcx, Register::Rdi),
+        pe_jcc(Condition::NotEqual, PE_REGSTART),
+        pe_load(Register::R8, Register::Rbp, 48),
+        pe_reg(Register::R11, Register::R12),
+        pe_add(Register::R11, Register::R15),
+        pe_slot_store(Register::R13, Register::R8, Register::R11),
+        pe_mov(Register::Rdx, 1),
+        pe_add(Register::R8, Register::Rdx),
+        pe_store(Register::Rbp, 48, Register::R8),
+        pe_mov(Register::Rcx, 1),
+        pe_label(PE_REGSTART),
+        pe_store8(Register::R12, Register::R15, 0, Register::Rax),
+        pe_mov(Register::Rdx, 1),
+        pe_add(Register::R15, Register::Rdx),
+        pe_jump(PE_ADV),
+        pe_label(PE_SEP),
+        pe_cmp(Register::Rcx, Register::Rdi),
+        pe_jcc(Condition::Equal, PE_ADV),
+        pe_store8(Register::R12, Register::R15, 0, Register::Rdi),
+        pe_mov(Register::Rdx, 1),
+        pe_add(Register::R15, Register::Rdx),
+        pe_mov(Register::Rcx, 0),
+        pe_jump(PE_ADV),
+        pe_label(PE_QUOTESTART),
+        pe_cmp(Register::Rcx, Register::Rdi),
+        pe_jcc(Condition::NotEqual, PE_QUOTESET),
+        pe_load(Register::R8, Register::Rbp, 48),
+        pe_reg(Register::R11, Register::R12),
+        pe_add(Register::R11, Register::R15),
+        pe_slot_store(Register::R13, Register::R8, Register::R11),
+        pe_mov(Register::Rdx, 1),
+        pe_add(Register::R8, Register::Rdx),
+        pe_store(Register::Rbp, 48, Register::R8),
+        pe_mov(Register::Rcx, 1),
+        pe_label(PE_QUOTESET),
+        pe_reg(Register::R9, Register::Rax),
+        pe_jump(PE_ADV),
+        pe_label(PE_INQUOTE),
+        pe_cmp(Register::Rax, Register::R9),
+        pe_jcc(Condition::Equal, PE_QCLOSE),
+        pe_store8(Register::R12, Register::R15, 0, Register::Rax),
+        pe_mov(Register::Rdx, 1),
+        pe_add(Register::R15, Register::Rdx),
+        pe_jump(PE_ADV),
+        pe_label(PE_QCLOSE),
+        pe_reg(Register::R9, Register::Rdi),
+        pe_label(PE_ADV),
+        pe_mov(Register::Rdx, 1),
+        pe_add(Register::R14, Register::Rdx),
+        pe_jump(PE_HEAD),
+    ]);
+
+    // ---- terminate the token stream ------------------------------------------
+    // A while an unterminated quote is a parse failure; then NUL-terminate the
+    // last token and NULL-terminate the argv array.
+    c.extend([
+        pe_label(PE_TOKEND),
+        pe_cmp(Register::R9, Register::Rdi),
+        pe_jcc(Condition::NotEqual, PE_ERR_QUOTE),
+        pe_store8(Register::R12, Register::R15, 0, Register::Rdi),
+        pe_mov(Register::Rdx, 1),
+        pe_add(Register::R15, Register::Rdx),
+        pe_load(Register::R8, Register::Rbp, 48),
+        pe_slot_store(Register::R13, Register::R8, Register::Rdi),
+    ]);
+
+    // ---- pipes ----------------------------------------------------------------
+    c.extend([
+        pe_mov(Register::Rax, 22),
+        pe_reg(Register::Rdi, Register::Rbp),
+        pe_mov(Register::Rcx, 16),
+        pe_add(Register::Rdi, Register::Rcx),
+        Instruction::Syscall,
+        Instruction::Test(Register::Rax),
+        pe_jcc(Condition::Less, PE_ERR_EMPTY),
+        // pipe writes two 32-bit fds at +16/+20; split them into the 8-byte
+        // slots at +16 (read) and +24 (write) with a signed division.
+        pe_load(Register::Rax, Register::Rbp, 16),
+        Instruction::SignExtendRaxIntoRdx,
+        pe_mov(Register::Rcx, 0x1_0000_0000),
+        Instruction::DivideSigned(Register::Rcx),
+        pe_store(Register::Rbp, 24, Register::Rax),
+        pe_store(Register::Rbp, 16, Register::Rdx),
+        pe_mov(Register::Rax, 22),
+        pe_reg(Register::Rdi, Register::Rbp),
+        pe_mov(Register::Rcx, 32),
+        pe_add(Register::Rdi, Register::Rcx),
+        Instruction::Syscall,
+        Instruction::Test(Register::Rax),
+        pe_jcc(Condition::Less, PE_ERR_EMPTY),
+        pe_load(Register::Rax, Register::Rbp, 32),
+        Instruction::SignExtendRaxIntoRdx,
+        pe_mov(Register::Rcx, 0x1_0000_0000),
+        Instruction::DivideSigned(Register::Rcx),
+        pe_store(Register::Rbp, 40, Register::Rax),
+        pe_store(Register::Rbp, 32, Register::Rdx),
+    ]);
+
+    // ---- fork; the child takes the dup2/execve path ---------------------------
+    c.extend([
+        pe_mov(Register::Rax, 57),
+        Instruction::Syscall,
+        pe_store(Register::Rbp, 0, Register::Rax),
+        pe_mov(Register::Rsi, 0),
+        pe_cmp(Register::Rax, Register::Rsi),
+        pe_jcc(Condition::Equal, PE_CHILD),
+        Instruction::Test(Register::Rax),
+        pe_jcc(Condition::Less, PE_ERR_EMPTY),
+    ]);
+
+    // ---- parent: set read ends non-blocking, close both write ends ------------
+    c.extend([
+        pe_label(PE_SETNB),
+        pe_mov(Register::Rax, 72),
+        pe_load(Register::Rdi, Register::Rbp, 16),
+        pe_mov(Register::Rsi, 4),
+        pe_mov(Register::Rdx, 0x800),
+        Instruction::Syscall,
+        pe_mov(Register::Rax, 72),
+        pe_load(Register::Rdi, Register::Rbp, 32),
+        pe_mov(Register::Rsi, 4),
+        pe_mov(Register::Rdx, 0x800),
+        Instruction::Syscall,
+        pe_mov(Register::Rax, 3),
+        pe_load(Register::Rdi, Register::Rbp, 24),
+        Instruction::Syscall,
+        pe_mov(Register::Rax, 3),
+        pe_load(Register::Rdi, Register::Rbp, 40),
+        Instruction::Syscall,
+        // capture state: out: cap = Rbx, buffer = R12, len = R13;
+        // err: cap = R14, len = R15, buffer at [rbp + 96]
+        pe_mov(Register::Rdi, 72),
+        Instruction::Call(ALLOC),
+        pe_reg(Register::R12, Register::Rax),
+        pe_mov(Register::Rbx, 72),
+        pe_mov(Register::R13, 0),
+        pe_mov(Register::Rdi, 72),
+        Instruction::Call(ALLOC),
+        pe_store(Register::Rbp, 96, Register::Rax),
+        pe_mov(Register::R14, 72),
+        pe_mov(Register::R15, 0),
+        pe_mov(Register::Rdi, 0),
+        pe_store(Register::Rbp, 72, Register::Rdi),
+        pe_store(Register::Rbp, 88, Register::Rdi),
+    ]);
+
+    // ---- alternating non-blocking drain ---------------------------------------
+    c.extend([
+        pe_label(PE_MAINLOOP),
+        pe_mov(Register::Rdi, 0),
+        pe_load(Register::Rax, Register::Rbp, 72),
+        pe_cmp(Register::Rax, Register::Rdi),
+        pe_jcc(Condition::NotEqual, PE_PREERR),
+        // stdout drain attempt
+        pe_label(PE_READOUT),
+        pe_mov(Register::Rax, 0),
+        pe_load(Register::Rdi, Register::Rbp, 16),
+        pe_reg(Register::Rsi, Register::R12),
+        pe_mov(Register::Rcx, 8),
+        pe_add(Register::Rsi, Register::Rcx),
+        pe_add(Register::Rsi, Register::R13),
+        pe_reg(Register::Rdx, Register::Rbx),
+        pe_mov(Register::Rcx, 8),
+        pe_sub(Register::Rdx, Register::Rcx),
+        pe_sub(Register::Rdx, Register::R13),
+        Instruction::Syscall,
+        pe_mov(Register::Rcx, (-4_i64) as u64),
+        pe_cmp(Register::Rax, Register::Rcx),
+        pe_jcc(Condition::Equal, PE_READOUT),
+        pe_mov(Register::Rcx, (-11_i64) as u64),
+        pe_cmp(Register::Rax, Register::Rcx),
+        pe_jcc(Condition::Equal, PE_OUTAGAIN),
+        Instruction::Test(Register::Rax),
+        pe_jcc(Condition::Less, PE_ERR_EMPTY),
+        Instruction::JumpIfZero(PE_OUTEOF),
+        pe_add(Register::R13, Register::Rax),
+        pe_label(PE_OUTGROWCHK),
+        pe_mov(Register::Rcx, 8),
+        pe_reg(Register::R10, Register::Rbx),
+        pe_sub(Register::R10, Register::Rcx),
+        pe_cmp(Register::R13, Register::R10),
+        pe_jcc(Condition::Equal, PE_OUTALLOC),
+        pe_jump(PE_PREERR),
+        pe_label(PE_OUTEOF),
+        pe_mov(Register::Rsi, 1),
+        pe_store(Register::Rbp, 72, Register::Rsi),
+        pe_jump(PE_PREERR),
+        pe_label(PE_OUTAGAIN),
+        pe_mov(Register::Rax, 24),
+        Instruction::Syscall,
+        pe_jump(PE_PREERR),
+        // stdout buffer growth: double the capacity and copy
+        pe_label(PE_OUTALLOC),
+        pe_reg(Register::Rdx, Register::Rbx),
+        pe_add(Register::Rdx, Register::Rbx),
+        pe_reg(Register::Rdi, Register::Rdx),
+        Instruction::Call(ALLOC),
+        pe_reg(Register::Rsi, Register::Rax),
+        pe_mov(Register::R10, 0),
+        pe_label(PE_OUTCOPY),
+        pe_cmp(Register::R10, Register::R13),
+        pe_jcc(Condition::GreaterEqual, PE_OUTDONE),
+        pe_load8(Register::Rax, Register::R12, Register::R10, 8),
+        pe_store8(Register::Rsi, Register::R10, 8, Register::Rax),
+        pe_mov(Register::Rcx, 1),
+        pe_add(Register::R10, Register::Rcx),
+        pe_jump(PE_OUTCOPY),
+        pe_label(PE_OUTDONE),
+        pe_reg(Register::R12, Register::Rsi),
+        pe_reg(Register::Rdx, Register::Rbx),
+        pe_add(Register::Rdx, Register::Rbx),
+        pe_reg(Register::Rbx, Register::Rdx),
+        pe_jump(PE_READOUT),
+        // stderr sequence mirrors stdout
+        pe_label(PE_PREERR),
+        pe_mov(Register::Rdi, 0),
+        pe_load(Register::Rax, Register::Rbp, 88),
+        pe_cmp(Register::Rax, Register::Rdi),
+        pe_jcc(Condition::NotEqual, PE_ENDCHECK),
+        pe_label(PE_READERR),
+        pe_mov(Register::Rax, 0),
+        pe_load(Register::Rdi, Register::Rbp, 32),
+        pe_load(Register::Rsi, Register::Rbp, 96),
+        pe_mov(Register::Rcx, 8),
+        pe_add(Register::Rsi, Register::Rcx),
+        pe_add(Register::Rsi, Register::R15),
+        pe_reg(Register::Rdx, Register::R14),
+        pe_mov(Register::Rcx, 8),
+        pe_sub(Register::Rdx, Register::Rcx),
+        pe_sub(Register::Rdx, Register::R15),
+        Instruction::Syscall,
+        pe_mov(Register::Rcx, (-4_i64) as u64),
+        pe_cmp(Register::Rax, Register::Rcx),
+        pe_jcc(Condition::Equal, PE_READERR),
+        pe_mov(Register::Rcx, (-11_i64) as u64),
+        pe_cmp(Register::Rax, Register::Rcx),
+        pe_jcc(Condition::Equal, PE_ERRAGAIN),
+        Instruction::Test(Register::Rax),
+        pe_jcc(Condition::Less, PE_ERR_EMPTY),
+        Instruction::JumpIfZero(PE_ERREOF),
+        pe_add(Register::R15, Register::Rax),
+        pe_label(PE_ERRGROWCHK),
+        pe_mov(Register::Rcx, 8),
+        pe_reg(Register::R10, Register::R14),
+        pe_sub(Register::R10, Register::Rcx),
+        pe_cmp(Register::R15, Register::R10),
+        pe_jcc(Condition::Equal, PE_ERRALLOC),
+        pe_jump(PE_ENDCHECK),
+        pe_label(PE_ERREOF),
+        pe_mov(Register::Rsi, 1),
+        pe_store(Register::Rbp, 88, Register::Rsi),
+        pe_jump(PE_ENDCHECK),
+        pe_label(PE_ERRAGAIN),
+        pe_mov(Register::Rax, 24),
+        Instruction::Syscall,
+        pe_jump(PE_ENDCHECK),
+        // stderr buffer growth: double the capacity and copy
+        pe_label(PE_ERRALLOC),
+        pe_reg(Register::Rdx, Register::R14),
+        pe_add(Register::Rdx, Register::R14),
+        pe_reg(Register::Rdi, Register::Rdx),
+        Instruction::Call(ALLOC),
+        pe_reg(Register::Rcx, Register::Rax),
+        pe_load(Register::Rsi, Register::Rbp, 96),
+        pe_mov(Register::R10, 0),
+        pe_label(PE_ERRCOPY),
+        pe_cmp(Register::R10, Register::R15),
+        pe_jcc(Condition::GreaterEqual, PE_ERRDONE),
+        pe_load8(Register::Rax, Register::Rsi, Register::R10, 8),
+        pe_store8(Register::Rcx, Register::R10, 8, Register::Rax),
+        pe_mov(Register::R11, 1),
+        pe_add(Register::R10, Register::R11),
+        pe_jump(PE_ERRCOPY),
+        pe_label(PE_ERRDONE),
+        pe_store(Register::Rbp, 96, Register::Rcx),
+        pe_reg(Register::Rdx, Register::R14),
+        pe_add(Register::Rdx, Register::R14),
+        pe_reg(Register::R14, Register::Rdx),
+        pe_jump(PE_READERR),
+        pe_label(PE_ENDCHECK),
+        pe_mov(Register::Rdi, 0),
+        pe_load(Register::Rax, Register::Rbp, 72),
+        pe_cmp(Register::Rax, Register::Rdi),
+        pe_jcc(Condition::Equal, PE_MAINLOOP),
+        pe_load(Register::Rax, Register::Rbp, 88),
+        pe_cmp(Register::Rax, Register::Rdi),
+        pe_jcc(Condition::Equal, PE_MAINLOOP),
+    ]);
+
+    // ---- finalize the strings, then wait for the child ------------------------
+    c.extend([
+        pe_label(PE_OUTSTR),
+        pe_store(Register::R12, 0, Register::R13),
+        pe_reg(Register::Rdi, Register::R12),
+        pe_mov(Register::Rcx, 8),
+        pe_add(Register::Rdi, Register::Rcx),
+        pe_add(Register::Rdi, Register::R13),
+        pe_mov(Register::Rcx, 0),
+        pe_byte(Register::Rdi, 0, Register::Rcx),
+        pe_store(Register::Rbp, 56, Register::R12),
+        pe_label(PE_ERRSTR),
+        pe_load(Register::Rbx, Register::Rbp, 96),
+        pe_store(Register::Rbx, 0, Register::R15),
+        pe_reg(Register::Rdi, Register::Rbx),
+        pe_mov(Register::Rcx, 8),
+        pe_add(Register::Rdi, Register::Rcx),
+        pe_add(Register::Rdi, Register::R15),
+        pe_mov(Register::Rcx, 0),
+        pe_byte(Register::Rdi, 0, Register::Rcx),
+        pe_store(Register::Rbp, 64, Register::Rbx),
+        pe_label(PE_WAIT),
+        pe_mov(Register::Rax, 61),
+        pe_load(Register::Rdi, Register::Rbp, 0),
+        pe_reg(Register::Rsi, Register::Rbp),
+        pe_mov(Register::Rcx, 8),
+        pe_add(Register::Rsi, Register::Rcx),
+        pe_mov(Register::Rdx, 0),
+        pe_mov(Register::R10, 0),
+        Instruction::Syscall,
+        Instruction::Test(Register::Rax),
+        pe_jcc(Condition::Less, PE_ERR_EMPTY),
+        pe_load(Register::Rax, Register::Rbp, 8),
+        Instruction::Test(Register::Rax),
+        Instruction::JumpIfZero(PE_CODEZERO),
+        Instruction::SignExtendRaxIntoRdx,
+        pe_mov(Register::Rcx, 256),
+        Instruction::DivideSigned(Register::Rcx),
+        pe_mov(Register::Rdi, 0),
+        pe_cmp(Register::Rax, Register::Rdi),
+        pe_jcc(Condition::Equal, PE_ERR_SIG),
+        // exit code in Rax; skip the "status was zero" shortcut
+        pe_jump(PE_BUILD),
+    ]);
+
+    // ---- assemble the Process struct ------------------------------------------
+    c.extend([
+        pe_label(PE_CODEZERO),
+        pe_mov(Register::Rax, 0),
+        pe_label(PE_BUILD),
+        pe_reg(Register::R12, Register::Rax),
+        pe_mov(Register::Rdi, 24),
+        Instruction::Call(ALLOC),
+        pe_reg(Register::R10, Register::Rax),
+        pe_store(Register::R10, 0, Register::R12),
+        pe_load(Register::Rax, Register::Rbp, 56),
+        pe_store(Register::R10, 8, Register::Rax),
+        pe_load(Register::Rax, Register::Rbp, 64),
+        pe_store(Register::R10, 16, Register::Rax),
+        pe_reg(Register::Rax, Register::R10),
+        pe_label(PE_EPILOGUE),
+        Instruction::StackDeallocate(PE_FRAME),
+        Instruction::Pop(Register::Rbp),
+        Instruction::Pop(Register::R15),
+        Instruction::Pop(Register::R14),
+        Instruction::Pop(Register::R13),
+        Instruction::Pop(Register::R12),
+        Instruction::Pop(Register::Rbx),
+        Instruction::Return,
+    ]);
+
+    // ---- child path -------------------------------------------------------------
+    c.extend([
+        pe_label(PE_CHILD),
+        pe_mov(Register::Rsi, 1),
+        pe_mov(Register::Rax, 33),
+        pe_load(Register::Rdi, Register::Rbp, 24),
+        Instruction::Syscall,
+        pe_mov(Register::Rsi, 2),
+        pe_mov(Register::Rax, 33),
+        pe_load(Register::Rdi, Register::Rbp, 40),
+        Instruction::Syscall,
+        pe_mov(Register::Rax, 3),
+        pe_load(Register::Rdi, Register::Rbp, 16),
+        Instruction::Syscall,
+        pe_mov(Register::Rax, 3),
+        pe_load(Register::Rdi, Register::Rbp, 32),
+        Instruction::Syscall,
+        pe_mov(Register::Rcx, 0),
+        pe_slot(Register::Rdi, Register::R13, Register::Rcx),
+        pe_reg(Register::Rsi, Register::R13),
+        pe_mov(Register::Rdx, 0),
+        pe_mov(Register::Rax, 59),
+        Instruction::Syscall,
+        // execve failed: report it as exit code 127
+        pe_mov(Register::Rdi, 127),
+        pe_mov(Register::Rax, 60),
+        Instruction::Syscall,
+        // execve never returns; keep a hard stop here just in case
+        Instruction::ExitFailure,
+    ]);
+
+    // ---- shared failure exits -----------------------------------------------------
+    c.extend([
+        pe_label(PE_ERR_EMPTY),
+        pe_mov(Register::Rdi, 0),
+        Instruction::Call(OS_ERROR),
+        Instruction::ExitFailure,
+        pe_label(PE_ERR_QUOTE),
+        pe_mov(Register::Rdi, 0),
+        Instruction::Call(OS_ERROR),
+        Instruction::ExitFailure,
+        pe_label(PE_ERR_SIG),
+        pe_mov(Register::Rdi, 1),
+        Instruction::Call(OS_ERROR),
+        Instruction::ExitFailure,
+    ]);
+}
+
+/// Reports `std.os` runtime failures the same way `FS_ERROR` reports file
+/// failures: write a literal line, then exit with the runtime failure status.
+/// `Rdi`: 0 = generic process failure, 1 = child killed by a signal.
+fn os_error() -> MachineFunction {
+    let mut instructions = vec![
+        Instruction::Push(Register::R12),
+        Instruction::Push(Register::Rbp),
+        Instruction::StackAllocate(24),
+        Instruction::MoveRegister {
+            destination: Register::Rbp,
+            source: Register::Rsp,
+        },
+        Instruction::MoveRegister {
+            destination: Register::R12,
+            source: Register::Rdi,
+        },
+        Instruction::MoveImmediate64 {
+            destination: Register::Rax,
+            value: 1,
+        },
+        Instruction::Compare {
+            left: Register::R12,
+            right: Register::Rax,
+        },
+        Instruction::JumpIf {
+            condition: Condition::Equal,
+            target: BlockId(0),
+        },
+    ];
+    append_write_literal(&mut instructions, b"ProcessError\n", 0);
+    instructions.push(Instruction::ExitFailure);
+    instructions.push(Instruction::Label(BlockId(0)));
+    append_write_literal(&mut instructions, b"ProcessSignalError\n", 0);
+    instructions.push(Instruction::ExitFailure);
+    MachineFunction {
+        symbol: OS_ERROR,
+        name: "__aerofyl_os_error".into(),
         instructions,
     }
 }

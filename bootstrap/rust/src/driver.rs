@@ -131,7 +131,7 @@ pub fn compile(
     if let Some(import) = ast
         .imports
         .iter()
-        .find(|import| !matches!(import.name.text.as_str(), "std.io" | "std.fs"))
+        .find(|import| !matches!(import.name.text.as_str(), "std.io" | "std.fs" | "std.os"))
     {
         return Err(CompileError::Frontend {
             diagnostics: vec![Diagnostic::error(
@@ -150,6 +150,7 @@ fn compile_ast(
     options: CompileOptions,
     warnings: Vec<Diagnostic>,
 ) -> Result<CompileOutput, CompileError> {
+    let ast = inject_std_os_process(ast);
     let hir =
         crate::frontend::semantic::analyze(&ast).map_err(|diagnostics| CompileError::Frontend {
             diagnostics,
@@ -193,6 +194,49 @@ fn compile_ast(
     })
 }
 
+/// Programs importing `std.os` receive the compiler-provided `Process` struct
+/// declaration once; user declarations of `Process` take precedence.
+fn inject_std_os_process(mut ast: crate::frontend::ast::Module) -> crate::frontend::ast::Module {
+    let Some(declaration) = ast
+        .imports
+        .iter()
+        .find(|import| import.name.text == "std.os")
+        .map(|import| (import.name.span, import.span))
+    else {
+        return ast;
+    };
+    if ast.structs.iter().any(|item| item.name.text == "Process") {
+        // A user-declared `Process` wins; keep the import for the namespace.
+        return ast;
+    }
+    let (name_span, import_span) = declaration;
+    let field =
+        |name: &str, ty: crate::frontend::types::Type| crate::frontend::ast::FieldDeclaration {
+            ty: crate::frontend::ast::TypeNode {
+                kind: ty,
+                span: import_span,
+            },
+            name: crate::frontend::ast::Name {
+                text: name.to_owned(),
+                span: import_span,
+            },
+            span: import_span,
+        };
+    ast.structs.push(crate::frontend::ast::StructDeclaration {
+        name: crate::frontend::ast::Name {
+            text: "Process".to_owned(),
+            span: name_span,
+        },
+        fields: vec![
+            field("exitCode", crate::frontend::types::Type::Int),
+            field("out", crate::frontend::types::Type::String),
+            field("err", crate::frontend::types::Type::String),
+        ],
+        span: import_span,
+    });
+    ast
+}
+
 pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutput, CompileError> {
     let mut sources = SourceMap::new();
     let mut modules = Vec::new();
@@ -207,14 +251,12 @@ pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutpu
         &mut loaded,
         &mut warnings,
     )
-    .map_err(|error| {
-        match error {
-            ModuleLoadError::Load(error) => CompileError::Load(error),
-            ModuleLoadError::Frontend(diagnostics) => CompileError::Frontend {
-                diagnostics,
-                sources: sources.clone(),
-            },
-        }
+    .map_err(|error| match error {
+        ModuleLoadError::Load(error) => CompileError::Load(error),
+        ModuleLoadError::Frontend(diagnostics) => CompileError::Frontend {
+            diagnostics,
+            sources: sources.clone(),
+        },
     })?;
     let root_span = modules
         .last()
@@ -260,8 +302,7 @@ fn load_module(
         return Ok(*file);
     }
     let file = sources.add(&canonical, &source);
-    let lexed =
-        crate::frontend::lexer::lex(file, &source).map_err(ModuleLoadError::Frontend)?;
+    let lexed = crate::frontend::lexer::lex(file, &source).map_err(ModuleLoadError::Frontend)?;
     warnings.extend(lexed.warnings);
     let mut module =
         crate::frontend::parser::parse(lexed.tokens).map_err(ModuleLoadError::Frontend)?;
@@ -271,6 +312,25 @@ fn load_module(
         .parent()
         .expect("source file has a parent directory");
     for import in &mut module.imports {
+        if import.name.text == "std.os" {
+            if let Some(selected) = &import.selected {
+                let valid = selected.len() == 1 && selected[0].text == "process";
+                if !valid {
+                    return Err(ModuleLoadError::Frontend(vec![Diagnostic::error(
+                        format!(
+                            "std.os only exports `process`; `using std.os: {}` is invalid",
+                            selected
+                                .iter()
+                                .map(|name| name.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        import.span,
+                    )]));
+                }
+            }
+            continue;
+        }
         if matches!(import.name.text.as_str(), "std.io" | "std.fs") {
             if import.selected.is_some() {
                 return Err(ModuleLoadError::Frontend(vec![Diagnostic::error(
@@ -554,7 +614,8 @@ mod tests {
     }
 
     #[test]
-    fn interpolation_requires_direct_output_and_variable_placeholders() {        let source =
+    fn interpolation_requires_direct_output_and_variable_placeholders() {
+        let source =
             r#"use std.io; public void main() { int result = 2; string text = \f"{result}"; }"#;
         let error = compile(source, "memory.fyl", CompileOptions::check()).unwrap_err();
         assert!(
@@ -1270,5 +1331,174 @@ mod tests {
     fn executes_compiler_representative_byte_scan() {
         let source = "enum tokenKind { character, eof } struct token { tokenKind kind; int value; } public int test() { string source = \"abc\"; list int bytes = []; int i = 0; while (i < source.length) { bytes.push(source.byte(i)); i = i + 1; } return bytes.length; } public void main() {}";
         assert_eq!(run_helper_as_exit_status(source, "test"), 3);
+    }
+
+    /// Compiles and runs a `std.os` program, returning its full output so the
+    /// captured `Process` fields can be asserted on directly.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn run_os_main(source: &str) -> std::process::Output {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _execution = NATIVE_EXECUTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let output = compile(source, "os-process.fyl", CompileOptions::elf()).unwrap();
+        let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "aerofyl-os-process-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::write(&path, output.artifact.unwrap()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let status = Command::new(&path).output().unwrap();
+        fs::remove_file(path).unwrap();
+        status
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_reports_success_and_streams() {
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/true\"); exit(p.exitCode); }",
+        );
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_captures_stdout() {
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/echo hello-from-child\"); exit(p.out.length); }",
+        );
+        // "hello-from-child" plus the echo newline.
+        assert_eq!(output.status.code(), Some(17));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_captures_stderr_separately() {
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/ls /aerofyl-certainly-missing\"); exit(p.err.length * 2); }",
+        );
+        assert!(output.status.code().is_some_and(|code| code > 2));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_propagates_nonzero_exit_codes() {
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/false\"); exit(p.exitCode); }",
+        );
+        assert_eq!(output.status.code(), Some(1));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_groups_quoted_arguments() {
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/echo \\\"a b\\\" 'c  d'\"); exit(p.out.length); }",
+        );
+        // echo joins both quoted arguments with one space and appends a newline.
+        assert_eq!(output.status.code(), Some(9));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_reports_missing_executable_as_127() {
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/aerofyl-certainly-not-here\"); exit(p.exitCode); }",
+        );
+        assert_eq!(output.status.code(), Some(127));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_runs_executables_with_space_paths() {
+        use std::process::Command;
+
+        let directory =
+            std::env::temp_dir().join(format!("aerofyl-os-process-space-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("my true");
+        fs::copy("/bin/true", &executable).unwrap();
+        Command::new("/bin/chmod")
+            .arg("755")
+            .arg(&executable)
+            .status()
+            .unwrap();
+        let source = format!(
+            "use std.os; public void main() {{ Process p = os.process.execute(\"\\\"{}/my true\\\"\"); exit(p.exitCode); }}",
+            directory.display()
+        );
+        let output = run_os_main(&source);
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_grows_capture_buffers() {
+        let repeated = "x".repeat(400);
+        let output = run_os_main(&format!(
+            "use std.os; public void main() {{ Process p = os.process.execute(\"/bin/echo {repeated}\"); exit(p.out.length); }}"
+        ));
+        // exit statuses are 8-bit: (400 "x" bytes + newline) & 0xff.
+        assert_eq!(output.status.code(), Some(145));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_empty_command_fails_with_status_70() {
+        let output =
+            run_os_main("use std.os; public void main() { Process p = os.process.execute(\"\"); }");
+        assert_eq!(output.status.code(), Some(70));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "ProcessError\n");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_unterminated_quote_fails_with_status_70() {
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/echo \\\"open\"); }",
+        );
+        assert_eq!(output.status.code(), Some(70));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "ProcessError\n");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_signal_failure_reports_status_70() {
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/sh -c \\\"kill -9 $$\\\"\"); }",
+        );
+        assert_eq!(output.status.code(), Some(70));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "ProcessSignalError\n"
+        );
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_execute_works_with_both_import_forms() {
+        for source in [
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/echo shared\"); exit(p.out.length); }",
+            "using std.os: process; public void main() { Process p = process.execute(\"/bin/echo shared\"); exit(p.out.length); }",
+        ] {
+            let output = run_os_main(source);
+            assert_eq!(output.status.code(), Some(7));
+            assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+        }
     }
 }

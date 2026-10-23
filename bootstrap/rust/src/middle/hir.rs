@@ -264,6 +264,9 @@ pub enum HirExpressionKind {
     ReadFile {
         path: Box<HirExpression>,
     },
+    ProcessExecute {
+        command: Box<HirExpression>,
+    },
     ReadBytes {
         path: Box<HirExpression>,
     },

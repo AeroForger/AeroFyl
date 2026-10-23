@@ -43,7 +43,8 @@ impl<'source> Lexer<'source> {
                 character if character.is_ascii_digit() => self.lex_number(start),
                 '"' => self.lex_string(start),
                 '\\' if self.source[self.offset..].starts_with("\\v\"")
-                    || self.source[self.offset..].starts_with("\\f\"") => {
+                    || self.source[self.offset..].starts_with("\\f\"") =>
+                {
                     self.lex_interpolated_string(start)
                 }
                 '\'' => self.lex_char(start),
@@ -264,14 +265,13 @@ impl<'source> Lexer<'source> {
                 if marker == Some('v') {
                     self.warnings.push(Diagnostic {
                         severity: Severity::Warning,
-                        message: "\\v\" interpolated literals are deprecated, use \\f\" instead".into(),
+                        message: "\\v\" interpolated literals are deprecated, use \\f\" instead"
+                            .into(),
                         span: Some(span),
                     });
                 }
-                self.tokens.push(Token::new(
-                    TokenKind::InterpolatedString(parts),
-                    span,
-                ));
+                self.tokens
+                    .push(Token::new(TokenKind::InterpolatedString(parts), span));
                 return;
             }
             if character == '\n' || character == '\r' {

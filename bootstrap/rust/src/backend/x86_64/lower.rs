@@ -1415,6 +1415,42 @@ fn lower_instruction(
             output.push(Instruction::Call(runtime::READ_FILE));
             store_result(instruction, slots, output)?;
         }
+        IrInstructionKind::ProcessExecute(command) => {
+            let struct_id = match instruction.result_type.as_ref() {
+                Some(Type::Struct(struct_id)) => *struct_id,
+                _ => {
+                    return Err(BackendError::UnsupportedIr {
+                        function: function.name.clone(),
+                        feature: "std.os process execute without a struct result",
+                    });
+                }
+            };
+            let metadata = structs
+                .get(&struct_id)
+                .ok_or_else(|| BackendError::UnsupportedIr {
+                    function: function.name.clone(),
+                    feature: "std.os process execute without the `Process` struct",
+                })?;
+            let layout = [
+                metadata.fields[0].offset,
+                metadata.fields[1].offset,
+                metadata.fields[2].offset,
+            ];
+            if metadata.fields.len() != 3
+                || layout != [0, 8, 16]
+                || metadata.fields[0].ty != Type::Int
+                || metadata.fields[1].ty != Type::String
+                || metadata.fields[2].ty != Type::String
+            {
+                return Err(BackendError::UnsupportedIr {
+                    function: function.name.clone(),
+                    feature: "std.os process execute result must be the `Process` struct",
+                });
+            }
+            load_value(output, slots, *command, Register::Rdi)?;
+            output.push(Instruction::Call(runtime::PROCESS_EXECUTE));
+            store_result(instruction, slots, output)?;
+        }
         IrInstructionKind::ReadBytes(path) => {
             load_value(output, slots, *path, Register::Rdi)?;
             output.push(Instruction::Call(runtime::READ_BYTES));

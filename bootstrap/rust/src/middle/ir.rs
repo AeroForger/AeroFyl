@@ -272,6 +272,7 @@ pub enum IrInstructionKind {
         end: ValueId,
     },
     ReadFile(ValueId),
+    ProcessExecute(ValueId),
     ReadBytes(ValueId),
     WriteFile {
         path: ValueId,

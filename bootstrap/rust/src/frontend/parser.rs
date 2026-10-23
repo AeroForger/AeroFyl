@@ -1055,7 +1055,9 @@ mod tests {
 
     #[test]
     fn requires_semicolons() {
-        let tokens = lex(FileId(0), "public int f() { return 1 }").unwrap().tokens;
+        let tokens = lex(FileId(0), "public int f() { return 1 }")
+            .unwrap()
+            .tokens;
         assert!(parse(tokens).unwrap_err()[0].message.contains("`;`"));
     }
 

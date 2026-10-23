@@ -760,6 +760,9 @@ impl FunctionLowerer {
             HirExpressionKind::ReadFile { path } => {
                 IrInstructionKind::ReadFile(self.expression(path))
             }
+            HirExpressionKind::ProcessExecute { command } => {
+                IrInstructionKind::ProcessExecute(self.expression(command))
+            }
             HirExpressionKind::ReadBytes { path } => {
                 IrInstructionKind::ReadBytes(self.expression(path))
             }

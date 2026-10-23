@@ -93,6 +93,18 @@ impl Resolver {
                 resolver.define_builtin(name);
             }
         }
+        if module
+            .imports
+            .iter()
+            .any(|import| import.name.text == "std.os")
+        {
+            // `std.os` exposes the `os.*` namespace (and the selective
+            // `using std.os: process;` alias); `Process` is a type, handled by
+            // the injected declaration in the driver.
+            for name in ["os", "process"] {
+                resolver.define_builtin(name);
+            }
+        }
         resolver.define_builtin("exit");
         resolver.define_builtin("int");
         resolver.define_builtin("char");

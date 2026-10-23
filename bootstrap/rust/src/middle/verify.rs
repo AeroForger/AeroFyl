@@ -1693,6 +1693,39 @@ fn validate_instruction(
                 errors,
             );
         }
+        IrInstructionKind::ProcessExecute(command) => {
+            check_value_type(
+                function,
+                block,
+                *command,
+                &Type::String,
+                "process execute command",
+                values,
+                errors,
+            );
+            let valid_layout = result_type.and_then(|ty| match ty {
+                Type::Struct(id) => structs.get(id).map(|metadata| {
+                    let fields = [
+                        metadata.fields.first().map(|field| &field.ty),
+                        metadata.fields.get(1).map(|field| &field.ty),
+                        metadata.fields.get(2).map(|field| &field.ty),
+                    ];
+                    metadata.fields.len() == 3
+                        && fields == [Some(&Type::Int), Some(&Type::String), Some(&Type::String)]
+                }),
+                _ => Some(false),
+            });
+            if !matches!(valid_layout, Some(true)) {
+                push_error(
+                    errors,
+                    function,
+                    Some(block),
+                    IrVerificationErrorKind::InvalidOperation(
+                        "process execute requires the `std.os` `Process` struct layout",
+                    ),
+                );
+            }
+        }
         IrInstructionKind::ReadBytes(path) => {
             check_value_type(
                 function,
@@ -2632,6 +2665,7 @@ fn instruction_uses(kind: &IrInstructionKind) -> Vec<ValueId> {
         } => vec![*left, *right],
         IrInstructionKind::StringLength(value)
         | IrInstructionKind::ReadFile(value)
+        | IrInstructionKind::ProcessExecute(value)
         | IrInstructionKind::ReadBytes(value)
         | IrInstructionKind::Exists(value)
         | IrInstructionKind::Print { value, .. } => vec![*value],
