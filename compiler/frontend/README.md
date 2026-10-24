@@ -16,7 +16,7 @@ collections, struct literals, and interpolation parts. Struct literals accept a
 trailing comma. Enum variants follow the bootstrap's comma-separated or adjacent
 forms. Tuple types are supported; tuple value syntax is not specified.
 Interpolated output literals use the `\f"` prefix (the deprecated `\v"` prefix
-is still accepted by the lexer); `{...}` placeholders contain an identifier or
+is still accepted by the lexer; it stops being accepted in Alpha 2); `{...}` placeholders contain an identifier or
 a full expression with balanced braces, parsed by `pInterpolatedPart` into
 expression nodes.
 

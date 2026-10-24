@@ -36,7 +36,9 @@ errors. Interpolated output literals are accepted only as the direct argument
 to `print`, `println`, `eprint`, or `eprintln`; they are not ordinary `string`
 values. The self-hosted frontend parses placeholders as full expressions; the
 Rust bootstrap currently accepts identifier placeholders for `\f"` (and the
-deprecated `\v"` prefix, which warns rather than fails in both frontends).
+deprecated `\v"` prefix, which warns rather than fails in both frontends). The
+interpolated literal syntax is `\f"`; `\v"` is deprecated and stops being
+accepted in Alpha 2.
 
 ## Whitespace and comments
 
