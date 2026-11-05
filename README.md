@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/AeroFyl5.svg">
+<img src="assets/AeroFyl5.svg" alt="Aerofyl logo">
 
 # Aerofyl
 
@@ -12,7 +12,7 @@
 
 ## Where things stand
 
-Aerofyl is early. The compiler you'll find here is written in Rust, and that's temporary: it's the Stage 0 compiler, built for one job, which is to compile the first Aerofyl compiler written in Aerofyl. Aerofyl is not self-hosting yet.
+Aerofyl is early. The compiler you'll find here is written in Rust, and that's temporary. It's the Stage 0 compiler, built for one job, which is to compile the first Aerofyl compiler written in Aerofyl. Aerofyl is not self-hosting yet.
 
 To get there, the Rust compiler supports relative multi-file imports and an `exit(code)` call, so the compiler can be written in the language it compiles.
 
@@ -26,7 +26,7 @@ The language so far has:
 - structs, payload-free enums, fixed arrays, lists, and strings (including byte and slice operations)
 - explicit integer/character conversions
 - command-line arguments
-- `std.io` for standard streams and `std.fs` for text and binary files, both explicitly imported
+- `std.os` for command execution, `std.io` for standard streams and `std.fs` for text and binary files, all explicitly imported
 
 ## What doesn't (yet)
 
@@ -73,7 +73,29 @@ cargo run -p aerofyl-bootstrap -- compile examples/functions.fyl -o /tmp/aerofyl
 
 ## Where to read next
 
-The language reference starts at [spec/README.md](spec/README.md). The Alpha compiler will be written by hand in Aerofyl under `compiler/`; and also I feel obligated to mention this but Bootstrap compiler was made by AI to a certain extent.
+The language reference starts at [spec/README.md](spec/README.md). The Alpha compiler will be written by hand in Aerofyl under `compiler/`.
+
+## Creator note
+
+### AI usage
+
+The bootstrap compiler was made with AI assistance to a certain extent. Generative AI was used in these places:
+
+- `bootstrap/rust/middle`, including `hir.rs` and `verify.rs`
+- `bootstrap/rust/backend`: originally written by me, but later additions to the compiler led me to use AI to add code to the backend
+- `bootstrap/rust/resolution`: same as the backend
+
+AI was only used as a tool To speed up parts of the work. All AI-generated code was tested thoroughly and edited by me to fix its mistakes. The logo, the syntax, and the language itself were fully designed by me. In the future I plan to scrap the bootstrap, and the new self-hosted compiler written in the language itself won't use any kind of AI assistance.
+
+### Why it exists
+
+AeroFyl is my second programming language. I made it for a few reasons:
+
+1. To improve my Rust, compiler, and testing skills
+2. Building a language in my free time gave me a project I actually enjoy working on (most of the time)
+3. To have bragging rights :/
+
+I don't expect AeroFyl to become anything huge or popular. It's more of a hobby language, so if you're reading this, please don't take the language too seriously.
 
 ## LICENSE
 
