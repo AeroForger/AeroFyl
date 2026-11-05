@@ -10,6 +10,6 @@ public void main()
 {
     Result good = Result.ok(42);
     Result bad = Result.error("boom");
-    println(good);
-    println(bad);
+    io.println(good);
+    io.println(bad);
 }

@@ -3,5 +3,5 @@ use std.io;
 public void main() {
     int result = 2;
     string text = \f"result: {result}";
-    print(text);
+    std.io.print(text);
 }

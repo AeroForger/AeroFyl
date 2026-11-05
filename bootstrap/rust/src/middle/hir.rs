@@ -42,6 +42,8 @@ pub struct HirEnumVariant {
 pub struct HirFunction {
     pub symbol: SymbolId,
     pub name: String,
+    /// Dotted namespace path, for example `file2.Inner.run`.
+    pub qualified_name: String,
     pub name_span: Span,
     pub visibility: Visibility,
     pub return_type: Type,

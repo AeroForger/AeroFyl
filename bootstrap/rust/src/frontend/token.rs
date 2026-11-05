@@ -30,6 +30,7 @@ pub enum Keyword {
     Dynamic,
     Struct,
     Enum,
+    Namespace,
 }
 
 impl Keyword {
@@ -63,6 +64,7 @@ impl Keyword {
             "dynamic" => Self::Dynamic,
             "struct" => Self::Struct,
             "enum" => Self::Enum,
+            "namespace" => Self::Namespace,
             _ => return None,
         })
     }

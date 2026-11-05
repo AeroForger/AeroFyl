@@ -117,6 +117,10 @@ impl SourceMap {
     pub fn get(&self, id: FileId) -> Option<&SourceFile> {
         self.files.get(id.0 as usize)
     }
+
+    pub fn all(&self) -> impl Iterator<Item = &SourceFile> {
+        self.files.iter()
+    }
 }
 
 impl fmt::Display for FileId {

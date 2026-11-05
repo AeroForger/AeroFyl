@@ -151,27 +151,37 @@ fn compile_ast(
     warnings: Vec<Diagnostic>,
 ) -> Result<CompileOutput, CompileError> {
     let ast = inject_std_os_process(ast);
-    let hir =
-        crate::frontend::semantic::analyze(&ast).map_err(|diagnostics| CompileError::Frontend {
+    let file_names =
+        file_namespace_names(&sources).map_err(|diagnostics| CompileError::Frontend {
             diagnostics,
             sources: sources.clone(),
         })?;
-    if options.emit == Emit::Elf {
-        crate::frontend::semantic::validate_executable(&hir).map_err(|diagnostics| {
-            CompileError::Frontend {
-                diagnostics,
-                sources: sources.clone(),
-            }
-        })?;
-    }
+    let hir = crate::frontend::semantic::analyze(&ast, &file_names).map_err(|diagnostics| {
+        CompileError::Frontend {
+            diagnostics,
+            sources: sources.clone(),
+        }
+    })?;
+    let entry = if options.emit == Emit::Elf {
+        Some(
+            crate::frontend::semantic::validate_executable(&hir).map_err(|diagnostics| {
+                CompileError::Frontend {
+                    diagnostics,
+                    sources: sources.clone(),
+                }
+            })?,
+        )
+    } else {
+        None
+    };
     let ir = crate::middle::lower::lower(&hir);
     let verified = crate::middle::verify::verify_module(&ir).map_err(CompileError::Ir)?;
 
     let artifact = match options.emit {
         Emit::Check => None,
         Emit::Elf => {
-            let machine =
-                crate::backend::x86_64::lower::lower(&verified).map_err(CompileError::Backend)?;
+            let machine = crate::backend::x86_64::lower::lower(&verified, entry.unwrap())
+                .map_err(CompileError::Backend)?;
             let code = crate::backend::x86_64::emitter::emit_module(&machine)
                 .map_err(CompileError::Emit)?;
             Some(
@@ -192,6 +202,61 @@ fn compile_ast(
         warnings,
         sources,
     })
+}
+
+/// Validates the namespace name of every source file. A file stem must be a
+/// valid identifier because `use <name>;` has to be able to spell it.
+fn file_namespace_names(
+    sources: &crate::frontend::source::SourceMap,
+) -> Result<HashMap<crate::frontend::source::FileId, String>, Vec<Diagnostic>> {
+    let mut names = HashMap::new();
+    let mut owners: HashMap<String, crate::frontend::source::FileId> = HashMap::new();
+    let mut diagnostics = Vec::new();
+    for file in sources.all() {
+        let stem = file
+            .path()
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let span = crate::frontend::source::Span::new(file.id(), 0, 0);
+        if !is_namespace_identifier(&stem) {
+            diagnostics.push(Diagnostic::error(
+                format!(
+                    "file name `{stem}` is not a valid namespace name; use letters, digits, and underscores, and do not start with a digit"
+                ),
+                span,
+            ));
+            continue;
+        }
+        if let Some(previous) = owners.insert(stem.clone(), file.id()) {
+            if previous != file.id() {
+                diagnostics.push(Diagnostic::error(
+                    format!(
+                        "file name `{stem}` is already used as a namespace by another file; a namespace belongs to one file"
+                    ),
+                    span,
+                ));
+                continue;
+            }
+        }
+        names.insert(file.id(), stem);
+    }
+    if diagnostics.is_empty() {
+        Ok(names)
+    } else {
+        Err(diagnostics)
+    }
+}
+
+fn is_namespace_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if first != '_' && !first.is_alphabetic() {
+        return false;
+    }
+    characters.all(|character| character == '_' || character.is_alphanumeric())
 }
 
 /// Programs importing `std.os` receive the compiler-provided `Process` struct
@@ -267,6 +332,7 @@ pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutpu
         structs: Vec::new(),
         enums: Vec::new(),
         functions: Vec::new(),
+        namespaces: Vec::new(),
         span: root_span,
     };
     for module in modules {
@@ -274,6 +340,7 @@ pub fn compile_file(path: &Path, options: CompileOptions) -> Result<CompileOutpu
         merged.structs.extend(module.structs);
         merged.enums.extend(module.enums);
         merged.functions.extend(module.functions);
+        merged.namespaces.extend(module.namespaces);
     }
     compile_ast(merged, sources, options, warnings)
 }
@@ -311,7 +378,60 @@ fn load_module(
     let parent = canonical
         .parent()
         .expect("source file has a parent directory");
-    for import in &mut module.imports {
+    load_imports(
+        &mut module.imports,
+        parent,
+        sources,
+        modules,
+        active,
+        loaded,
+        warnings,
+    )?;
+    for namespace in &mut module.namespaces {
+        load_namespace_imports(
+            namespace, parent, sources, modules, active, loaded, warnings,
+        )?;
+    }
+    active.pop();
+    loaded.insert(canonical, file);
+    modules.push(module);
+    Ok(file)
+}
+
+fn load_namespace_imports(
+    declaration: &mut crate::frontend::ast::NamespaceDeclaration,
+    parent: &Path,
+    sources: &mut SourceMap,
+    modules: &mut Vec<crate::frontend::ast::Module>,
+    active: &mut Vec<PathBuf>,
+    loaded: &mut HashMap<PathBuf, FileId>,
+    warnings: &mut Vec<Diagnostic>,
+) -> Result<(), ModuleLoadError> {
+    load_imports(
+        &mut declaration.imports,
+        parent,
+        sources,
+        modules,
+        active,
+        loaded,
+        warnings,
+    )?;
+    for child in &mut declaration.namespaces {
+        load_namespace_imports(child, parent, sources, modules, active, loaded, warnings)?;
+    }
+    Ok(())
+}
+
+fn load_imports(
+    imports: &mut [crate::frontend::ast::Import],
+    parent: &Path,
+    sources: &mut SourceMap,
+    modules: &mut Vec<crate::frontend::ast::Module>,
+    active: &mut Vec<PathBuf>,
+    loaded: &mut HashMap<PathBuf, FileId>,
+    warnings: &mut Vec<Diagnostic>,
+) -> Result<(), ModuleLoadError> {
+    for import in imports {
         if import.name.text == "std.os" {
             if let Some(selected) = &import.selected {
                 let valid = selected.len() == 1 && selected[0].text == "process";
@@ -346,13 +466,12 @@ fn load_module(
                 import.span,
             )]));
         }
-        if import.name.text.contains('.') {
-            return Err(ModuleLoadError::Frontend(vec![Diagnostic::error(
-                "qualified user-module imports are not supported",
-                import.span,
-            )]));
-        }
-        let imported_path = parent.join(format!("{}.fyl", import.name.text));
+        let (stem, _) = import
+            .name
+            .text
+            .split_once('.')
+            .unwrap_or((import.name.text.as_str(), ""));
+        let imported_path = parent.join(format!("{}.fyl", stem));
         let imported_canonical = fs::canonicalize(&imported_path).map_err(|source| {
             ModuleLoadError::Load(LoadError::Io {
                 path: imported_path.clone(),
@@ -369,7 +488,7 @@ fn load_module(
                         .into_owned()
                 })
                 .collect();
-            cycle.push(import.name.text.clone());
+            cycle.push(stem.to_owned());
             return Err(ModuleLoadError::Frontend(vec![Diagnostic::error(
                 format!("circular import: {}", cycle.join(" -> ")),
                 import.span,
@@ -384,10 +503,7 @@ fn load_module(
             warnings,
         )?);
     }
-    active.pop();
-    loaded.insert(canonical, file);
-    modules.push(module);
-    Ok(file)
+    Ok(())
 }
 
 /// Compiles one source file and writes a directly executable bootstrap artifact.
@@ -482,7 +598,7 @@ mod tests {
         let directory = write_project(&[
             (
                 "main.fyl",
-                "use lexer; public void main() { exit(tokenWidth()); }",
+                "use lexer; public void main() { exit(lexer.tokenWidth()); }",
             ),
             (
                 "lexer.fyl",
@@ -509,7 +625,7 @@ mod tests {
         ]);
         let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
         assert!(
-            error.render().contains("`hidden` was not imported"),
+            error.render().contains("unknown identifier `hidden`"),
             "{}",
             error.render()
         );
@@ -565,7 +681,7 @@ mod tests {
         ]);
         let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
         assert!(
-            error.render().contains("type `Hidden` was not imported"),
+            error.render().contains("unknown type `Hidden`"),
             "{}",
             error.render()
         );
@@ -592,7 +708,7 @@ mod tests {
         use std::process::Command;
         let directory = write_project(&[(
             "main.fyl",
-            r#"use std.io; public void main() { int value = 42; println(\f"value: {value} \{ok\}"); }"#,
+            r#"use std.io; public void main() { int value = 42; std.io.println(\f"value: {value} \{ok\}"); }"#,
         )]);
         let output = directory.join("program");
         compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
@@ -604,7 +720,7 @@ mod tests {
     #[test]
     fn deprecated_interpolation_prefix_warns_without_failing() {
         let output = compile(
-            r#"use std.io; public void main() { int result = 2; print(\v"{result}"); }"#,
+            r#"use std.io; public void main() { int result = 2; std.io.print(\v"{result}"); }"#,
             "memory.fyl",
             CompileOptions::check(),
         )
@@ -625,7 +741,7 @@ mod tests {
         );
 
         let source =
-            r#"use std.io; public void main() { int result = 2; print(\f"{result + 1}"); }"#;
+            r#"use std.io; public void main() { int result = 2; std.io.print(\f"{result + 1}"); }"#;
         let error = compile(source, "memory.fyl", CompileOptions::check()).unwrap_err();
         assert!(
             error
@@ -651,13 +767,13 @@ mod tests {
                 Point point = Point { x: 7, name: "a\"b" };
                 optional int option = some(5);
                 ref int referenceValue = reference(6);
-                println(values);
-                println(fixed);
-                println(state);
-                println(result);
-                println(point);
-                println(option);
-                println(referenceValue);
+                std.io.println(values);
+                std.io.println(fixed);
+                std.io.println(state);
+                std.io.println(result);
+                std.io.println(point);
+                std.io.println(option);
+                std.io.println(referenceValue);
             }
         "#;
         let directory = write_project(&[("main.fyl", source)]);
@@ -683,13 +799,13 @@ mod tests {
                 list list int matrix = [[1, 2], [3, 4]];
                 Message message = Message.text("hi");
                 optional int absent = none();
-                println(names);
-                println(points);
-                println(matrix);
-                println(message);
-                println(absent);
-                println(\f"matrix = {matrix}");
-                eprintln(\f"names = {names}");
+                std.io.println(names);
+                std.io.println(points);
+                std.io.println(matrix);
+                std.io.println(message);
+                std.io.println(absent);
+                std.io.println(\f"matrix = {matrix}");
+                std.io.eprintln(\f"names = {names}");
             }
         "#;
         let directory = write_project(&[("main.fyl", source)]);
@@ -712,7 +828,7 @@ mod tests {
             public void main() {
                 ref Node root = reference(Node { value: 1, next: none() });
                 root.value = Node { value: 1, next: some(root) };
-                println(root);
+                std.io.println(root);
             }
         "#;
         let directory = write_project(&[("main.fyl", source)]);
@@ -728,7 +844,10 @@ mod tests {
     #[test]
     fn rejects_cross_module_private_function_access() {
         let directory = write_project(&[
-            ("main.fyl", "use lexer; public void main() { hidden(); }"),
+            (
+                "main.fyl",
+                "use lexer; public void main() { lexer.hidden(); }",
+            ),
             ("lexer.fyl", "private void hidden() {}"),
         ]);
         let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
@@ -777,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_missing_modules_and_imported_symbol_collisions() {
+    fn reports_missing_modules_and_allows_same_name_across_namespaces() {
         let missing = write_project(&[("main.fyl", "use absent; public void main() {}")]);
         let error = compile_file(&missing.join("main.fyl"), CompileOptions::check()).unwrap_err();
         assert!(error.to_string().contains("absent.fyl"));
@@ -788,9 +907,19 @@ mod tests {
             ("lexer.fyl", "public int build() { return 1; }"),
             ("parser.fyl", "public int build() { return 2; }"),
         ]);
-        let error = compile_file(&collision.join("main.fyl"), CompileOptions::check()).unwrap_err();
-        assert!(error.render().contains("duplicate declaration of `build`"));
+        compile_file(&collision.join("main.fyl"), CompileOptions::check()).unwrap();
         fs::remove_dir_all(collision).unwrap();
+    }
+
+    #[test]
+    fn std_io_input_accepts_type_arguments() {
+        let output = compile(
+            r#"use std.io; private string nothing() { return std.io.input(string); } private bool flag() { return std.io.input(bool); } public void main() { exit(0); }"#,
+            "memory.fyl",
+            CompileOptions::check(),
+        )
+        .unwrap();
+        assert!(output.artifact.is_none());
     }
 
     #[test]
@@ -804,6 +933,335 @@ mod tests {
         let rendered = error.render();
         assert!(rendered.contains("must return `void`"));
         assert!(rendered.contains("must take no parameters"));
+    }
+
+    #[test]
+    fn unqualified_cross_file_access_is_an_error_with_suggestion() {
+        let directory = write_project(&[
+            ("main.fyl", "use helper; public void main() { function(); }"),
+            ("helper.fyl", "public void function() {}"),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        let rendered = error.render();
+        assert!(
+            rendered.contains("unknown identifier `function`"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("did you mean `helper.function`?"),
+            "{rendered}"
+        );
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[
+            ("main.fyl", "public void main() { function(); }"),
+            ("helper.fyl", "public void function() {}"),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error.render().contains("unknown identifier `function`"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn namespaces_support_reopening_nesting_and_distinct_names() {
+        let directory = write_project(&[
+            (
+                "groups.fyl",
+                "namespace counts { public int one() { return 1; } } namespace counts { public int two() { return 2; } } namespace spare { public int one() { return 10; } }",
+            ),
+            (
+                "main.fyl",
+                "use groups; public void main() { assert_eq(groups.counts.one() + groups.counts.two() + groups.spare.one(), 13); } private void assert_eq(int left, int right) { exit(left - right); } ",
+            ),
+        ]);
+        compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[
+            (
+                "groups.fyl",
+                "namespace counts { public void one() {} public void one() {} }",
+            ),
+            ("main.fyl", "use groups; public void main() {}"),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("duplicate declaration of `one` in the same namespace"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn nested_namespace_missing_segment_names_the_failing_segment() {
+        let directory = write_project(&[
+            (
+                "groups.fyl",
+                "namespace counts { public int one() { return 1; } }",
+            ),
+            (
+                "main.fyl",
+                "use groups; public void main() { groups.counts.absent(); }",
+            ),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("`groups.counts` has no member `absent`"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn nested_namespace_is_the_declaring_file_which_never_merges() {
+        let directory = write_project(&[
+            (
+                "left.fyl",
+                "namespace fused { public int tag() { return 3; } }",
+            ),
+            (
+                "main.fyl",
+                "namespace fused { public int tag() { return 9; } } use left;",
+            ),
+        ]);
+        compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn file_names_must_be_valid_namespace_identifiers() {
+        let directory = write_project(&[("my-utils.fyl", "public void main() {}")]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check());
+        // The driver rejects the stem before any import resolves.
+        assert!(error.is_err(), "hyphenated file name must be rejected");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn use_and_using_accept_the_same_module() {
+        // `use lexer;` and `using lexer: scan;` bind different names, so
+        // they combine in one file and in one namespace block.
+        let directory = write_project(&[
+            (
+                "lexer.fyl",
+                "public int scan() { return 3; } public int other() { return 4; }",
+            ),
+            (
+                "main.fyl",
+                "use lexer; using lexer: scan; public void main() { exit(scan() * 10 + lexer.other()); }",
+            ),
+        ]);
+        compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[
+            ("lexer.fyl", "public int scan() { return 3; }"),
+            (
+                "main.fyl",
+                "use lexer; using lexer: scan; namespace block { use lexer; using lexer: scan; public int go() { return scan(); } } public void main() { exit(scan() + block.go()); }",
+            ),
+        ]);
+        compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+
+        // Two imports of one form for one module stay duplicates.
+        for source in [
+            "use lexer; use lexer; public void main() {}",
+            "using lexer: scan; using lexer: other; public void main() {}",
+        ] {
+            let directory = write_project(&[
+                (
+                    "lexer.fyl",
+                    "public int scan() { return 3; } public int other() { return 4; }",
+                ),
+                ("main.fyl", source),
+            ]);
+            let error =
+                compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+            assert!(
+                error.render().contains("duplicate import"),
+                "{}",
+                error.render()
+            );
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn os_process_short_form_runs_after_use() {
+        // `os.process.execute(...)` after `use std.os;` used to fail because
+        // the chain resolver never recorded the `os` module reference.
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = os.process.execute(\"/bin/true\"); exit(p.exitCode); }",
+        );
+        assert_eq!(output.status.code(), Some(0));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn qualified_enum_variants_work_in_value_and_type_positions() {
+        // Payload-free and payload variants through nested namespaces and
+        // cross-file types used to panic in semantic analysis when chain
+        // resolution left the module root unrecorded.
+        use std::process::Command;
+
+        let source = "use kinds; public void main() { kinds.pack.Tag t = kinds.pack.Tag.one(9); exit(t.payload(kinds.pack.Tag.one) * 10 + 1); }";
+        let directory = write_project(&[
+            (
+                "kinds.fyl",
+                "namespace pack { enum Tag { zero, one(int) } public Tag make() { return Tag.one(9); } }",
+            ),
+            ("main.fyl", source),
+        ]);
+        let main_path = directory.join("main.fyl");
+        let output = directory.join("program");
+        compile_file_to_path(&main_path, &output).unwrap();
+        assert_eq!(Command::new(&output).status().unwrap().code(), Some(91));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn std_short_form_requires_import_and_avoids_shadow_conflicts() {
+        let directory = write_project(&[(
+            "main.fyl",
+            "use std.io; public void main() { io.print(\"ok\"); std.io.print(\"ok2\"); }",
+        )]);
+        compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[("main.fyl", "public void main() { io.print(\"x\"); }")]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        let rendered = error.render();
+        assert!(rendered.contains("unknown identifier `io`"), "{rendered}");
+        assert!(rendered.contains("did you mean `std.io`?"), "{rendered}");
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[("main.fyl", "public void main() { print(\"x\"); }")]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error.render().contains("unknown identifier `print`"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[(
+            "main.fyl",
+            "use std.io; public void io() {} public void shadowLocal() { int local = 1; }",
+        )]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("declaration `io` conflicts with the `std.io` alias"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[(
+            "main.fyl",
+            "use std.io; public void shadow() { string io = \"x\"; }",
+        )]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("declaration `io` conflicts with the `std.io` alias"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn using_accepts_multiple_items_and_nested_paths() {
+        let directory = write_project(&[
+            (
+                "helper.fyl",
+                "public int land() { return 4; } public int water() { return 5; } private int air() { return 9; } namespace deep { public int mine() { return 6; } }",
+            ),
+            (
+                "main.fyl",
+                "using helper: land, water; using helper.deep: mine; public void main() { exit(land() + water() + mine() - 15); }",
+            ),
+        ]);
+        compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[
+            (
+                "helper.fyl",
+                "public int land() { return 4; } namespace deep { public int mine() { return 6; } }",
+            ),
+            (
+                "main.fyl",
+                "using helper.deep: mine, absent; public void main() {}",
+            ),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error.render().contains("module does not declare `absent`"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = write_project(&[
+            (
+                "helper.fyl",
+                "public int land() { return 4; } private int air() { return 9; }",
+            ),
+            (
+                "main.fyl",
+                "using helper: air; public void main() { air(); }",
+            ),
+        ]);
+        let error = compile_file(&directory.join("main.fyl"), CompileOptions::check()).unwrap_err();
+        assert!(
+            error
+                .render()
+                .contains("private function `air` cannot be selected"),
+            "{}",
+            error.render()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn same_leaf_function_names_mangle_distinctly_across_namespaces() {
+        use std::process::Command;
+
+        let directory = write_project(&[
+            (
+                "left.fyl",
+                "namespace math { public int value() { return 3; } } public int value() { return 30; }",
+            ),
+            (
+                "right.fyl",
+                "namespace math { public int value() { return 4; } } public int value() { return 40; }",
+            ),
+            (
+                "main.fyl",
+                "use left; use right; public void main() { exit(left.math.value() * 10 + left.value() + right.math.value() * 10 + right.value()); }",
+            ),
+        ]);
+        let output = directory.join("program");
+        compile_file_to_path(&directory.join("main.fyl"), &output).unwrap();
+        assert_eq!(Command::new(&output).status().unwrap().code(), Some(140));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -848,16 +1306,30 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let output = compile(source, "control-flow.fyl", CompileOptions::check()).unwrap();
+        let output = compile(source, "control_flow.fyl", CompileOptions::check()).unwrap();
+        let sources: HashMap<crate::frontend::source::FileId, String> = HashMap::from([(
+            crate::frontend::source::FileId(0),
+            "control_flow".to_owned(),
+        )]);
+        let hir = {
+            let ast = crate::frontend::parser::parse(
+                crate::frontend::lexer::lex(crate::frontend::source::FileId(0), source)
+                    .unwrap()
+                    .tokens,
+            )
+            .unwrap();
+            crate::frontend::semantic::analyze(&ast, &sources).unwrap()
+        };
+        let entry = crate::frontend::semantic::validate_executable(&hir).unwrap();
         let helper = output
             .ir
             .functions
             .iter()
-            .find(|function| function.name == helper_name)
+            .find(|function| function.name == format!("control_flow__{helper_name}"))
             .unwrap()
             .symbol;
         let verified = crate::middle::verify::verify_module(&output.ir).unwrap();
-        let mut machine = crate::backend::x86_64::lower::lower(&verified).unwrap();
+        let mut machine = crate::backend::x86_64::lower::lower(&verified, entry).unwrap();
         machine.startup = vec![
             Instruction::Call(helper),
             Instruction::MoveRegister {
@@ -1246,15 +1718,15 @@ mod tests {
         fs::write(&empty, b"").unwrap();
         fs::set_permissions(&fixture, fs::Permissions::from_mode(0o444)).unwrap();
         let success = format!(
-            "use std.fs; public int test() {{ string source = readFile(\"{}\"); return source.byte(0) + source.length; }} public void main() {{}}",
+            "use std.fs; public int test() {{ string source = std.fs.readFile(\"{}\"); return source.byte(0) + source.length; }} public void main() {{}}",
             fixture.display()
         );
         let empty_source = format!(
-            "use std.fs; public int test() {{ string source = readFile(\"{}\"); return source.length; }} public void main() {{}}",
+            "use std.fs; public int test() {{ string source = std.fs.readFile(\"{}\"); return source.length; }} public void main() {{}}",
             empty.display()
         );
         let multiple = format!(
-            "use std.fs; public int test() {{ string a = readFile(\"{}\"); string b = readFile(\"{}\"); return a.length + b.length; }} public void main() {{}}",
+            "use std.fs; public int test() {{ string a = std.fs.readFile(\"{}\"); string b = std.fs.readFile(\"{}\"); return a.length + b.length; }} public void main() {{}}",
             fixture.display(),
             fixture.display()
         );
@@ -1275,7 +1747,7 @@ mod tests {
             NEXT_FILE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::write(&path, "old contents that must be truncated").unwrap();
-        let source = "use std.fs; public void main(string[] args) { writeFile(args[0], \"new bytes\"); string result = readFile(args[0]); if (result != \"new bytes\") { exit(69); } writeFile(args[0], \"\"); string empty = readFile(args[0]); if (empty.length != 0) { exit(68); } writeFile(args[0], \"new bytes\"); }";
+        let source = "use std.fs; public void main(string[] args) { std.fs.writeFile(args[0], \"new bytes\"); string result = std.fs.readFile(args[0]); if (result != \"new bytes\") { exit(69); } std.fs.writeFile(args[0], \"\"); string empty = std.fs.readFile(args[0]); if (empty.length != 0) { exit(68); } std.fs.writeFile(args[0], \"new bytes\"); }";
         assert_eq!(
             run_main_with_arguments(source, &[path.to_str().unwrap()]),
             0
@@ -1291,7 +1763,7 @@ mod tests {
             .join(format!("aerofyl-missing-parent-{}", std::process::id()))
             .join("output");
         let source =
-            "use std.fs; public void main(string[] args) { writeFile(args[0], \"data\"); }";
+            "use std.fs; public void main(string[] args) { std.fs.writeFile(args[0], \"data\"); }";
         assert_eq!(
             run_main_with_arguments(source, &[missing.to_str().unwrap()]),
             70
@@ -1304,7 +1776,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("aerofyl-definitely-missing-{}", std::process::id()));
         let source = format!(
-            "use std.fs; public int test() {{ string source = readFile(\"{}\"); return source.length; }} public void main() {{}}",
+            "use std.fs; public int test() {{ string source = std.fs.readFile(\"{}\"); return source.length; }} public void main() {{}}",
             path.display()
         );
         assert_eq!(run_helper_as_exit_status(&source, "test"), 70);
@@ -1318,7 +1790,7 @@ mod tests {
             std::process::id()
         ));
         fs::write(&fixture, b"abc").unwrap();
-        let source = "use std.fs; public void main(string[] args) { int[1] trap = [0]; string source = readFile(args[0]); if (args.length != 1 || source.length != 3 || source.byte(0) != 97) { int fail = trap[1]; } }";
+        let source = "use std.fs; public void main(string[] args) { int[1] trap = [0]; string source = std.fs.readFile(args[0]); if (args.length != 1 || source.length != 3 || source.byte(0) != 97) { int fail = trap[1]; } }";
         assert_eq!(
             run_main_with_arguments(source, &[fixture.to_str().unwrap()]),
             0
@@ -1345,7 +1817,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let output = compile(source, "os-process.fyl", CompileOptions::elf()).unwrap();
+        let output = compile(source, "os_process.fyl", CompileOptions::elf()).unwrap();
         let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "aerofyl-os-process-test-{}-{unique}",
@@ -1362,7 +1834,7 @@ mod tests {
     #[test]
     fn os_process_execute_reports_success_and_streams() {
         let output = run_os_main(
-            "use std.os; public void main() { Process p = os.process.execute(\"/bin/true\"); exit(p.exitCode); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/bin/true\"); exit(p.exitCode); }",
         );
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(String::from_utf8_lossy(&output.stdout), "");
@@ -1373,7 +1845,7 @@ mod tests {
     #[test]
     fn os_process_execute_captures_stdout() {
         let output = run_os_main(
-            "use std.os; public void main() { Process p = os.process.execute(\"/bin/echo hello-from-child\"); exit(p.out.length); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/bin/echo hello-from-child\"); exit(p.out.length); }",
         );
         // "hello-from-child" plus the echo newline.
         assert_eq!(output.status.code(), Some(17));
@@ -1384,7 +1856,7 @@ mod tests {
     #[test]
     fn os_process_execute_captures_stderr_separately() {
         let output = run_os_main(
-            "use std.os; public void main() { Process p = os.process.execute(\"/bin/ls /aerofyl-certainly-missing\"); exit(p.err.length * 2); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/bin/ls /aerofyl-certainly-missing\"); exit(p.err.length * 2); }",
         );
         assert!(output.status.code().is_some_and(|code| code > 2));
         assert_eq!(String::from_utf8_lossy(&output.stderr), "");
@@ -1394,7 +1866,7 @@ mod tests {
     #[test]
     fn os_process_execute_propagates_nonzero_exit_codes() {
         let output = run_os_main(
-            "use std.os; public void main() { Process p = os.process.execute(\"/bin/false\"); exit(p.exitCode); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/bin/false\"); exit(p.exitCode); }",
         );
         assert_eq!(output.status.code(), Some(1));
     }
@@ -1403,7 +1875,7 @@ mod tests {
     #[test]
     fn os_process_execute_groups_quoted_arguments() {
         let output = run_os_main(
-            "use std.os; public void main() { Process p = os.process.execute(\"/bin/echo \\\"a b\\\" 'c  d'\"); exit(p.out.length); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/bin/echo \\\"a b\\\" 'c  d'\"); exit(p.out.length); }",
         );
         // echo joins both quoted arguments with one space and appends a newline.
         assert_eq!(output.status.code(), Some(9));
@@ -1414,7 +1886,7 @@ mod tests {
     #[test]
     fn os_process_execute_reports_missing_executable_as_127() {
         let output = run_os_main(
-            "use std.os; public void main() { Process p = os.process.execute(\"/aerofyl-certainly-not-here\"); exit(p.exitCode); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/aerofyl-certainly-not-here\"); exit(p.exitCode); }",
         );
         assert_eq!(output.status.code(), Some(127));
         assert_eq!(String::from_utf8_lossy(&output.stderr), "");
@@ -1436,7 +1908,7 @@ mod tests {
             .status()
             .unwrap();
         let source = format!(
-            "use std.os; public void main() {{ Process p = os.process.execute(\"\\\"{}/my true\\\"\"); exit(p.exitCode); }}",
+            "use std.os; public void main() {{ Process p = std.os.process.execute(\"\\\"{}/my true\\\"\"); exit(p.exitCode); }}",
             directory.display()
         );
         let output = run_os_main(&source);
@@ -1450,7 +1922,7 @@ mod tests {
     fn os_process_execute_grows_capture_buffers() {
         let repeated = "x".repeat(400);
         let output = run_os_main(&format!(
-            "use std.os; public void main() {{ Process p = os.process.execute(\"/bin/echo {repeated}\"); exit(p.out.length); }}"
+            "use std.os; public void main() {{ Process p = std.os.process.execute(\"/bin/echo {repeated}\"); exit(p.out.length); }}"
         ));
         // exit statuses are 8-bit: (400 "x" bytes + newline) & 0xff.
         assert_eq!(output.status.code(), Some(145));
@@ -1460,8 +1932,9 @@ mod tests {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn os_process_execute_empty_command_fails_with_status_70() {
-        let output =
-            run_os_main("use std.os; public void main() { Process p = os.process.execute(\"\"); }");
+        let output = run_os_main(
+            "use std.os; public void main() { Process p = std.os.process.execute(\"\"); }",
+        );
         assert_eq!(output.status.code(), Some(70));
         assert_eq!(String::from_utf8_lossy(&output.stderr), "ProcessError\n");
     }
@@ -1470,7 +1943,7 @@ mod tests {
     #[test]
     fn os_process_execute_unterminated_quote_fails_with_status_70() {
         let output = run_os_main(
-            "use std.os; public void main() { Process p = os.process.execute(\"/bin/echo \\\"open\"); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/bin/echo \\\"open\"); }",
         );
         assert_eq!(output.status.code(), Some(70));
         assert_eq!(String::from_utf8_lossy(&output.stderr), "ProcessError\n");
@@ -1480,7 +1953,7 @@ mod tests {
     #[test]
     fn os_process_execute_signal_failure_reports_status_70() {
         let output = run_os_main(
-            "use std.os; public void main() { Process p = os.process.execute(\"/bin/sh -c \\\"kill -9 $$\\\"\"); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/bin/sh -c \\\"kill -9 $$\\\"\"); }",
         );
         assert_eq!(output.status.code(), Some(70));
         assert_eq!(
@@ -1493,7 +1966,7 @@ mod tests {
     #[test]
     fn os_process_execute_works_with_both_import_forms() {
         for source in [
-            "use std.os; public void main() { Process p = os.process.execute(\"/bin/echo shared\"); exit(p.out.length); }",
+            "use std.os; public void main() { Process p = std.os.process.execute(\"/bin/echo shared\"); exit(p.out.length); }",
             "using std.os: process; public void main() { Process p = process.execute(\"/bin/echo shared\"); exit(p.out.length); }",
         ] {
             let output = run_os_main(source);

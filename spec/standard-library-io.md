@@ -1,17 +1,34 @@
 # Standard library I/O
 
 The `std` hierarchy is part of Aerofyl and requires no package declaration or
-external dependency. Its modules are not placed in scope automatically. The
-first standard-library module is imported explicitly:
+external dependency. Its members are reachable in every file by full path, no
+import needed:
+
+```fyl
+// no use or using in this file
+
+public void main()
+{
+    std.io.print("Idk");
+}
+```
+
+With `use std.io;`, the module can also be called by its last segment:
 
 ```fyl
 use std.io;
+
+public void main()
+{
+    io.print("Idk");
+}
 ```
 
-`std.io` makes `print`, `println`, `eprint`, `eprintln`, and `input` available
-to the program. Using one of these names without importing `std.io` is a
-compile error. Other standard-library modules are imported separately:
-`use std.fs;`, `use std.os;`.
+`io.print` is only valid because of the `use`. Without it, `io.print` is a
+compile error and the diagnostic suggests `std.io.print`. Unqualified std
+access, like `print("Idk")`, stays a compile error regardless of imports.
+Other standard-library modules are imported separately: `use std.fs;`,
+`use std.os;`.
 
 ## Output
 

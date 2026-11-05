@@ -300,7 +300,11 @@ pub fn verify_module(module: &IrModule) -> Result<VerifiedIrModule<'_>, Vec<IrVe
                 &mut errors,
             );
         }
-        let cli_parameter_is_valid = function.name == "main"
+        let cli_parameter_is_valid = function
+            .name
+            .rsplit("__")
+            .next()
+            .is_some_and(|name| name == "main")
             && matches!(
                 function.parameters.as_slice(),
                 [IrLocal {
@@ -2865,9 +2869,15 @@ mod tests {
         );
     }
 
+    fn single_names() -> std::collections::HashMap<FileId, String> {
+        let mut names = std::collections::HashMap::new();
+        names.insert(FileId(0), "test".to_owned());
+        names
+    }
+
     fn lower_source(source: &str) -> IrModule {
         let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
-        crate::middle::lower::lower(&analyze(&ast).unwrap())
+        crate::middle::lower::lower(&analyze(&ast, &single_names()).unwrap())
     }
 
     #[test]
@@ -3407,7 +3417,7 @@ mod tests {
     #[test]
     fn verifies_source_ingestion_ir_types_and_cli_handoff() {
         let valid = lower_source(
-            "use std.fs; private int scan(string path) { string source = readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+            "use std.fs; private int scan(string path) { string source = std.fs.readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
         );
         assert!(verify_module(&valid).is_ok());
         let mut invalid_cli = valid.clone();
@@ -3468,7 +3478,7 @@ mod tests {
         });
 
         let mut read =
-            lower_source("use std.fs; private string f() { return readFile(\"file\"); }");
+            lower_source("use std.fs; private string f() { return std.fs.readFile(\"file\"); }");
         let path_value = read.functions[0].blocks[0]
             .instructions
             .iter()

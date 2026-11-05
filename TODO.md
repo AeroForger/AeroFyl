@@ -111,3 +111,14 @@ in Phase 4 and Phase 5; this section is the original findings record.
   rewrite single-pass where possible.
 - Add fixtures: deep nesting should produce a diagnostic, not a crash; the
   `Node[2] x = [];` statement form once the lookahead is fixed.
+
+### Found: 2026-11-04 (namespace refactor session)
+
+- Assigning a list-typed call return to a variable is rejected by the
+  bootstrap's whole-list-cloning rule: `list byte b = std.fs.readBytes(path);`
+  fails even though `readBytes` returns a fresh list. The rule should allow
+  initialization from a call result (exactly one reference, list freshly
+  built). Seen in `examples/file_bytes.fyl` and in the runtime fixture
+  `tests/runtime/fs_bytes.fyl`, which currently do not compile for this
+  reason.
+

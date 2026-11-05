@@ -27,6 +27,13 @@ mapping does not make the in-memory representation a stable external ABI. Enum
 declarations currently have no visibility modifier and are available through
 the loaded import graph.
 
+Types in other files or nested inside `namespace` blocks can appear in type
+positions by simple name when their file is imported, and variants are also
+reachable through dotted type paths. The path follows the same rules as
+member access: `kinds.pack.Tag` for a `Tag` enum inside `namespace pack` in
+`kinds.fyl`, so `kinds.pack.Tag.one(9)` and
+`value.payload(kinds.pack.Tag.one)` both work.
+
 An enum with any payload variant uses a tagged two-slot allocation: a
 declaration-order tag and one payload handle/value slot. `is(Enum.Variant)`
 tests the tag. `payload(Enum.Variant)` returns that variant's declared type and

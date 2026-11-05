@@ -1,9 +1,9 @@
 // Diagnostic carriers shared by the lexer and parser. Diagnostics travelled
 // in one list historically; errors and warnings are now partitioned by level
 // so warnings never fail compilation.
-use source;
-use ErrorType;
-use WarningType;
+using source: Span;
+using ErrorType: ErrorType;
+using WarningType: WarningType;
 
 
 enum DiagnosticLevel {

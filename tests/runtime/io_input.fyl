@@ -2,19 +2,19 @@ use std.io;
 
 public void main()
 {
-    string implicitString = input();
-    string explicitString = input(string);
-    int positive = input(int);
-    int negative = input(int);
-    bool yes = input(bool);
-    bool no = input(bool);
-    char character = input(char);
+    string implicitString = std.io.input();
+    string explicitString = std.io.input(string);
+    int positive = std.io.input(int);
+    int negative = std.io.input(int);
+    bool yes = std.io.input(bool);
+    bool no = std.io.input(bool);
+    char character = std.io.input(char);
 
-    println(implicitString);
-    println(explicitString);
-    println(positive);
-    println(negative);
-    println(yes);
-    println(no);
-    println(character);
+    std.io.println(implicitString);
+    std.io.println(explicitString);
+    std.io.println(positive);
+    std.io.println(negative);
+    std.io.println(yes);
+    std.io.println(no);
+    std.io.println(character);
 }

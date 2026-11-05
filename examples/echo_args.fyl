@@ -5,7 +5,7 @@ public void main(string[] args)
     int i = 0;
     while (i < args.length)
     {
-        println(args[i]);
+        io.println(args[i]);
         i = i + 1;
     }
 }

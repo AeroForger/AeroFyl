@@ -4,14 +4,14 @@ public void main()
 {
     optional int found = some(42);
     optional int missing = none();
-    println(found);
-    println(missing);
+    io.println(found);
+    io.println(missing);
     if (found.hasValue)
     {
-        println(found.value);
+        io.println(found.value);
     }
     if (!missing.hasValue)
     {
-        println("nothing here");
+        io.println("nothing here");
     }
 }

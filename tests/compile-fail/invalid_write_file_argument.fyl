@@ -2,5 +2,5 @@ use std.fs;
 
 public void main()
 {
-    writeFile("output.bin", 42);
+    std.fs.writeFile("output.bin", 42);
 }

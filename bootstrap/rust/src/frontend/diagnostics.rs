@@ -35,6 +35,14 @@ impl Diagnostic {
         }
     }
 
+    pub fn warning(message: impl Into<String>, span: impl Into<Option<Span>>) -> Self {
+        Self {
+            severity: Severity::Warning,
+            message: message.into(),
+            span: span.into(),
+        }
+    }
+
     pub fn render(&self, sources: &SourceMap) -> String {
         let Some(span) = self.span else {
             return format!("{}: {}", self.severity, self.message);

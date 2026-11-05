@@ -1,6 +1,8 @@
-use token;
-use source;
-use diagnostics;
+using token: Token, TokenKind, Keyword, Interpolation, InterpolationPart;
+using source: Source, Span, load_file;
+using ErrorType: ErrorType;
+using WarningType: WarningType;
+using diagnostics: Diagnostic, error, warning;
 
 private bool isWhitespace(int current) {
     return current == int(' ')

@@ -15,5 +15,5 @@ public void main()
         }
         total += i;
     }
-    println(total);
+    std.io.println(total);
 }

@@ -15,11 +15,11 @@ public void main() {
     optional int option = some(5);
     ref int referenced = reference(6);
 
-    println(numbers);
-    println(fixed);
-    println(result);
-    println(point);
-    println(option);
-    println(referenced);
-    println(\f"result: {result}, numbers: {numbers}, literal \{brace\}");
+    std.io.println(numbers);
+    std.io.println(fixed);
+    std.io.println(result);
+    std.io.println(point);
+    std.io.println(option);
+    std.io.println(referenced);
+    std.io.println(\f"result: {result}, numbers: {numbers}, literal \{brace\}");
 }

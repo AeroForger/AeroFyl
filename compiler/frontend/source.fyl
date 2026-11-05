@@ -10,7 +10,7 @@ struct Source {
 public Source load_file(string path){
     return Source {
         path: path,
-        text: readFile(path)
+        text: std.fs.readFile(path)
     };
 }
 /*--------*/

@@ -89,7 +89,7 @@ impl FunctionLowerer {
         }
         IrFunction {
             symbol: function.symbol,
-            name: function.name.clone(),
+            name: crate::frontend::resolution::mangle(&function.qualified_name),
             visibility: function.visibility,
             parameters: function
                 .parameters
@@ -935,9 +935,15 @@ mod tests {
     use super::*;
     use crate::frontend::{lexer::lex, parser::parse, semantic::analyze, source::FileId};
 
+    fn single_names() -> std::collections::HashMap<FileId, String> {
+        let mut names = std::collections::HashMap::new();
+        names.insert(FileId(0), "test".to_owned());
+        names
+    }
+
     fn lower_source(source: &str) -> IrModule {
         let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
-        lower(&analyze(&ast).unwrap())
+        lower(&analyze(&ast, &single_names()).unwrap())
     }
 
     #[test]
@@ -1085,7 +1091,7 @@ mod tests {
     #[test]
     fn lowers_source_ingestion_to_explicit_ir() {
         let ir = lower_source(
-            "use std.fs; private int scan(string path) { string source = readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+            "use std.fs; private int scan(string path) { string source = std.fs.readFile(path); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
         );
         let instructions: Vec<_> = ir
             .functions

@@ -6,5 +6,5 @@ public void main()
     byte high = byte(255);
     list byte bytes = [low, high];
     bool ordered = bytes[0] < bytes[1];
-    bool present = exists("data.bin");
+    bool present = std.fs.exists("data.bin");
 }

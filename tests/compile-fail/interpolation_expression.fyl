@@ -5,5 +5,5 @@ use std.io;
 // must still reject them here.
 public void main() {
     int result = 2;
-    print(\f"result: {result + 1}");
+    std.io.print(\f"result: {result + 1}");
 }

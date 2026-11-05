@@ -2,7 +2,7 @@ use std.fs;
 
 public void main(string[] args)
 {
-    bool present = exists(args[0]);
+    bool present = fs.exists(args[0]);
     if (!present)
     {
         exit(1);

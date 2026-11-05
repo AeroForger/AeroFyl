@@ -55,8 +55,8 @@ POSITIVE = [
     "public void f() { char a = 'é'; char b = '€'; char c = '🙂'; }",
 ]
 
-# Correctly parsed by this parser; the current Rust parser's type lookahead
-# misclassifies named arrays, conversion statements, and parenthesized statements.
+# Both parsers accept these after the namespace work fixed the Rust
+# type-lookahead regression. They stay listed so the parity check covers them.
 IMPROVED = [
     "public void f() { Node[2] nodes = []; }",
     "public void f() { int x = 1; (x + 2); }",
@@ -131,7 +131,10 @@ use aerofyl_bootstrap::frontend::{lexer, parser, source::FileId};
 fn main() {
     let path = std::env::args().nth(1).unwrap();
     let text = std::fs::read_to_string(path).unwrap();
-    let accepted = lexer::lex(FileId(0), &text).and_then(parser::parse).is_ok();
+    let accepted = lexer::lex(FileId(0), &text)
+        .map_err(|_| ())
+        .and_then(|output| parser::parse(output.tokens).map_err(|_| ()))
+        .is_ok();
     std::process::exit(if accepted { 0 } else { 1 });
 }
 '''
@@ -161,15 +164,10 @@ def main():
                 result = run([parser, fixture], expected, timeout=5)
                 if expected == 1:
                     assert f"{fixture}:" in result.stderr and ": error: " in result.stderr
-                if text not in IMPROVED and text not in STRICT_TARGETS and text not in INTERPOLATION_EXPR:
-                    # Conversion expressions also appear in the wider positive
-                    # corpus; the Rust parser has the documented lookahead bug.
+                if text not in STRICT_TARGETS and text not in INTERPOLATION_EXPR:
                     reference_result = subprocess.run([reference, fixture], timeout=5)
-                    if expected == 0 and "int(a);" in text:
-                        assert reference_result.returncode == 1
-                    else:
-                        assert reference_result.returncode == expected, repr(text)
-                        comparisons += 1
+                    assert reference_result.returncode == expected, repr(text)
+                    comparisons += 1
         print(f"{len(POSITIVE) + len(IMPROVED) + len(INTERPOLATION_EXPR)} syntax passes, {len(NEGATIVE)} rejections, "
               f"{comparisons} Rust syntax comparisons passed", flush=True)
 

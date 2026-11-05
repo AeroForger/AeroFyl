@@ -102,12 +102,16 @@ impl std::error::Error for BackendError {}
 /// Lowers the supported IR subset using stack slots for locals and temporaries.
 /// `rax` and `rcx` are fixed arithmetic temporaries; this is intentionally easy
 /// to replace with allocation later and preserves SysV callee-saved registers.
-pub fn lower(module: &VerifiedIrModule<'_>) -> Result<MachineModule, BackendError> {
+/// `entry` is the executable's `main` function, already validated.
+pub fn lower(
+    module: &VerifiedIrModule<'_>,
+    entry: crate::frontend::resolution::SymbolId,
+) -> Result<MachineModule, BackendError> {
     let module = module.as_module();
     let main = module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.symbol == entry)
         .ok_or(BackendError::MissingMain)?;
     let valid_parameters = matches!(
         main.parameters.as_slice(),
@@ -2036,12 +2040,19 @@ mod tests {
     use crate::frontend::{lexer::lex, parser::parse, semantic::analyze, source::FileId};
     use crate::middle::lower as ir_lower;
 
+    fn single_file_names() -> std::collections::HashMap<FileId, String> {
+        let mut names = std::collections::HashMap::new();
+        names.insert(FileId(0), "test".to_owned());
+        names
+    }
+
     fn lower_source(source: &str) -> MachineModule {
         let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
-        let hir = analyze(&ast).unwrap();
+        let hir = analyze(&ast, &single_file_names()).unwrap();
         let ir = ir_lower::lower(&hir);
         let verified = crate::middle::verify::verify_module(&ir).unwrap();
-        lower(&verified).unwrap()
+        let entry = crate::frontend::semantic::validate_executable(&hir).unwrap();
+        lower(&verified, entry).unwrap()
     }
 
     #[test]
@@ -2287,7 +2298,7 @@ mod tests {
     #[test]
     fn lowers_source_ingestion_through_central_runtime_helpers() {
         let module = lower_source(
-            "use std.fs; private int scan() { string source = readFile(\"fixture\"); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
+            "use std.fs; private int scan() { string source = std.fs.readFile(\"fixture\"); return source.byte(0); } public void main(string[] args) { int count = args.length; string first = args[0]; }",
         );
         let scan = &module.functions[0].instructions;
         assert!(scan.iter().any(
@@ -2324,8 +2335,9 @@ mod tests {
         let unused = lower_source("use std.fs; public void main() {}");
         assert_eq!(unused.functions.len(), 1);
 
-        let module =
-            lower_source("use std.fs; public void main() { bool present = exists(\"data.txt\"); }");
+        let module = lower_source(
+            "use std.fs; public void main() { bool present = std.fs.exists(\"data.txt\"); }",
+        );
         let symbols: HashSet<_> = module
             .functions
             .iter()
@@ -2341,24 +2353,32 @@ mod tests {
         assert!(!symbols.contains(&runtime::WRITE_BYTES));
     }
 
+    fn single_names() -> std::collections::HashMap<FileId, String> {
+        let mut names = std::collections::HashMap::new();
+        names.insert(FileId(0), "test".to_owned());
+        names
+    }
+
     #[test]
     fn lowers_struct_function_abi() {
         let source = "struct Item { int value; } private Item consume(Item item) { return item; } public void main() { Item item = Item { value: 1 }; Item result = consume(item); }";
         let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
-        let hir = analyze(&ast).unwrap();
+        let hir = analyze(&ast, &single_names()).unwrap();
         let ir = ir_lower::lower(&hir);
         let verified = crate::middle::verify::verify_module(&ir).unwrap();
-        assert!(lower(&verified).is_ok());
+        let entry = crate::frontend::semantic::validate_executable(&hir).unwrap();
+        assert!(lower(&verified, entry).is_ok());
     }
 
     #[test]
     fn lowers_whole_struct_copy() {
         let source = "struct Item { int value; } public void main() { Item first = Item { value: 1 }; Item second = first; }";
         let ast = parse(lex(FileId(0), source).unwrap().tokens).unwrap();
-        let hir = analyze(&ast).unwrap();
+        let hir = analyze(&ast, &single_names()).unwrap();
         let ir = ir_lower::lower(&hir);
         let verified = crate::middle::verify::verify_module(&ir).unwrap();
-        let module = lower(&verified).unwrap();
+        let entry = crate::frontend::semantic::validate_executable(&hir).unwrap();
+        let module = lower(&verified, entry).unwrap();
         assert!(
             module.functions[0]
                 .instructions

@@ -1,5 +1,5 @@
 // Token kinds, spans, and interpolation parts shared by the lexer and parser.
-use source;
+using source: Span;
 
 enum Keyword {
     Public,

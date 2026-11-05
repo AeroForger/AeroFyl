@@ -2,5 +2,5 @@ use std.fs;
 
 public void main(string[] args)
 {
-    string value = readFile(args[0]);
+    string value = std.fs.readFile(args[0]);
 }

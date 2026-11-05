@@ -2,6 +2,6 @@ use std.fs;
 
 public void main(string[] args)
 {
-    string contents = readFile(args[0]);
+    string contents = fs.readFile(args[0]);
     int bytes = contents.length;
 }

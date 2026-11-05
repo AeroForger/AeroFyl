@@ -7,6 +7,21 @@ pub struct Module {
     pub structs: Vec<StructDeclaration>,
     pub enums: Vec<EnumDeclaration>,
     pub functions: Vec<Function>,
+    pub namespaces: Vec<NamespaceDeclaration>,
+    pub span: Span,
+}
+
+/// A `namespace Name { ... }` block. Members belong to the enclosing namespace
+/// path of the declaring file; reopening the same name in the same file adds
+/// members to the existing namespace.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamespaceDeclaration {
+    pub name: Name,
+    pub imports: Vec<Import>,
+    pub structs: Vec<StructDeclaration>,
+    pub enums: Vec<EnumDeclaration>,
+    pub functions: Vec<Function>,
+    pub namespaces: Vec<NamespaceDeclaration>,
     pub span: Span,
 }
 

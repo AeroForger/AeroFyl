@@ -1,4 +1,4 @@
-use source;
+using source: Span;
 
 enum NodeKind {
     integer,

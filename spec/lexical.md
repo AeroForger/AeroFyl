@@ -8,11 +8,13 @@ The exact identifier alphabet is not specified yet. The bootstrap accepts an und
 
 ## Keywords
 
-The known keywords are `public`, `private`, `use`, `using`, `return`, `if`, `else`, `while`, `for`, `break`, `continue`, `true`, `false`, `print`, `input`, `list`, `optional`, `int`, `byte`, `float`, `bool`, `char`, `string`, `void`, `dynamic`, `struct`, and `enum`.
+The known keywords are `public`, `private`, `use`, `using`, `return`, `if`, `else`, `while`, `for`, `break`, `continue`, `true`, `false`, `print`, `input`, `list`, `optional`, `int`, `byte`, `float`, `bool`, `char`, `string`, `void`, `dynamic`, `struct`, `namespace`, and `enum`.
 
 `using` introduces a selective file import. `print` and `input` are
-reserved names belonging to the explicitly imported `std.io` API. `use`
-introduces a module import.
+reserved names: unqualified std access is always an error, and the members are
+written as `std.io.print` or, after `use std.io;`, as `io.print`.
+`use` introduces a module import. `namespace` declares a nested namespace
+inside a file.
 
 `byte` is soft in identifier positions so the established
 `string.byte(index)` member remains source-compatible; it denotes the byte type

@@ -3,10 +3,13 @@
 This is a partial grammar for forms accepted by the bootstrap. It does not define unspecified language areas. Literal token definitions are in [lexical.md](lexical.md).
 
 ```text
-module          = { import-decl | selective-import-decl | struct-decl | enum-decl | function-decl } ;
+module          = { import-decl | selective-import-decl | struct-decl | enum-decl
+                  | function-decl | namespace-decl } ;
 import-decl     = "use" module-name ";" ;
 selective-import-decl = "using" module-name ":" identifier { "," identifier } ";" ;
 module-name     = identifier { "." identifier } ;
+namespace-decl  = "namespace" identifier "{" { import-decl | selective-import-decl
+                  | struct-decl | enum-decl | function-decl | namespace-decl } "}" ;
 struct-decl     = "struct" identifier "{" { type identifier ";" } "}" ;
 enum-decl       = "enum" identifier "{" enum-variant { "," enum-variant } [ "," ] "}" ;
 enum-variant    = identifier [ "(" type ")" ] ;

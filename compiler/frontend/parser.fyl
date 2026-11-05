@@ -1,6 +1,9 @@
-use ast;
-use lexer;
-use diagnostics;
+using ast: AstImport, AstNode, AstProgram, NodeKind, empty_program;
+using lexer: LexResult, lexSource;
+using token: Token, TokenKind, Keyword, Interpolation, InterpolationPart;
+using source: Source, Span, load_file;
+using ErrorType: ErrorType;
+using diagnostics: Diagnostic, error;
 
 struct ParserState {
     Source source;
@@ -135,7 +138,9 @@ private Token pIdentifier(ref ParserState state){
         return pTake(state);
     }
     if (token.kind.is(TokenKind.Keyword)
-    && token.kind.payload(TokenKind.Keyword) == Keyword.Byte){
+    && (token.kind.payload(TokenKind.Keyword) == Keyword.Byte
+        || token.kind.payload(TokenKind.Keyword) == Keyword.Print
+        || token.kind.payload(TokenKind.Keyword) == Keyword.Input)){
         return pTake(state);
     }
     pError(state, "expected identifier");

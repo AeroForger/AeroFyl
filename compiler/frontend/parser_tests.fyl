@@ -1,8 +1,14 @@
-use parser;
+using parser: ParseResult, parseTokens;
+using ast: AstImport, AstNode, AstProgram, NodeKind, empty_program;
+using lexer: LexResult, lexSource;
+using token: Token;
+using source: Source;
+using ErrorType: ErrorType;
+using diagnostics: Diagnostic, DiagnosticLevel, isWarningDiagnostic;
 use std.io;
 
 private void require(bool condition, string message) {
-    if (!condition) { eprintln(message); exit(70); }
+    if (!condition) { std.io.eprintln(message); exit(70); }
 }
 
 private ParseResult parseText(string text) {
@@ -62,7 +68,7 @@ private void expressions() {
     require(logicalAnd.text == "&&", "and precedence");
     require(child(program, logicalAnd, 1).text == "!", "logical negation");
 
-    program = valid("private void f() { int a = 10 - 3 - 2; (a + 1); int(a); float(a); bool(a); byte(a); char(a); string(a); print(a); input(); }");
+    program = valid("private void f() { int a = 10 - 3 - 2; (a + 1); int(a); float(a); bool(a); byte(a); char(a); string(a); std.io.print(a); std.io.input(); }");
     block = body(program, 0);
     AstNode variable = child(program, block, 0);
     AstNode subtract = child(program, variable, 1);
@@ -162,7 +168,7 @@ private void postfix() {
 }
 
 private void interpolation() {
-    AstProgram program = valid("use std.io; public void f() { println(\\f\"value={x} \\{ok\\}\\n\"); }");
+    AstProgram program = valid("use std.io; public void f() { std.io.println(\\f\"value={x} \\{ok\\}\\n\"); }");
     AstNode call = child(program, child(program, body(program, 0), 0), 0);
     AstNode interpolated = child(program, call, 1);
     require(interpolated.kind == NodeKind.interpolated && interpolated.children.length == 3, "interpolation parts");
@@ -171,7 +177,7 @@ private void interpolation() {
     require(variable.kind == NodeKind.name && variable.text == "x", "interpolation variable");
     require(child(program, interpolated, 2).text == " {ok}\n", "interpolation escaped braces");
     require(variable.span.end - variable.span.start == 1, "interpolation variable span");
-    program = valid("use std.io; public void f() { println(\\f\"{x + 1}\"); }");
+    program = valid("use std.io; public void f() { std.io.println(\\f\"{x + 1}\"); }");
     AstNode exprCall = child(program, child(program, body(program, 0), 0), 0);
     AstNode exprPart = child(program, child(program, exprCall, 1), 0);
     require(exprPart.kind == NodeKind.binary && exprPart.text == "+", "interpolation expression");
@@ -179,7 +185,7 @@ private void interpolation() {
 
 private void diagnosticsAndSpans() {
     while (parseText("").diagnostics.length != 0) {
-        eprintln("empty source rejected");
+        std.io.eprintln("empty source rejected");
         exit(70);
     }
     string text = "public int f() { return (1 + 2); }";
@@ -218,16 +224,16 @@ private void diagnosticsAndSpans() {
 }
 
 private void deprecation() {
-    Source source = Source { path: "test.fyl", text: "use std.io; public void f() { println(\\v\"{x}\"); }" };
+    Source source = Source { path: "test.fyl", text: "use std.io; public void f() { std.io.println(\\v\"{x}\"); }" };
     LexResult lexed = lexSource(source);
     require(lexed.diagnostics.length == 0, "deprecated prefix is not an error");
     require(lexed.warnings.length == 1, "deprecated prefix warns once");
     require(isWarningDiagnostic(lexed.warnings[0]), "deprecation warning level");
     ParseResult result = parseTokens(source, lexed.tokens);
     require(result.diagnostics.length == 0 && result.program.roots.length == 1, "warned source still parses");
-    ParseResult merged = parseText("use std.io; public void f() { println(\\v\"{x}\"); }");
+    ParseResult merged = parseText("use std.io; public void f() { std.io.println(\\v\"{x}\"); }");
     require(merged.diagnostics.length == 0 && merged.warnings.length == 1, "warnings merge through parseText");
-    ParseResult current = parseText("use std.io; public void f() { println(\\f\"{x}\"); }");
+    ParseResult current = parseText("use std.io; public void f() { std.io.println(\\f\"{x}\"); }");
     require(current.diagnostics.length == 0 && current.warnings.length == 0, "current prefix warns never");
 }
 
@@ -239,5 +245,5 @@ public void main() {
     interpolation();
     deprecation();
     diagnosticsAndSpans();
-    println("parser AST tests passed");
+    std.io.println("parser AST tests passed");
 }

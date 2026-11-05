@@ -29,6 +29,7 @@ impl Parser {
         let mut functions = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
+        let mut namespaces = Vec::new();
         let mut imports = Vec::new();
         let mut imported_names = HashSet::new();
         while !self.at(&TokenKind::Eof) {
@@ -36,7 +37,7 @@ impl Parser {
                 || self.at(&TokenKind::Keyword(Keyword::Using))
             {
                 self.parse_import().and_then(|import| {
-                    if imported_names.insert(import.name.text.clone()) {
+                    if imported_names.insert(import_key(&import)) {
                         imports.push(import);
                         Ok(())
                     } else {
@@ -48,6 +49,9 @@ impl Parser {
                     .map(|declaration| structs.push(declaration))
             } else if self.at(&TokenKind::Keyword(Keyword::Enum)) {
                 self.parse_enum().map(|declaration| enums.push(declaration))
+            } else if self.at(&TokenKind::Keyword(Keyword::Namespace)) {
+                self.parse_namespace()
+                    .map(|declaration| namespaces.push(declaration))
             } else {
                 self.parse_function()
                     .map(|function| functions.push(function))
@@ -67,6 +71,7 @@ impl Parser {
                 structs,
                 enums,
                 functions,
+                namespaces,
                 span,
             })
         } else {
@@ -112,6 +117,60 @@ impl Parser {
             name,
             selected,
             target_file: None,
+            span: start.join(end.span),
+        })
+    }
+
+    fn parse_namespace(&mut self) -> Result<NamespaceDeclaration, Diagnostic> {
+        let start = self.advance().span;
+        let name = self.expect_identifier("expected namespace name")?;
+        self.expect(TokenKind::LeftBrace, "expected `{` after namespace name")?;
+        let mut structs = Vec::new();
+        let mut enums = Vec::new();
+        let mut functions = Vec::new();
+        let mut namespaces = Vec::new();
+        let mut imports = Vec::new();
+        let mut imported_names = HashSet::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            let result = if self.at(&TokenKind::Keyword(Keyword::Namespace)) {
+                self.parse_namespace()
+                    .map(|declaration| namespaces.push(declaration))
+            } else if self.at(&TokenKind::Keyword(Keyword::Use))
+                || self.at(&TokenKind::Keyword(Keyword::Using))
+            {
+                self.parse_import().and_then(|import| {
+                    if imported_names.insert(import_key(&import)) {
+                        imports.push(import);
+                        Ok(())
+                    } else {
+                        Err(Diagnostic::error("duplicate import", import.span))
+                    }
+                })
+            } else if self.at(&TokenKind::Keyword(Keyword::Struct)) {
+                self.parse_struct()
+                    .map(|declaration| structs.push(declaration))
+            } else if self.at(&TokenKind::Keyword(Keyword::Enum)) {
+                self.parse_enum().map(|declaration| enums.push(declaration))
+            } else {
+                self.parse_function()
+                    .map(|function| functions.push(function))
+            };
+            match result {
+                Ok(()) => {}
+                Err(error) => {
+                    self.diagnostics.push(error);
+                    self.synchronize_top_level();
+                }
+            }
+        }
+        let end = self.expect(TokenKind::RightBrace, "expected `}` after namespace body")?;
+        Ok(NamespaceDeclaration {
+            name,
+            imports,
+            structs,
+            enums,
+            functions,
+            namespaces,
             span: start.join(end.span),
         })
     }
@@ -277,10 +336,31 @@ impl Parser {
             TokenKind::Keyword(Keyword::String) => Type::String,
             TokenKind::Keyword(Keyword::Void) => Type::Void,
             TokenKind::Keyword(Keyword::Dynamic) => Type::Dynamic,
-            TokenKind::Identifier(name) => Type::Named(name),
+            TokenKind::Identifier(ref text) => Type::Named(text.clone()),
             _ => return Err(Diagnostic::error("expected a known type", token.span)),
         };
         let mut end = token.span;
+        // Dotted named types, for example `file2.Node`, resolve one namespace
+        // segment at a time.
+        if matches!(token.kind, TokenKind::Identifier(_)) {
+            let mut name = match &token.kind {
+                TokenKind::Identifier(text) => text.clone(),
+                _ => unreachable!("identifier checked above"),
+            };
+            while self.peek().kind == TokenKind::Dot
+                && matches!(self.peek_at(1).kind, TokenKind::Identifier(_))
+            {
+                self.advance();
+                let component = self.advance().clone();
+                let TokenKind::Identifier(component_name) = component.kind else {
+                    unreachable!("dot component checked above");
+                };
+                name.push('.');
+                name.push_str(&component_name);
+                end = component.span;
+                ty = Type::Named(name.clone());
+            }
+        }
         while self.consume(&TokenKind::LeftBracket) {
             if self.at(&TokenKind::RightBracket) {
                 let close = self.advance().clone();
@@ -921,7 +1001,43 @@ impl Parser {
 
     fn starts_variable_declaration(&self) -> bool {
         if matches!(self.peek().kind, TokenKind::Identifier(_)) {
-            matches!(self.peek_at(1).kind, TokenKind::Identifier(_))
+            // Scan dotted type names such as `file2.Node`; a following
+            // identifier starts a variable declaration.
+            let mut distance = 1;
+            while distance < 16
+                && self.peek_at(distance).kind == TokenKind::Dot
+                && matches!(self.peek_at(distance + 1).kind, TokenKind::Identifier(_))
+            {
+                distance += 2;
+            }
+            if self.peek_at(distance).kind == TokenKind::LeftBracket {
+                // An array type such as `Node[2] nodes` continues with an
+                // integer length and a variable name; an indexer such as
+                // `nodes[0].items` continues with anything else.
+                return matches!(self.peek_at(distance + 1).kind, TokenKind::Integer(_))
+                    && self.peek_at(distance + 2).kind == TokenKind::RightBracket
+                    && matches!(self.peek_at(distance + 3).kind, TokenKind::Identifier(_));
+            }
+            matches!(self.peek_at(distance).kind, TokenKind::Identifier(_))
+        } else if matches!(self.peek().kind, TokenKind::LeftParen) {
+            // Statements that open with `(` are expressions; tuple variable
+            // declarations are not specified.
+            false
+        } else if matches!(
+            self.peek().kind,
+            TokenKind::Keyword(
+                Keyword::Int
+                    | Keyword::Byte
+                    | Keyword::Float
+                    | Keyword::Bool
+                    | Keyword::Char
+                    | Keyword::String
+            )
+        ) && self.peek_at(1).kind == TokenKind::LeftParen
+        {
+            // A conversion keyword followed by `(` starts a conversion call
+            // such as `int(a)`, not a variable declaration.
+            false
         } else {
             self.starts_type()
         }
@@ -956,6 +1072,14 @@ impl Parser {
             }),
             TokenKind::Keyword(Keyword::Byte) => Ok(Name {
                 text: "byte".into(),
+                span: token.span,
+            }),
+            TokenKind::Keyword(Keyword::Print) => Ok(Name {
+                text: "print".into(),
+                span: token.span,
+            }),
+            TokenKind::Keyword(Keyword::Input) => Ok(Name {
+                text: "input".into(),
                 span: token.span,
             }),
             _ => Err(Diagnostic::error(message, token.span)),
@@ -1010,13 +1134,24 @@ impl Parser {
                         | Keyword::Struct
                         | Keyword::Enum
                         | Keyword::Use
+                        | Keyword::Namespace
                 )
-            ) {
+            ) || self.peek().kind == TokenKind::RightBrace
+            {
                 return;
             }
             self.advance();
         }
     }
+}
+
+/// One key per import form and module name. `use lexer;` and
+/// `using lexer: scan;` bind different names and are not duplicates; two
+/// imports of the same form for the same module are.
+fn import_key(import: &Import) -> String {
+    let selective = import.selected.is_some();
+    let form = if selective { "using" } else { "use" };
+    format!("{form}|{}", import.name.text)
 }
 
 pub fn parse(tokens: Vec<Token>) -> ParseResult {
@@ -1350,14 +1485,14 @@ mod tests {
     #[test]
     fn parses_string_byte_and_read_file_intrinsics() {
         let module = parse_source(
-            "private int f(string path) { string source = readFile(path); return source.byte(0); }",
+            "private int f(string path) { string source = std.fs.readFile(path); return source.byte(0); }",
         );
         let StatementKind::Variable(variable) = &module.functions[0].body.statements[0].kind else {
             panic!("expected variable");
         };
         assert!(matches!(
             variable.initializer.kind,
-            ExpressionKind::Call { .. }
+            ExpressionKind::MethodCall { .. }
         ));
         let StatementKind::Return(Some(value)) = &module.functions[0].body.statements[1].kind
         else {

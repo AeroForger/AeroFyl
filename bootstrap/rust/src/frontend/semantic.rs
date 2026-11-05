@@ -4,20 +4,22 @@ use super::ast::{
     Expression, ExpressionKind, Literal, Module, Statement, StatementKind, Visibility,
 };
 use super::diagnostics::Diagnostic;
-use super::resolution::{Resolution, SymbolId, SymbolKind, import_allows, resolve};
+use super::resolution::{NamespaceIdx, Resolution, SymbolId, SymbolKind, resolve};
 use super::types::{Type, TypeId};
 use crate::middle::hir::*;
 
-pub fn analyze(module: &Module) -> Result<HirModule, Vec<Diagnostic>> {
-    let resolution = resolve(module)?;
+pub fn analyze(
+    module: &Module,
+    file_names: &HashMap<super::source::FileId, String>,
+) -> Result<HirModule, Vec<Diagnostic>> {
+    let resolution = resolve(module, file_names)?;
     let mut analyzer = Analyzer {
         resolution: &resolution,
         diagnostics: Vec::new(),
         structs: Vec::new(),
         enums: Vec::new(),
         type_names: HashMap::new(),
-        type_sources: HashMap::new(),
-        imports: module.imports.clone(),
+        current_ancestors: Vec::new(),
     };
     analyzer.collect_types(module);
     analyzer.analyze_module(module)
@@ -81,34 +83,63 @@ struct Analyzer<'resolution> {
     diagnostics: Vec<Diagnostic>,
     structs: Vec<HirStruct>,
     enums: Vec<HirEnum>,
+    /// Named types keyed by their canonical dotted namespace path.
     type_names: HashMap<String, Type>,
-    type_sources: HashMap<String, super::source::FileId>,
-    imports: Vec<super::ast::Import>,
+    /// Enclosing namespace chain of the declaration being checked, most
+    /// specific first.
+    current_ancestors: Vec<NamespaceIdx>,
 }
 
 impl Analyzer<'_> {
     fn collect_types(&mut self, module: &Module) {
+        let mut structs: Vec<(&super::ast::StructDeclaration, String, NamespaceIdx)> = Vec::new();
+        let mut enums: Vec<(&super::ast::EnumDeclaration, String, NamespaceIdx)> = Vec::new();
         for declaration in &module.structs {
-            let id = TypeId(self.type_names.len() as u32);
-            self.type_sources
-                .insert(declaration.name.text.clone(), declaration.name.span.file);
-            self.type_names
-                .entry(declaration.name.text.clone())
-                .or_insert(Type::Struct(id));
+            structs.push((
+                declaration,
+                self.type_declaration_path_struct(module, declaration),
+                self.declaration_namespace(module, declaration.name.span),
+            ));
         }
         for declaration in &module.enums {
-            let id = TypeId(self.type_names.len() as u32);
-            self.type_sources
-                .insert(declaration.name.text.clone(), declaration.name.span.file);
-            self.type_names
-                .entry(declaration.name.text.clone())
-                .or_insert(Type::Enum(id));
+            enums.push((
+                declaration,
+                self.type_declaration_path(
+                    module,
+                    &declaration.name,
+                    self.declaration_namespace(module, declaration.name.span),
+                ),
+                self.declaration_namespace(module, declaration.name.span),
+            ));
         }
-        for declaration in &module.structs {
-            let Some(Type::Struct(id)) = self.type_names.get(&declaration.name.text).cloned()
+        for declaration in &module.namespaces {
+            let Some(root) = self
+                .resolution
+                .root_namespace_of_file(declaration.name.span.file)
             else {
                 continue;
             };
+            self.collect_namespace_types(root, declaration, &mut structs, &mut enums);
+        }
+
+        for (_, path, _) in &structs {
+            let id = TypeId(self.type_names.len() as u32);
+            self.type_names
+                .entry(path.clone())
+                .or_insert(Type::Struct(id));
+        }
+        for (_, path, _) in &enums {
+            let id = TypeId(self.type_names.len() as u32);
+            self.type_names
+                .entry(path.clone())
+                .or_insert(Type::Enum(id));
+        }
+        for (declaration, path, namespace) in &structs {
+            let Some(Type::Struct(id)) = self.type_names.get(path).cloned() else {
+                continue;
+            };
+            let ancestors = self.resolution.namespace_ancestors_from(*namespace);
+            self.current_ancestors = ancestors;
             let fields = declaration
                 .fields
                 .iter()
@@ -134,14 +165,15 @@ impl Analyzer<'_> {
                 fields,
             });
         }
-        for declaration in &module.enums {
-            let Some(Type::Enum(id)) = self.type_names.get(&declaration.name.text).cloned() else {
+        for (declaration, path, namespace) in &enums {
+            let Some(Type::Enum(id)) = self.type_names.get(path).cloned() else {
                 continue;
             };
+            self.current_ancestors = self.resolution.namespace_ancestors_from(*namespace);
             let variants = declaration
                 .variants
                 .iter()
-                .map(|variant| crate::middle::hir::HirEnumVariant {
+                .map(|variant| HirEnumVariant {
                     name: variant.name.text.clone(),
                     payload: variant
                         .payload
@@ -155,7 +187,8 @@ impl Analyzer<'_> {
                 variants,
             });
         }
-        for declaration in &module.enums {
+        for (declaration, _, namespace) in &enums {
+            self.current_ancestors = self.resolution.namespace_ancestors_from(*namespace);
             for variant in &declaration.variants {
                 if let Some(payload) = &variant.payload {
                     let ty = self.resolve_type(&payload.kind, payload.span);
@@ -168,11 +201,12 @@ impl Analyzer<'_> {
                 }
             }
         }
-        for declaration in &module.structs {
-            let Some(Type::Struct(owner)) = self.type_names.get(&declaration.name.text).cloned()
-            else {
+        for (declaration, path, namespace) in &structs {
+            let Some(Type::Struct(owner)) = self.type_names.get(path).cloned() else {
                 continue;
             };
+            let ancestors = self.resolution.namespace_ancestors_from(*namespace);
+            self.current_ancestors = ancestors;
             for field in &declaration.fields {
                 let field_type = self.resolve_type(&field.ty.kind, field.ty.span);
                 if let Type::Struct(nested) = field_type
@@ -185,6 +219,95 @@ impl Analyzer<'_> {
                 }
             }
         }
+    }
+
+    /// Canonical namespace path of one struct declaration. The compiler-built
+    /// `Process` struct spans the `std.os` import instead of a real
+    /// declaration site, so it is keyed as `std.os.Process`.
+    fn type_declaration_path_struct(
+        &self,
+        module: &Module,
+        declaration: &super::ast::StructDeclaration,
+    ) -> String {
+        if Self::is_injected_process(module, declaration.name.span) {
+            return "std.os.Process".to_owned();
+        }
+        self.type_declaration_path(
+            module,
+            &declaration.name,
+            self.declaration_namespace(module, declaration.name.span),
+        )
+    }
+
+    fn type_declaration_path(
+        &self,
+        module: &Module,
+        name: &super::ast::Name,
+        fallback: NamespaceIdx,
+    ) -> String {
+        if Self::is_injected_process(module, name.span) {
+            return "std.os.Process".to_owned();
+        }
+        format!("{}.{}", self.resolution.namespace(fallback).path, name.text)
+    }
+
+    /// The namespace a top-level declaration belongs to: always the root
+    /// namespace of its file.
+    fn declaration_namespace(&self, _module: &Module, span: super::source::Span) -> NamespaceIdx {
+        self.resolution
+            .root_namespace_of_file(span.file)
+            .unwrap_or(usize::MAX)
+    }
+
+    fn collect_namespace_types<'a>(
+        &mut self,
+        parent: NamespaceIdx,
+        declaration: &'a super::ast::NamespaceDeclaration,
+        structs: &mut Vec<(&'a super::ast::StructDeclaration, String, NamespaceIdx)>,
+        enums: &mut Vec<(&'a super::ast::EnumDeclaration, String, NamespaceIdx)>,
+    ) {
+        let Some(namespace) = self.child_namespace(parent, &declaration.name.text) else {
+            return;
+        };
+        for type_declaration in &declaration.structs {
+            let path = format!(
+                "{}.{}",
+                self.resolution.namespace(namespace).path,
+                type_declaration.name.text
+            );
+            structs.push((type_declaration, path, namespace));
+        }
+        for type_declaration in &declaration.enums {
+            let path = format!(
+                "{}.{}",
+                self.resolution.namespace(namespace).path,
+                type_declaration.name.text
+            );
+            enums.push((type_declaration, path, namespace));
+        }
+        for child in &declaration.namespaces {
+            self.collect_namespace_types(namespace, child, structs, enums);
+        }
+    }
+
+    fn child_namespace(&self, parent: NamespaceIdx, name: &str) -> Option<NamespaceIdx> {
+        let symbol = self
+            .resolution
+            .namespace(parent)
+            .members
+            .get(name)
+            .copied()?;
+        match self.resolution.symbol(symbol)?.kind.clone() {
+            SymbolKind::Module { namespace } => Some(namespace),
+            _ => None,
+        }
+    }
+
+    fn is_injected_process(module: &Module, span: super::source::Span) -> bool {
+        module
+            .imports
+            .iter()
+            .any(|import| import.name.text == "std.os" && import.name.span == span)
     }
 
     fn direct_struct_reaches(
@@ -215,56 +338,21 @@ impl Analyzer<'_> {
     fn analyze_module(mut self, module: &Module) -> Result<HirModule, Vec<Diagnostic>> {
         let mut functions = Vec::new();
         for function in &module.functions {
-            let symbol = self.declaration_id(function.name.span);
-            let return_type =
-                self.resolve_type(&function.return_type.kind, function.return_type.span);
-            self.validate_collection_type(&return_type, function.return_type.span);
-            if return_type == Type::CliArgs {
-                self.diagnostics.push(Diagnostic::error(
-                    "`string[]` cannot be used as a return type",
-                    function.return_type.span,
-                ));
+            if let Some(root) = self
+                .resolution
+                .root_namespace_of_file(function.name.span.file)
+            {
+                self.current_ancestors = vec![root];
             }
-            let parameters = function
-                .parameters
-                .iter()
-                .enumerate()
-                .map(|(index, parameter)| {
-                    let ty = self.resolve_type(&parameter.ty.kind, parameter.ty.span);
-                    self.validate_collection_type(&ty, parameter.ty.span);
-                    if ty == Type::CliArgs
-                        && !(function.name.text == "main"
-                            && function.parameters.len() == 1
-                            && index == 0)
-                    {
-                        self.diagnostics.push(Diagnostic::error(
-                            "`string[]` is reserved for the sole parameter of executable `main`",
-                            parameter.ty.span,
-                        ));
-                    }
-                    HirParameter {
-                        symbol: self.declaration_id(parameter.name.span),
-                        ty,
-                    }
-                })
-                .collect();
-            let body = self.analyze_block(&function.body, &return_type, 0);
-            if return_type != Type::Void && !block_definitely_returns(&function.body) {
-                self.diagnostics.push(Diagnostic::error(
-                    format!("a `{return_type}` function must return a value"),
-                    function.name.span,
-                ));
+            functions.push(self.check_function(function));
+        }
+        for declaration in &module.namespaces {
+            if let Some(root) = self
+                .resolution
+                .root_namespace_of_file(declaration.name.span.file)
+            {
+                self.collect_namespace_functions(root, declaration, &mut functions);
             }
-            functions.push(HirFunction {
-                symbol,
-                name: function.name.text.clone(),
-                name_span: function.name.span,
-                visibility: function.visibility,
-                return_type,
-                parameters,
-                body,
-                span: function.span,
-            });
         }
         if self.diagnostics.is_empty() {
             Ok(HirModule {
@@ -275,6 +363,83 @@ impl Analyzer<'_> {
             })
         } else {
             Err(self.diagnostics)
+        }
+    }
+
+    fn check_function(&mut self, function: &super::ast::Function) -> HirFunction {
+        let symbol = self.declaration_id(function.name.span);
+        let return_type = self.resolve_type(&function.return_type.kind, function.return_type.span);
+        self.validate_collection_type(&return_type, function.return_type.span);
+        if return_type == Type::CliArgs {
+            self.diagnostics.push(Diagnostic::error(
+                "`string[]` cannot be used as a return type",
+                function.return_type.span,
+            ));
+        }
+        let parameters = function
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| {
+                let ty = self.resolve_type(&parameter.ty.kind, parameter.ty.span);
+                self.validate_collection_type(&ty, parameter.ty.span);
+                if ty == Type::CliArgs
+                    && !(function.name.text == "main"
+                        && self.current_ancestors.len() == 1
+                        && function.parameters.len() == 1
+                        && index == 0)
+                {
+                    self.diagnostics.push(Diagnostic::error(
+                        "`string[]` is reserved for the sole parameter of executable `main`",
+                        parameter.ty.span,
+                    ));
+                }
+                HirParameter {
+                    symbol: self.declaration_id(parameter.name.span),
+                    ty,
+                }
+            })
+            .collect();
+        let body = self.analyze_block(&function.body, &return_type, 0);
+        if return_type != Type::Void && !block_definitely_returns(&function.body) {
+            self.diagnostics.push(Diagnostic::error(
+                format!("a `{return_type}` function must return a value"),
+                function.name.span,
+            ));
+        }
+        let qualified_name = self
+            .symbol(symbol)
+            .path
+            .clone()
+            .unwrap_or_else(|| function.name.text.clone());
+        HirFunction {
+            symbol,
+            name: function.name.text.clone(),
+            qualified_name,
+            name_span: function.name.span,
+            visibility: function.visibility,
+            return_type,
+            parameters,
+            body,
+            span: function.span,
+        }
+    }
+
+    fn collect_namespace_functions(
+        &mut self,
+        parent: NamespaceIdx,
+        declaration: &super::ast::NamespaceDeclaration,
+        functions: &mut Vec<HirFunction>,
+    ) {
+        let Some(namespace) = self.child_namespace(parent, &declaration.name.text) else {
+            return;
+        };
+        self.current_ancestors = self.resolution.namespace_ancestors_from(namespace);
+        for function in &declaration.functions {
+            functions.push(self.check_function(function));
+        }
+        for child in &declaration.namespaces {
+            self.collect_namespace_functions(namespace, child, functions);
         }
     }
 
@@ -299,7 +464,9 @@ impl Analyzer<'_> {
                     if matches!(ty, Type::List(_))
                         && !matches!(
                             variable.initializer.kind,
-                            ExpressionKind::Collection(_) | ExpressionKind::Call { .. }
+                            ExpressionKind::Collection(_)
+                                | ExpressionKind::Call { .. }
+                                | ExpressionKind::MethodCall { .. }
                         )
                     {
                         self.diagnostics.push(Diagnostic::error(
@@ -500,7 +667,10 @@ impl Analyzer<'_> {
                     SymbolKind::Variable { ty } | SymbolKind::Parameter { ty } => {
                         self.resolve_type(&ty, name.span)
                     }
-                    SymbolKind::Function { .. } | SymbolKind::Builtin | SymbolKind::Module => {
+                    SymbolKind::Function { .. }
+                    | SymbolKind::Builtin
+                    | SymbolKind::Module { .. }
+                    | SymbolKind::NamedType { .. } => {
                         self.diagnostics.push(Diagnostic::error(
                             format!("`{}` cannot be used as a value", name.text),
                             name.span,
@@ -517,43 +687,14 @@ impl Analyzer<'_> {
                     SymbolKind::Function {
                         parameters,
                         return_type,
-                    } => {
-                        let parameters: Vec<_> = parameters
-                            .iter()
-                            .map(|ty| self.resolve_type(ty, callee.span))
-                            .collect();
-                        let return_type = self.resolve_type(&return_type, callee.span);
-                        if parameters.len() != arguments.len() {
-                            self.diagnostics.push(Diagnostic::error(
-                                format!(
-                                    "function `{}` expects {} argument(s), found {}",
-                                    callee.text,
-                                    parameters.len(),
-                                    arguments.len()
-                                ),
-                                expression.span,
-                            ));
-                        }
-                        let checked = arguments
-                            .iter()
-                            .enumerate()
-                            .map(|(index, argument)| {
-                                let value = self.check_expression(argument, parameters.get(index));
-                                if matches!(value.ty, Type::Struct(_)) {
-                                    self.struct_copy(value)
-                                } else {
-                                    value
-                                }
-                            })
-                            .collect();
-                        (
-                            HirExpressionKind::Call {
-                                callee: id,
-                                arguments: checked,
-                            },
-                            return_type,
-                        )
-                    }
+                    } => self.check_called_function(
+                        id,
+                        &callee.text,
+                        &parameters,
+                        &return_type,
+                        arguments,
+                        expression.span,
+                    ),
                     SymbolKind::Builtin => {
                         if callee.text == "reference" {
                             if arguments.len() != 1 {
@@ -650,186 +791,30 @@ impl Analyzer<'_> {
                             )
                         } else if matches!(
                             callee.text.as_str(),
-                            "print" | "println" | "eprint" | "eprintln"
+                            "print"
+                                | "println"
+                                | "eprint"
+                                | "eprintln"
+                                | "input"
+                                | "readFile"
+                                | "readBytes"
+                                | "writeFile"
+                                | "writeBytes"
+                                | "exists"
                         ) {
-                            if arguments.len() != 1 {
-                                self.diagnostics.push(Diagnostic::error(
-                                    format!(
-                                        "`{}` expects exactly one argument, found {}",
-                                        callee.text,
-                                        arguments.len()
-                                    ),
-                                    expression.span,
-                                ));
-                            }
-                            if let Some(Expression {
-                                kind: ExpressionKind::Interpolated(parts),
-                                ..
-                            }) = arguments.first()
-                            {
-                                let mut values = Vec::new();
-                                for part in parts {
-                                    match part {
-                                        super::token::InterpolationPart::Text(text) => {
-                                            values.push(HirExpression {
-                                                kind: HirExpressionKind::StringLiteral(
-                                                    text.clone(),
-                                                ),
-                                                ty: Type::String,
-                                                span: expression.span,
-                                            })
-                                        }
-                                        super::token::InterpolationPart::Variable(name, span) => {
-                                            let variable = Expression {
-                                                kind: ExpressionKind::Identifier(
-                                                    super::ast::Name {
-                                                        text: name.clone(),
-                                                        span: *span,
-                                                    },
-                                                ),
-                                                span: *span,
-                                            };
-                                            values.push(self.check_expression(&variable, None));
-                                        }
-                                    }
-                                }
-                                for argument in arguments.iter().skip(1) {
-                                    self.check_expression(argument, None);
-                                }
-                                for value in &values {
-                                    if !self.is_printable_type(&value.ty, &mut HashSet::new()) {
-                                        self.diagnostics.push(Diagnostic::error(
-                                            format!(
-                                                "`{}` cannot print a `{}` value",
-                                                callee.text, value.ty
-                                            ),
-                                            value.span,
-                                        ));
-                                    }
-                                }
-                                return self.finish_expression(
-                                    expression,
-                                    expected,
-                                    HirExpressionKind::PrintSeries {
-                                        values,
-                                        stderr: callee.text.starts_with('e'),
-                                        newline: callee.text.ends_with("println"),
-                                    },
-                                    Type::Void,
-                                );
-                            }
-                            let value = arguments
-                                .first()
+                            // Standard-library builtins are only reachable as
+                            // dotted namespace calls; see `check_std_call`.
+                            let checked = arguments
+                                .iter()
                                 .map(|argument| self.check_expression(argument, None))
-                                .unwrap_or(HirExpression {
-                                    kind: HirExpressionKind::StringLiteral(String::new()),
-                                    ty: Type::Dynamic,
-                                    span: expression.span,
-                                });
-                            for argument in arguments.iter().skip(1) {
-                                self.check_expression(argument, None);
-                            }
-                            if !self.is_printable_type(&value.ty, &mut HashSet::new()) {
-                                self.diagnostics.push(Diagnostic::error(
-                                    format!(
-                                        "`{}` cannot print a `{}` value",
-                                        callee.text, value.ty
-                                    ),
-                                    value.span,
-                                ));
-                            }
+                                .collect();
                             (
-                                HirExpressionKind::Print {
-                                    value: Box::new(value),
-                                    stderr: callee.text.starts_with('e'),
-                                    newline: callee.text.ends_with("println"),
+                                HirExpressionKind::Call {
+                                    callee: id,
+                                    arguments: checked,
                                 },
-                                Type::Void,
+                                Type::Dynamic,
                             )
-                        } else if callee.text == "input" {
-                            if arguments.len() > 1 {
-                                self.diagnostics.push(Diagnostic::error(
-                                    format!(
-                                        "`input` expects zero or one argument, found {}",
-                                        arguments.len()
-                                    ),
-                                    expression.span,
-                                ));
-                            }
-                            let target = arguments.first().and_then(|argument| {
-                                let ExpressionKind::Identifier(name) = &argument.kind else {
-                                    self.diagnostics.push(Diagnostic::error(
-                                        "`input` type argument must be a supported type name",
-                                        argument.span,
-                                    ));
-                                    return None;
-                                };
-                                match name.text.as_str() {
-                                    "string" => Some(Type::String),
-                                    "int" => Some(Type::Int),
-                                    "bool" => Some(Type::Bool),
-                                    "char" => Some(Type::Char),
-                                    "float" => {
-                                        self.diagnostics.push(Diagnostic::error(
-                                            "`input(float)` is unavailable because floating-point execution is not implemented",
-                                            argument.span,
-                                        ));
-                                        None
-                                    }
-                                    _ => {
-                                        self.diagnostics.push(Diagnostic::error(
-                                            "`input` supports string, int, bool, and char",
-                                            argument.span,
-                                        ));
-                                        None
-                                    }
-                                }
-                            }).unwrap_or(Type::String);
-                            (
-                                HirExpressionKind::Input {
-                                    target: target.clone(),
-                                },
-                                target,
-                            )
-                        } else if callee.text == "readFile" || callee.text == "readBytes" {
-                            if arguments.len() != 1 {
-                                self.diagnostics.push(Diagnostic::error(
-                                    format!(
-                                        "`{}` expects exactly one argument, found {}",
-                                        callee.text,
-                                        arguments.len()
-                                    ),
-                                    expression.span,
-                                ));
-                            }
-                            let path = arguments
-                                .first()
-                                .map(|argument| {
-                                    self.check_expression(argument, Some(&Type::String))
-                                })
-                                .unwrap_or(HirExpression {
-                                    kind: HirExpressionKind::StringLiteral(String::new()),
-                                    ty: Type::Dynamic,
-                                    span: expression.span,
-                                });
-                            for argument in arguments.iter().skip(1) {
-                                self.check_expression(argument, None);
-                            }
-                            if callee.text == "readFile" {
-                                (
-                                    HirExpressionKind::ReadFile {
-                                        path: Box::new(path),
-                                    },
-                                    Type::String,
-                                )
-                            } else {
-                                (
-                                    HirExpressionKind::ReadBytes {
-                                        path: Box::new(path),
-                                    },
-                                    Type::List(Box::new(Type::Byte)),
-                                )
-                            }
                         } else if callee.text == "exit" {
                             if arguments.len() != 1 {
                                 self.diagnostics.push(Diagnostic::error(
@@ -856,81 +841,6 @@ impl Analyzer<'_> {
                                     code: Box::new(code),
                                 },
                                 Type::Void,
-                            )
-                        } else if callee.text == "writeFile" || callee.text == "writeBytes" {
-                            if arguments.len() != 2 {
-                                self.diagnostics.push(Diagnostic::error(
-                                    format!(
-                                        "`{}` expects exactly two arguments, found {}",
-                                        callee.text,
-                                        arguments.len()
-                                    ),
-                                    expression.span,
-                                ));
-                            }
-                            let placeholder = || HirExpression {
-                                kind: HirExpressionKind::StringLiteral(String::new()),
-                                ty: Type::Dynamic,
-                                span: expression.span,
-                            };
-                            let path = arguments
-                                .first()
-                                .map(|argument| {
-                                    self.check_expression(argument, Some(&Type::String))
-                                })
-                                .unwrap_or_else(&placeholder);
-                            let data_type = if callee.text == "writeFile" {
-                                Type::String
-                            } else {
-                                Type::List(Box::new(Type::Byte))
-                            };
-                            let data = arguments
-                                .get(1)
-                                .map(|argument| self.check_expression(argument, Some(&data_type)))
-                                .unwrap_or_else(placeholder);
-                            for argument in arguments.iter().skip(2) {
-                                self.check_expression(argument, None);
-                            }
-                            let kind = if callee.text == "writeFile" {
-                                HirExpressionKind::WriteFile {
-                                    path: Box::new(path),
-                                    data: Box::new(data),
-                                }
-                            } else {
-                                HirExpressionKind::WriteBytes {
-                                    path: Box::new(path),
-                                    data: Box::new(data),
-                                }
-                            };
-                            (kind, Type::Void)
-                        } else if callee.text == "exists" {
-                            if arguments.len() != 1 {
-                                self.diagnostics.push(Diagnostic::error(
-                                    format!(
-                                        "`exists` expects exactly one argument, found {}",
-                                        arguments.len()
-                                    ),
-                                    expression.span,
-                                ));
-                            }
-                            let path = arguments
-                                .first()
-                                .map(|argument| {
-                                    self.check_expression(argument, Some(&Type::String))
-                                })
-                                .unwrap_or(HirExpression {
-                                    kind: HirExpressionKind::StringLiteral(String::new()),
-                                    ty: Type::Dynamic,
-                                    span: expression.span,
-                                });
-                            for argument in arguments.iter().skip(1) {
-                                self.check_expression(argument, None);
-                            }
-                            (
-                                HirExpressionKind::Exists {
-                                    path: Box::new(path),
-                                },
-                                Type::Bool,
                             )
                         } else if matches!(callee.text.as_str(), "int" | "char" | "byte") {
                             if arguments.len() != 1 {
@@ -1417,7 +1327,10 @@ impl Analyzer<'_> {
                     ));
                     return HirStatement::Expression(self.check_expression(value, None));
                 };
-                if self.type_names.contains_key(&base_name.text) {
+                if self
+                    .type_key(&base_name.text, base_name.span.file)
+                    .is_some()
+                {
                     self.diagnostics.push(Diagnostic::error(
                         "field assignment requires a local struct variable, not a type name",
                         base_name.span,
@@ -1471,7 +1384,10 @@ impl Analyzer<'_> {
         span: super::source::Span,
     ) -> (HirExpressionKind, Type) {
         self.check_named_type_visibility(&name.text, name.span);
-        let Some(Type::Struct(struct_id)) = self.type_names.get(&name.text).cloned() else {
+        let Some(Type::Struct(struct_id)) = self
+            .type_key(&name.text, name.span.file)
+            .and_then(|key| self.type_names.get(&key).cloned())
+        else {
             self.diagnostics.push(Diagnostic::error(
                 format!("unknown struct `{}`", name.text),
                 name.span,
@@ -1537,41 +1453,418 @@ impl Analyzer<'_> {
         )
     }
 
-    /// Recognizes the `std.os` `process` namespace in both import forms:
-    /// `os.process` from `use std.os;` and `process` from
-    /// `using std.os: process;`.
+    /// A dotted type path receiver or base (`pack.Tag`, `en.State`) names a
+    /// registered enum when chain resolution recorded module symbols before
+    /// the named type. Returns the enum id so variant construction can
+    /// proceed.
+    fn enum_of_type_chain(&self, expression: &Expression) -> Option<TypeId> {
+        let segments = flattened_names(expression)?;
+        if segments.len() < 2 {
+            return None;
+        }
+        for (index, segment) in segments.iter().enumerate() {
+            let Some(id) = self.resolution.reference(segment.span) else {
+                return None;
+            };
+            if index + 1 == segments.len() {
+                let SymbolKind::NamedType { path } = self.symbol(id).kind.clone() else {
+                    return None;
+                };
+                return match self.type_names.get(&path).cloned() {
+                    Some(Type::Enum(enum_id)) => Some(enum_id),
+                    _ => None,
+                };
+            }
+            if let SymbolKind::Module { .. } = self.symbol(id).kind {
+                continue;
+            }
+            return None;
+        }
+        None
+    }
+
     fn is_std_os_process_namespace(&self, receiver: &Expression) -> bool {
+        let is_reference_kind = |span: super::source::Span, want: fn(&SymbolKind) -> bool| {
+            self.resolution
+                .reference(span)
+                .map_or(false, |id| want(&self.symbol(id).kind))
+        };
+        let module_path = |span: super::source::Span| -> Option<String> {
+            self.resolution
+                .reference(span)
+                .and_then(|id| self.symbol(id).path.clone())
+        };
         match &receiver.kind {
             ExpressionKind::Identifier(name) => {
                 name.text == "process"
-                    && self.resolution.reference(name.span).map_or(false, |id| {
-                        matches!(
-                            self.resolution.symbol(id).map(|s| &s.kind),
-                            Some(SymbolKind::Builtin)
-                        )
-                    })
+                    && is_reference_kind(name.span, |kind| matches!(kind, SymbolKind::Builtin))
             }
             ExpressionKind::Member { base, name } => {
-                name.text == "process"
-                    && matches!(
-                        &base.kind,
-                        ExpressionKind::Identifier(base_name) if base_name.text == "os",
-                    )
-                    && self
-                        .resolution
-                        .reference(match &base.kind {
-                            ExpressionKind::Identifier(base_name) => base_name.span,
-                            _ => return false,
-                        })
-                        .map_or(false, |id| {
-                            matches!(
-                                self.resolution.symbol(id).map(|s| &s.kind),
-                                Some(SymbolKind::Builtin)
+                if name.text != "process" {
+                    return false;
+                }
+                match &base.kind {
+                    // `os.process` after `use std.os;`: `os` resolves to the
+                    // `std.os` module alias, not a builtin, so look at the
+                    // aliased module's path.
+                    ExpressionKind::Identifier(base_name) => {
+                        base_name.text == "os"
+                            && module_path(base_name.span).as_deref() == Some("std.os")
+                    }
+                    ExpressionKind::Member {
+                        base: inner_base,
+                        name: inner_name,
+                    } => {
+                        // `std.os.process`: the chain resolver recorded the
+                        // `process` builtin itself.
+                        inner_name.text == "os"
+                            && matches!(
+                                &inner_base.kind,
+                                ExpressionKind::Identifier(std_name) if std_name.text == "std",
                             )
-                        })
+                    }
+                    _ => false,
+                }
             }
             _ => false,
         }
+    }
+
+    /// Signature check shared by direct calls and namespace-qualified calls.
+    fn check_called_function(
+        &mut self,
+        id: SymbolId,
+        name: &str,
+        parameters: &[Type],
+        return_type: &Type,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        let parameters: Vec<_> = parameters
+            .iter()
+            .map(|ty| self.resolve_type(ty, span))
+            .collect();
+        let return_type = self.resolve_type(return_type, span);
+        if parameters.len() != arguments.len() {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "function `{name}` expects {} argument(s), found {}",
+                    parameters.len(),
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let checked = arguments
+            .iter()
+            .enumerate()
+            .map(|(index, argument)| {
+                let value = self.check_expression(argument, parameters.get(index));
+                if matches!(value.ty, Type::Struct(_)) {
+                    self.struct_copy(value)
+                } else {
+                    value
+                }
+            })
+            .collect();
+        (
+            HirExpressionKind::Call {
+                callee: id,
+                arguments: checked,
+            },
+            return_type,
+        )
+    }
+
+    /// Dispatches one `std.<module>.<name>` builtin call by its canonical
+    /// path.
+    fn check_std_call(
+        &mut self,
+        path: &str,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        let name = path.rsplit_once('.').map_or(path, |(_, leaf)| leaf);
+        match name {
+            "print" | "println" | "eprint" | "eprintln" => {
+                self.check_print_call(name, arguments, span)
+            }
+            "input" => self.check_input_call(arguments, span),
+            "readFile" | "readBytes" => self.check_fs_read_call(name, arguments, span),
+            "writeFile" | "writeBytes" => self.check_fs_write_call(name, arguments, span),
+            "exists" => self.check_fs_exists_call(arguments, span),
+            _ => {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("unknown standard-library function `{path}`"),
+                    span,
+                ));
+                (HirExpressionKind::Collection(Vec::new()), Type::Dynamic)
+            }
+        }
+    }
+
+    fn check_print_call(
+        &mut self,
+        name: &str,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        if arguments.len() != 1 {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "`{name}` expects exactly one argument, found {}",
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        if let Some(Expression {
+            kind: ExpressionKind::Interpolated(parts),
+            ..
+        }) = arguments.first()
+        {
+            let mut values = Vec::new();
+            for part in parts {
+                match part {
+                    super::token::InterpolationPart::Text(text) => values.push(HirExpression {
+                        kind: HirExpressionKind::StringLiteral(text.clone()),
+                        ty: Type::String,
+                        span,
+                    }),
+                    super::token::InterpolationPart::Variable(name, span) => {
+                        let variable = Expression {
+                            kind: ExpressionKind::Identifier(super::ast::Name {
+                                text: name.clone(),
+                                span: *span,
+                            }),
+                            span: *span,
+                        };
+                        values.push(self.check_expression(&variable, None));
+                    }
+                }
+            }
+            for argument in arguments.iter().skip(1) {
+                self.check_expression(argument, None);
+            }
+            for value in &values {
+                if !self.is_printable_type(&value.ty, &mut HashSet::new()) {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("`{name}` cannot print a `{}` value", value.ty),
+                        value.span,
+                    ));
+                }
+            }
+            return (
+                HirExpressionKind::PrintSeries {
+                    values,
+                    stderr: name.starts_with('e'),
+                    newline: name.ends_with("println"),
+                },
+                Type::Void,
+            );
+        }
+        let value = arguments
+            .first()
+            .map(|argument| self.check_expression(argument, None))
+            .unwrap_or(HirExpression {
+                kind: HirExpressionKind::StringLiteral(String::new()),
+                ty: Type::Dynamic,
+                span,
+            });
+        for argument in arguments.iter().skip(1) {
+            self.check_expression(argument, None);
+        }
+        if !self.is_printable_type(&value.ty, &mut HashSet::new()) {
+            self.diagnostics.push(Diagnostic::error(
+                format!("`{name}` cannot print a `{}` value", value.ty),
+                value.span,
+            ));
+        }
+        (
+            HirExpressionKind::Print {
+                value: Box::new(value),
+                stderr: name.starts_with('e'),
+                newline: name.ends_with("println"),
+            },
+            Type::Void,
+        )
+    }
+
+    fn check_input_call(
+        &mut self,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        if arguments.len() > 1 {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "`input` expects zero or one argument, found {}",
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let target = arguments.first().and_then(|argument| {
+            let ExpressionKind::Identifier(name) = &argument.kind else {
+                self.diagnostics.push(Diagnostic::error(
+                    "`input` type argument must be a supported type name",
+                    argument.span,
+                ));
+                return None;
+            };
+            match name.text.as_str() {
+                "string" => Some(Type::String),
+                "int" => Some(Type::Int),
+                "bool" => Some(Type::Bool),
+                "char" => Some(Type::Char),
+                "float" => {
+                    self.diagnostics.push(Diagnostic::error(
+                        "`input(float)` is unavailable because floating-point execution is not implemented",
+                        argument.span,
+                    ));
+                    None
+                }
+                _ => {
+                    self.diagnostics.push(Diagnostic::error(
+                        "`input` supports string, int, bool, and char",
+                        argument.span,
+                    ));
+                    None
+                }
+            }
+        }).unwrap_or(Type::String);
+        (
+            HirExpressionKind::Input {
+                target: target.clone(),
+            },
+            target,
+        )
+    }
+
+    fn check_fs_read_call(
+        &mut self,
+        name: &str,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        if arguments.len() != 1 {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "`{name}` expects exactly one argument, found {}",
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let path = arguments
+            .first()
+            .map(|argument| self.check_expression(argument, Some(&Type::String)))
+            .unwrap_or(HirExpression {
+                kind: HirExpressionKind::StringLiteral(String::new()),
+                ty: Type::Dynamic,
+                span,
+            });
+        for argument in arguments.iter().skip(1) {
+            self.check_expression(argument, None);
+        }
+        if name == "readFile" {
+            (
+                HirExpressionKind::ReadFile {
+                    path: Box::new(path),
+                },
+                Type::String,
+            )
+        } else {
+            (
+                HirExpressionKind::ReadBytes {
+                    path: Box::new(path),
+                },
+                Type::List(Box::new(Type::Byte)),
+            )
+        }
+    }
+
+    fn check_fs_write_call(
+        &mut self,
+        name: &str,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        if arguments.len() != 2 {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "`{name}` expects exactly two arguments, found {}",
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let placeholder = || HirExpression {
+            kind: HirExpressionKind::StringLiteral(String::new()),
+            ty: Type::Dynamic,
+            span,
+        };
+        let path = arguments
+            .first()
+            .map(|argument| self.check_expression(argument, Some(&Type::String)))
+            .unwrap_or_else(&placeholder);
+        let data_type = if name == "writeFile" {
+            Type::String
+        } else {
+            Type::List(Box::new(Type::Byte))
+        };
+        let data = arguments
+            .get(1)
+            .map(|argument| self.check_expression(argument, Some(&data_type)))
+            .unwrap_or_else(placeholder);
+        for argument in arguments.iter().skip(2) {
+            self.check_expression(argument, None);
+        }
+        let kind = if name == "writeFile" {
+            HirExpressionKind::WriteFile {
+                path: Box::new(path),
+                data: Box::new(data),
+            }
+        } else {
+            HirExpressionKind::WriteBytes {
+                path: Box::new(path),
+                data: Box::new(data),
+            }
+        };
+        (kind, Type::Void)
+    }
+
+    fn check_fs_exists_call(
+        &mut self,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        if arguments.len() != 1 {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "`exists` expects exactly one argument, found {}",
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let path = arguments
+            .first()
+            .map(|argument| self.check_expression(argument, Some(&Type::String)))
+            .unwrap_or(HirExpression {
+                kind: HirExpressionKind::StringLiteral(String::new()),
+                ty: Type::Dynamic,
+                span,
+            });
+        for argument in arguments.iter().skip(1) {
+            self.check_expression(argument, None);
+        }
+        (
+            HirExpressionKind::Exists {
+                path: Box::new(path),
+            },
+            Type::Bool,
+        )
     }
 
     fn check_process_execute(
@@ -1599,7 +1892,7 @@ impl Analyzer<'_> {
         for argument in arguments.iter().skip(1) {
             self.check_expression(argument, None);
         }
-        let Some(Type::Struct(struct_id)) = self.type_names.get("Process").cloned() else {
+        let Some(Type::Struct(struct_id)) = self.type_names.get("std.os.Process").cloned() else {
             self.diagnostics.push(Diagnostic::error(
                 "`std.os` did not provide the `Process` type",
                 span,
@@ -1614,14 +1907,128 @@ impl Analyzer<'_> {
         )
     }
 
+    /// Builds one enum variant value from a call or bare member when the
+    /// receiver or base is a dotted type path. Shared by local and
+    /// namespace-qualified type chains.
+    fn construct_enum_variant(
+        &mut self,
+        definition: &HirEnum,
+        variant_name: &str,
+        arguments: &[Expression],
+        span: super::source::Span,
+    ) -> (HirExpressionKind, Type) {
+        let enum_id = definition.id;
+        let Some((variant, metadata)) = definition
+            .variants
+            .iter()
+            .enumerate()
+            .find(|(_, variant)| variant.name == variant_name)
+        else {
+            self.diagnostics.push(Diagnostic::error(
+                format!(
+                    "unknown variant `{variant_name}` for enum `{}`",
+                    definition.name
+                ),
+                span,
+            ));
+            return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+        };
+        let Some(payload_type) = metadata.payload.clone() else {
+            if !arguments.is_empty() {
+                self.diagnostics.push(Diagnostic::error(
+                    format!("enum variant `{variant_name}` does not take a payload"),
+                    span,
+                ));
+            }
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            return (
+                HirExpressionKind::EnumValue {
+                    enum_id,
+                    variant: variant as u32,
+                    payload: None,
+                    boxed: definition
+                        .variants
+                        .iter()
+                        .any(|variant| variant.payload.is_some()),
+                },
+                Type::Enum(enum_id),
+            );
+        };
+        if arguments.len() != 1 {
+            self.diagnostics.push(Diagnostic::error(
+                format!("enum variant `{variant_name}` expects one payload"),
+                span,
+            ));
+        }
+        let payload = arguments
+            .first()
+            .map(|argument| Box::new(self.check_expression(argument, Some(&payload_type))));
+        for argument in arguments.iter().skip(1) {
+            self.check_expression(argument, None);
+        }
+        (
+            HirExpressionKind::EnumValue {
+                enum_id,
+                variant: variant as u32,
+                payload,
+                boxed: true,
+            },
+            Type::Enum(enum_id),
+        )
+    }
+
     fn check_member_expression(
         &mut self,
         base: &Expression,
         name: &super::ast::Name,
         span: super::source::Span,
     ) -> (HirExpressionKind, Type) {
+        // A value use of a namespace-qualified function or builtin.
+        if self.resolution.reference(name.span).is_some_and(|id| {
+            matches!(
+                self.symbol(id).kind,
+                SymbolKind::Function { .. } | SymbolKind::Builtin
+            )
+        }) {
+            self.diagnostics.push(Diagnostic::error(
+                format!("`{}` cannot be used as a value", name.text),
+                name.span,
+            ));
+            return (
+                HirExpressionKind::FieldLoad {
+                    base: Box::new(HirExpression {
+                        kind: HirExpressionKind::Collection(Vec::new()),
+                        ty: Type::Dynamic,
+                        span,
+                    }),
+                    struct_id: TypeId(u32::MAX),
+                    field: u32::MAX,
+                },
+                Type::Dynamic,
+            );
+        }
+        // Payload-free enum values through a dotted type path, for example
+        // `en.State.idle` or `outer.inner.Tag.zero`.
+        if let Some(enum_id) = self.enum_of_type_chain(base) {
+            let definition = self
+                .enums
+                .iter()
+                .find(|item| item.id == enum_id)
+                .cloned()
+                .expect("resolved enum has HIR metadata");
+            let (kind, ty) = self.construct_enum_variant(&definition, &name.text, &[], span);
+            if let HirExpressionKind::EnumValue { .. } = kind {
+                return (kind, ty);
+            }
+            // Not a variant of this enum: fall through to the usual member
+            // checks, which report the bad member access.
+        }
         if let ExpressionKind::Identifier(type_name) = &base.kind
-            && let Some(Type::Enum(enum_id)) = self.type_names.get(&type_name.text).cloned()
+            && let Some(Type::Enum(enum_id)) = self
+                .type_key(&type_name.text, type_name.span.file)
+                .and_then(|key| self.type_names.get(&key).cloned())
         {
             self.check_named_type_visibility(&type_name.text, type_name.span);
             let definition = self
@@ -1678,7 +2085,9 @@ impl Analyzer<'_> {
         }
 
         if let ExpressionKind::Identifier(type_name) = &base.kind
-            && self.type_names.contains_key(&type_name.text)
+            && self
+                .type_key(&type_name.text, type_name.span.file)
+                .is_some_and(|key| self.type_names.contains_key(&key))
         {
             self.diagnostics.push(Diagnostic::error(
                 format!("`{}` is a type, not a struct value", type_name.text),
@@ -1875,8 +2284,52 @@ impl Analyzer<'_> {
         if method.text == "execute" && self.is_std_os_process_namespace(receiver) {
             return self.check_process_execute(arguments, span);
         }
+        // Payload enum values through a dotted type path, for example
+        // `pack.Tag.one(9)` or `en.State.running(2)`.
+        if let Some(enum_id) = self.enum_of_type_chain(receiver) {
+            let definition = self
+                .enums
+                .iter()
+                .find(|item| item.id == enum_id)
+                .cloned()
+                .expect("resolved enum has HIR metadata");
+            return self.construct_enum_variant(&definition, &method.text, arguments, span);
+        }
+        // A namespace-qualified call records its leaf reference here.
+        if let Some(id) = self.resolution.reference(method.span) {
+            let symbol_kind = self.symbol(id).kind.clone();
+            match symbol_kind {
+                SymbolKind::Function {
+                    parameters,
+                    return_type,
+                } => {
+                    return self.check_called_function(
+                        id,
+                        &method.text,
+                        &parameters,
+                        &return_type,
+                        arguments,
+                        span,
+                    );
+                }
+                SymbolKind::Builtin => {
+                    if let Some(path) = self.symbol(id).path.clone() {
+                        return self.check_std_call(&path, arguments, span);
+                    }
+                }
+                _ => {
+                    self.diagnostics.push(Diagnostic::error(
+                        format!("`{}` is not a function", method.text),
+                        method.span,
+                    ));
+                    return (HirExpressionKind::Collection(Vec::new()), Type::Dynamic);
+                }
+            }
+        }
         if let ExpressionKind::Identifier(type_name) = &receiver.kind
-            && let Some(Type::Enum(enum_id)) = self.type_names.get(&type_name.text).cloned()
+            && let Some(Type::Enum(enum_id)) = self
+                .type_key(&type_name.text, type_name.span.file)
+                .and_then(|key| self.type_names.get(&key).cloned())
         {
             self.check_named_type_visibility(&type_name.text, type_name.span);
             let definition = self
@@ -1954,10 +2407,19 @@ impl Analyzer<'_> {
                 let ExpressionKind::Member { base, name } = &argument.kind else {
                     return None;
                 };
-                let ExpressionKind::Identifier(type_name) = &base.kind else {
-                    return None;
-                };
-                (self.type_names.get(&type_name.text) == Some(&Type::Enum(enum_id))).then_some(name)
+                if let ExpressionKind::Identifier(type_name) = &base.kind {
+                    return (self
+                        .type_key(&type_name.text, type_name.span.file)
+                        .and_then(|key| self.type_names.get(&key).cloned())
+                        == Some(Type::Enum(enum_id)))
+                    .then_some(name);
+                }
+                // A dotted type path selector, for example
+                // `value.payload(kinds.pack.Tag.one)`.
+                if self.enum_of_type_chain(base) == Some(enum_id) {
+                    return Some(name);
+                }
+                None
             });
             let definition = self.enums.iter().find(|item| item.id == enum_id).cloned();
             let variant = selector.and_then(|name| {
@@ -2214,22 +2676,15 @@ impl Analyzer<'_> {
     fn resolve_type(&mut self, ty: &Type, span: super::source::Span) -> Type {
         match ty {
             Type::Named(name) => {
-                if let Some(&declaration_file) = self.type_sources.get(name)
-                    && declaration_file != span.file
-                    && !self.builtin_type_allows(name, span.file)
-                    && !import_allows(&self.imports, span.file, declaration_file, name)
-                {
-                    self.diagnostics.push(Diagnostic::error(
-                        format!("type `{name}` was not imported into this module"),
-                        span,
-                    ));
-                    return Type::Dynamic;
-                }
-                self.type_names.get(name).cloned().unwrap_or_else(|| {
+                let resolved = self
+                    .type_key(name, span.file)
+                    .and_then(|key| self.type_names.get(&key).cloned());
+                let ty = resolved.unwrap_or(Type::Dynamic);
+                if ty == Type::Dynamic {
                     self.diagnostics
                         .push(Diagnostic::error(format!("unknown type `{name}`"), span));
-                    Type::Dynamic
-                })
+                }
+                ty
             }
             Type::Array { element, length } => Type::Array {
                 element: Box::new(self.resolve_type(element, span)),
@@ -2249,26 +2704,116 @@ impl Analyzer<'_> {
     }
 
     fn check_named_type_visibility(&mut self, name: &str, span: super::source::Span) {
-        if let Some(&declaration_file) = self.type_sources.get(name)
-            && declaration_file != span.file
-            && !self.builtin_type_allows(name, span.file)
-            && !import_allows(&self.imports, span.file, declaration_file, name)
-        {
-            self.diagnostics.push(Diagnostic::error(
-                format!("type `{name}` was not imported into this module"),
-                span,
-            ));
+        if self.type_key(name, span.file).is_none() {
+            self.diagnostics
+                .push(Diagnostic::error(format!("unknown type `{name}`"), span));
         }
     }
 
-    /// `Process` is provided by `std.os` as a compiler-builtin declaration, so
-    /// every module importing it may reference the type directly.
-    fn builtin_type_allows(&self, name: &str, file: super::source::FileId) -> bool {
-        name == "Process"
-            && self
-                .imports
-                .iter()
-                .any(|import| import.name.text == "std.os" && import.span.file == file)
+    /// Canonical key of one named type as written in a context. Unqualified
+    /// leaf names resolve through the enclosing namespace chain, then through
+    /// `using` selections of the file, then the `std.os` `Process` legacy
+    /// binding. Dotted names are canonical already.
+    fn type_key(&self, name: &str, file: super::source::FileId) -> Option<String> {
+        if name.contains('.') {
+            if self.type_names.contains_key(name) {
+                return Some(name.to_owned());
+            }
+            return self.qualified_type_chain_key(name);
+        }
+        for namespace in &self.current_ancestors {
+            let candidate = format!("{}.{}", self.resolution.namespace(*namespace).path, name);
+            if self.type_names.contains_key(&candidate) {
+                return Some(candidate);
+            }
+        }
+        for scoped in &self.resolution.imports {
+            if !self.current_ancestors.contains(&scoped.namespace) {
+                continue;
+            }
+            if scoped.import.name.text.starts_with("std.") {
+                continue;
+            }
+            let Some(selected) = &scoped.import.selected else {
+                // A whole-module import exposes the file's types by simple
+                // name in type positions when the type is in its root
+                // namespace.
+                let Some(namespace) = self.resolution.namespace_for_import(&scoped.import) else {
+                    continue;
+                };
+                let candidate = format!("{}.{}", self.resolution.namespace(namespace).path, name);
+                if self.type_names.contains_key(&candidate) {
+                    return Some(candidate);
+                }
+                continue;
+            };
+            if !selected.iter().any(|item| item.text == name) {
+                continue;
+            }
+            if let Some(namespace) = self.resolution.namespace_for_import(&scoped.import) {
+                let candidate = format!("{}.{}", self.resolution.namespace(namespace).path, name);
+                if self.type_names.contains_key(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+        if name == "Process"
+            && self.resolution.imports.iter().any(|scoped| {
+                scoped.import.name.text == "std.os" && scoped.import.span.file == file
+            })
+        {
+            return Some("std.os.Process".to_owned());
+        }
+        None
+    }
+
+    /// Resolves a dotted type path used in a type position, for example
+    /// `pack.Tag`, `outer.inner.Tag`, or `en.State`. The first segment is
+    /// either a namespace inside the current chain, an imported module stem,
+    /// or `std`; the rest walk the tree segment by segment.
+    fn qualified_type_chain_key(&self, name: &str) -> Option<String> {
+        let segments: Vec<&str> = name.split('.').collect();
+        for namespace in &self.current_ancestors {
+            if let Some(key) = self.walk_type_chain(*namespace, &segments) {
+                return Some(key);
+            }
+        }
+        for scoped in &self.resolution.imports {
+            if !self.current_ancestors.contains(&scoped.namespace) {
+                continue;
+            }
+            if scoped.import.name.text.starts_with("std.") {
+                continue;
+            }
+            let stem = scoped.import.name.text.split('.').next()?;
+            if segments.first() == Some(&stem) {
+                let namespace = self.resolution.namespace_for_import(&scoped.import)?;
+                let key = self.walk_type_chain(namespace, &segments[1..])?;
+                return Some(key);
+            }
+        }
+        None
+    }
+
+    /// Walks one dotted chain through a namespace. Every segment except the
+    /// last must be a nested namespace; the last one must be a type.
+    fn walk_type_chain(&self, start: NamespaceIdx, segments: &[&str]) -> Option<String> {
+        let mut current = start;
+        for (index, segment) in segments.iter().enumerate() {
+            if index + 1 == segments.len() {
+                let key = format!("{}.{}", self.resolution.namespace(current).path, segment);
+                return self.type_names.contains_key(&key).then_some(key);
+            }
+            let space = self.resolution.namespace(current);
+            let symbol = *space.members.get(*segment)?;
+            match self.resolution.symbol(symbol)?.kind.clone() {
+                crate::frontend::resolution::SymbolKind::Module { namespace } => {
+                    current = namespace;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     fn is_printable_type(&self, ty: &Type, visited: &mut HashSet<TypeId>) -> bool {
@@ -2433,6 +2978,20 @@ impl Analyzer<'_> {
     }
 }
 
+/// Flattens a member-chain expression outside-in into its name segments
+/// (`a.b.c` becomes `[a, b, c]`). Returns `None` for non-chain expressions.
+fn flattened_names(expression: &super::ast::Expression) -> Option<Vec<&super::ast::Name>> {
+    match &expression.kind {
+        ExpressionKind::Identifier(name) => Some(vec![name]),
+        ExpressionKind::Member { base, name } => {
+            let mut names = flattened_names(base)?;
+            names.push(name);
+            Some(names)
+        }
+        _ => None,
+    }
+}
+
 fn block_definitely_returns(block: &super::ast::Block) -> bool {
     block
         .statements
@@ -2458,7 +3017,12 @@ mod tests {
     use crate::frontend::{lexer::lex, parser::parse, source::FileId};
 
     fn analyze_source(source: &str) -> Result<HirModule, Vec<Diagnostic>> {
-        analyze(&parse(lex(FileId(0), source).unwrap().tokens).unwrap())
+        let mut names = HashMap::new();
+        names.insert(FileId(0), "test".to_owned());
+        analyze(
+            &parse(lex(FileId(0), source).unwrap().tokens).unwrap(),
+            &names,
+        )
     }
 
     #[test]
@@ -2492,6 +3056,26 @@ mod tests {
     #[test]
     fn checks_documented_list_declaration_form() {
         analyze_source("private void f() { list int values = [1, 2, 3]; return; }").unwrap();
+    }
+
+    #[test]
+    fn accepts_list_declaration_from_fresh_call_result() {
+        analyze_source(
+            "use std.fs; private void f(string path) { list byte copy = std.fs.readBytes(path); return; }",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_whole_list_cloning_from_variable() {
+        let errors = messages(
+            "private void f() { list int values = [1, 2, 3]; list int copy = values; return; }",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("whole-list cloning is not supported"))
+        );
     }
 
     #[test]
@@ -3007,10 +3591,12 @@ mod tests {
 
     #[test]
     fn validates_read_file_intrinsic() {
-        analyze_source("use std.fs; private string f(string path) { return readFile(path); }")
-            .unwrap();
+        analyze_source(
+            "use std.fs; private string f(string path) { return std.fs.readFile(path); }",
+        )
+        .unwrap();
         let errors = messages(
-            "use std.fs; private void f() { string a = readFile(); string b = readFile(1); string c = readFile(\"a\", \"b\"); }",
+            "use std.fs; private void f() { string a = std.fs.readFile(); string b = std.fs.readFile(1); string c = std.fs.readFile(\"a\", \"b\"); }",
         );
         assert!(errors.iter().any(|message| message.contains("found 0")));
         assert!(errors.iter().any(|message| message.contains("found 2")));

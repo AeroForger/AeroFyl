@@ -2,6 +2,6 @@ use std.io;
 
 public void main()
 {
-    string value = input();
-    println(value.length);
+    string value = std.io.input();
+    std.io.println(value.length);
 }

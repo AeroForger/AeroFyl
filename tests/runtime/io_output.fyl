@@ -2,18 +2,18 @@ use std.io;
 
 public void main()
 {
-    print("");
-    print("Hello");
-    println(", World!");
-    println(123);
-    println(-456);
-    println(0);
-    println(-9223372036854775808);
-    println(true);
-    println(false);
-    print('A');
-    println('é');
+    std.io.print("");
+    std.io.print("Hello");
+    std.io.println(", World!");
+    std.io.println(123);
+    std.io.println(-456);
+    std.io.println(0);
+    std.io.println(-9223372036854775808);
+    std.io.println(true);
+    std.io.println(false);
+    std.io.print('A');
+    std.io.println('é');
 
-    eprint("error: ");
-    eprintln("something happened");
+    std.io.eprint("error: ");
+    std.io.eprintln("something happened");
 }

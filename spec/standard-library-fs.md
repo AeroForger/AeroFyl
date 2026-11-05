@@ -6,8 +6,11 @@ The filesystem module is built into Aerofyl but opt-in:
 use std.fs;
 ```
 
-Without this import, its function names are not in scope. No package or
-dependency declaration is required.
+With the import, the module can also be reached by its last segment:
+`fs.readFile(...)` is the short form of `std.fs.readFile(...)`. Without the
+import the short form `fs.readFile` is an error and the diagnostic suggests
+`std.fs.readFile`; the full path `std.fs.readFile` needs no import in any
+file. No package or dependency declaration is required.
 
 ## API
 

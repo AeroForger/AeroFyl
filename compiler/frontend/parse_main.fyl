@@ -1,39 +1,39 @@
-use parser;
-use diagnostics;
+using parser: ParseResult, parse;
+using diagnostics: Diagnostic;
 use std.io;
 
 public void main(string[] args) {
     if (args.length != 1) {
-        eprintln("usage: parse_main <file>");
+        std.io.eprintln("usage: parse_main <file>");
         exit(2);
     }
     ParseResult result = parse(args[0]);
     int w = 0;
     while (w < result.warnings.length) {
         Diagnostic warning = result.warnings[w];
-        eprint(warning.span.source);
-        eprint(":");
-        eprint(warning.span.start);
-        eprint("-");
-        eprint(warning.span.end);
-        eprint(": warning: ");
-        eprintln(warning.message);
+        std.io.eprint(warning.span.source);
+        std.io.eprint(":");
+        std.io.eprint(warning.span.start);
+        std.io.eprint("-");
+        std.io.eprint(warning.span.end);
+        std.io.eprint(": warning: ");
+        std.io.eprintln(warning.message);
         w += 1;
     }
     if (result.diagnostics.length == 0) {
-        println("parse succeeded");
+        std.io.println("parse succeeded");
         return;
     }
     int i = 0;
     while (i < result.diagnostics.length) {
         Diagnostic diagnostic = result.diagnostics[i];
-        eprint(diagnostic.span.source);
-        eprint(":");
-        eprint(diagnostic.span.start);
-        eprint("-");
-        eprint(diagnostic.span.end);
-        eprint(": error: ");
-        eprintln(diagnostic.message);
+        std.io.eprint(diagnostic.span.source);
+        std.io.eprint(":");
+        std.io.eprint(diagnostic.span.start);
+        std.io.eprint("-");
+        std.io.eprint(diagnostic.span.end);
+        std.io.eprint(": error: ");
+        std.io.eprintln(diagnostic.message);
         i += 1;
     }
     exit(1);

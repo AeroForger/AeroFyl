@@ -2,8 +2,8 @@ use std.io;
 
 public void main()
 {
-    print("");
-    println("ready");
-    eprint('!');
-    eprintln(false);
+    std.io.print("");
+    std.io.println("ready");
+    std.io.eprint('!');
+    std.io.eprintln(false);
 }
