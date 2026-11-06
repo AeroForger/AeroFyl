@@ -15,11 +15,11 @@ body:
       label: Pillars
       description: Which pillars does this serve, and which does it cost?
       options:
-        - label: Executable First — ends in programs that run
-        - label: Speed — keeps compilation and execution fast
-        - label: Small binaries — keeps artifacts and dependencies minimal
-        - label: Transparency — improves diagnostics or docs
-        - label: Safety — replaces UB or silent failure with defined behavior
+        - label: Executable First - ends in programs that run
+        - label: Speed - keeps compilation and execution fast
+        - label: Small binaries - keeps artifacts and dependencies minimal
+        - label: Transparency - improves diagnostics or docs
+        - label: Safety - replaces UB or silent failure with defined behavior
   - type: textarea
     id: plan
     attributes:
@@ -34,3 +34,4 @@ body:
       options:
         - label: I am not proposing changes to experimental/ (exploration space, out of scope)
         - label: I checked this against spec/ and it is not already specified
+        - label: I checked other issues and it is not already proposed

@@ -32,7 +32,7 @@ body:
         - bootstrap frontend (lex/parse/resolve/check)
         - bootstrap backend (IR/codegen/ELF)
         - self-hosted frontend (compiler/frontend)
-        - standard library (std.io/std.fs)
+        - standard library (std.io/std.fs/std.os)
         - tests or tooling
         - docs
     validations:
