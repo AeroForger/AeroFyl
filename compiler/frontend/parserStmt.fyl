@@ -3,7 +3,7 @@ using token: Token, TokenKind, Keyword;
 using source: Span;
 using parserState: ParserState, pSpelling, pPeek, pTake, pAt, pAtEof, pAtKeyword,
                    pAcceptKeyword, pAccept, pExpect, pIdentifier, pAdd, pNode, pJoin,
-                   pLast, pError, pErrorAt, pEnter, pLeave;
+                   pLast, pError, pErrorAt, pEnter, pLeave, pIsNameToken;
 using parserTypes: pBasic, pType;
 using parserExpr: pExpression, pKindOperator;
 
@@ -32,8 +32,7 @@ private bool pVariableStart(ref ParserState state) {
         cursor += 1;
     }
     if (cursor >= state.value.tokens.length) { return false; }
-    return state.value.tokens[cursor].kind.is(TokenKind.Identifier)
-        || pSpelling(state.value.tokens[cursor]) == "byte";
+    return pIsNameToken(state.value.tokens[cursor]);
 }
 
 private bool pAssignable(ref ParserState state, int id) {
