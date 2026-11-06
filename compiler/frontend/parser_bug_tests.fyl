@@ -1,0 +1,155 @@
+// Regression checks for bugs found in parser.fyl.
+//
+// Every check asserts the behavior the grammar/spec/README says is correct.
+// Run the built executable directly, or use compiler/tests/parser_bugs.py.
+// The program exits with status 70 while any known bug is still present.
+using parser: ParseResult, parseTokens;
+using ast: AstNode, AstProgram, empty_program;
+using lexer: LexResult, lexSource;
+using token: Token;
+using source: Source;
+using diagnostics: Diagnostic;
+use std.io;
+
+private ParseResult parseText(string text) {
+    Source source = Source { path: "test.fyl", text: text };
+    LexResult tokens = lexSource(source);
+    if (tokens.diagnostics.length > 0) {
+        return ParseResult { program: empty_program(), diagnostics: tokens.diagnostics, warnings: tokens.warnings };
+    }
+    ParseResult parsed = parseTokens(source, tokens.tokens);
+    int i = 0;
+    list Diagnostic warnings = [];
+    while (i < tokens.warnings.length) {
+        warnings.push(tokens.warnings[i]);
+        i += 1;
+    }
+    i = 0;
+    while (i < parsed.warnings.length) {
+        warnings.push(parsed.warnings[i]);
+        i += 1;
+    }
+    return ParseResult { program: parsed.program, diagnostics: parsed.diagnostics, warnings: warnings };
+}
+
+private AstNode child(AstProgram program, AstNode node, int index) {
+    return program.nodes[node.children[index]];
+}
+
+private int validCase(string text, string label) {
+    ParseResult result = parseText(text);
+    if (result.diagnostics.length == 0) { return 0; }
+    std.io.eprint("BUG: ");
+    std.io.eprint(label);
+    std.io.eprint(" was rejected: ");
+    std.io.eprintln(result.diagnostics[0].message);
+    return 1;
+}
+
+private int invalidCase(string text, string label) {
+    ParseResult result = parseText(text);
+    if (result.diagnostics.length > 0) { return 0; }
+    std.io.eprint("BUG: ");
+    std.io.eprint(label);
+    std.io.eprintln(" was accepted");
+    return 1;
+}
+
+private int duplicateImportForms() {
+    int failures = 0;
+    failures += validCase("use helper; using helper: run;",
+                          "use plus using for the same module");
+    failures += validCase("using helper: run; use helper;",
+                          "using plus use for the same module");
+    failures += invalidCase("use helper; use helper;",
+                            "duplicate use import");
+    failures += invalidCase("using helper: a; using helper: b;",
+                            "duplicate using import");
+    return failures;
+}
+
+private int softKeywordDeclarations() {
+    int failures = 0;
+    failures += validCase("public void f() { int print = 1; }",
+                          "declaration named print");
+    failures += validCase("public void f() { int input = 1; }",
+                          "declaration named input");
+    failures += validCase("public void f() { Node print = Node {}; }",
+                          "named-type declaration named print");
+    failures += validCase("public void f() { for (int print = 0; true; print += 1) {} }",
+                          "for initializer declaration named print");
+    return failures;
+}
+
+private int dottedTypeNames() {
+    int failures = 0;
+    failures += validCase("use file2; public file2.Node get() { return; }",
+                          "dotted return type");
+    failures += validCase("use file2; public void set(file2.Node n) { return; }",
+                          "dotted parameter type");
+    failures += validCase("use file2; struct Holder { file2.Node node; }",
+                          "dotted struct field type");
+    failures += validCase("use file2; public void f() { file2.Node n = make(); }",
+                          "dotted local type");
+    return failures;
+}
+
+private int typeKeywordExpressions() {
+    int failures = 0;
+    failures += invalidCase("public void f() { int = 1; }",
+                            "assignment to the int keyword");
+    failures += invalidCase("public void f() { string; }",
+                            "bare string keyword expression");
+    failures += invalidCase("public void f() { int + 1; }",
+                            "int keyword in a binary expression");
+    return failures;
+}
+
+private int interpolationChildSpans() {
+    string text = "use std.io; public void f() { std.io.println(\\f\"{x + 1}\"); }";
+    ParseResult result = parseText(text);
+    if (result.diagnostics.length != 0) {
+        std.io.eprintln("BUG: interpolation span fixture was rejected");
+        return 1;
+    }
+    AstProgram program = result.program;
+    AstNode function = program.nodes[program.roots[0]];
+    AstNode block = child(program, function, function.children.length - 1);
+    AstNode statement = child(program, block, 0);
+    AstNode call = child(program, statement, 0);
+    AstNode interpolated = child(program, call, 1);
+    AstNode binary = child(program, interpolated, 0);
+    AstNode left = child(program, binary, 0);
+    AstNode right = child(program, binary, 1);
+    int failures = 0;
+    if (text.slice(left.span.start, left.span.end) != "x") {
+        std.io.eprint("BUG: interpolation name span points at source offsets ");
+        std.io.eprint(left.span.start);
+        std.io.eprint("-");
+        std.io.eprintln(left.span.end);
+        failures += 1;
+    }
+    if (text.slice(right.span.start, right.span.end) != "1") {
+        std.io.eprint("BUG: interpolation literal span points at source offsets ");
+        std.io.eprint(right.span.start);
+        std.io.eprint("-");
+        std.io.eprintln(right.span.end);
+        failures += 1;
+    }
+    return failures;
+}
+
+public void main() {
+    int failures = 0;
+    failures += duplicateImportForms();
+    failures += softKeywordDeclarations();
+    failures += dottedTypeNames();
+    failures += typeKeywordExpressions();
+    failures += interpolationChildSpans();
+    if (failures > 0) {
+        std.io.print("parser bug reproductions: ");
+        std.io.println(failures);
+        exit(70);
+    }
+    std.io.println("parser bug regression tests passed");
+}

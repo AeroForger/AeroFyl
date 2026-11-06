@@ -24,6 +24,7 @@ def run(command, expected=0, timeout=30):
 
 POSITIVE = [
     "", "// empty\n/* module */", "use std.io;", "using helper: run, Node;",
+    "use helper; using helper: run;",
     "struct Node { optional ref Node next; list int values; }",
     "enum Result { ok(int), error(string), empty, }",
     "enum State { first second }", "struct Empty {} enum Empty {}",
@@ -75,7 +76,7 @@ NEGATIVE = [
     "public void f()", "public void f() {", "void f() {}",
     "public struct S {}", "private enum E { one }", "int value = 1;",
     "use ;", "use std.;", "use foo", "using foo;", "using foo:;",
-    "using foo: name,;", "using foo: x, x;", "use foo; using foo: x;",
+    "using foo: name,;", "using foo: x, x;",
     "struct S { int x }", "struct S { int; }", "struct S {",
     "enum E { one(int, string) }", "enum E { one; }", "enum E { one(int }",
     "public () f() {}", "public (int,) f() {}",
