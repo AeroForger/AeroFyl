@@ -435,9 +435,7 @@ private int pPrimary(ref ParserState state) {
         }
     } else if (token.kind.is(TokenKind.Identifier) || text == "print" || text == "input") {
         result = pAdd(state, NodeKind.name, token.span, text, 0, [], []);
-    }
-    
-    else if (text == "(") {
+    } else if (text == "(") {
         result = pExpression(state, 1);
         pExpect(state, ")");
         if (!state.value.failed) {
