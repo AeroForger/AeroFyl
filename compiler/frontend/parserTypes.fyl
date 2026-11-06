@@ -1,0 +1,83 @@
+using ast: NodeKind;
+using token: Token, TokenKind;
+using parserState: ParserState, pSpelling, pPeek, pTake, pAt, pAccept, pExpect,
+                   pAdd, pNode, pJoin, pLast, pError, pEnter, pLeave;
+
+public bool pBasic(string text) {
+    return text == "int" || text == "byte" || text == "float"
+        || text == "bool" || text == "char" || text == "string"
+        || text == "void" || text == "dynamic";
+}
+
+private bool pArrayLength(string text) {
+    while (text.length == 0) { return false; }
+    int start = 0;
+    while (start < text.length && text.byte(start) == int('0')) { start += 1; }
+    int digits = text.length - start;
+    if (digits < 20) { return true; }
+    if (digits > 20) { return false; }
+    string maximum = "18446744073709551615";
+    int i = 0;
+    while (i < 20) {
+        if (text.byte(start + i) < maximum.byte(i)) { return true; }
+        if (text.byte(start + i) > maximum.byte(i)) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+public int pType(ref ParserState state) {
+    while (state.value.failed) { return -1; }
+    if (!pEnter(state)) { return -1; }
+    Token token = pPeek(state);
+    string text = pSpelling(token);
+    list int children = [];
+    int result = -1;
+    if (text == "list" || text == "optional" || text == "ref") {
+        pTake(state);
+        int element = pType(state);
+        children.push(element);
+        if (!state.value.failed) {
+            result = pAdd(state, NodeKind.typeSyntax, pJoin(token.span, pNode(state, element).span), text, 0, children, []);
+        }
+    } else if (pAccept(state, "(")) {
+        children.push(pType(state));
+        while (pAccept(state, ",")) { children.push(pType(state)); }
+        pExpect(state, ")");
+        if (!state.value.failed) {
+            result = pAdd(state, NodeKind.typeSyntax, pJoin(token.span, pLast(state)), "tuple", 0, children, []);
+        }
+    } else if (pBasic(text) || token.kind.is(TokenKind.Identifier)) {
+        pTake(state);
+        result = pAdd(state, NodeKind.typeSyntax, token.span, text, 0, [], []);
+        while (pAccept(state, "[")) {
+            list int arrayChildren = [result];
+            string length = "";
+            if (pAt(state, "]")) {
+                if (pNode(state, result).text != "string") {
+                    pError(state, "only string[] may omit an array length");
+                }
+            } else {
+                Token size = pPeek(state);
+                if (!size.kind.is(TokenKind.Integer)) {
+                    pError(state, "expected integer array length");
+                } else {
+                    length = size.kind.payload(TokenKind.Integer);
+                    if (!pArrayLength(length)) { pError(state, "array length exceeds 64-bit size range"); }
+                    pTake(state);
+                }
+            }
+            pExpect(state, "]");
+            if (!state.value.failed) {
+                list string names = [length];
+                string form = "array";
+                if (length == "") { form = "args"; }
+                result = pAdd(state, NodeKind.typeSyntax, pJoin(token.span, pLast(state)), form, 0, arrayChildren, names);
+            }
+        }
+    } else {
+        pError(state, "expected type");
+    }
+    pLeave(state);
+    return result;
+}

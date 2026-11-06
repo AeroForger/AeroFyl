@@ -3,7 +3,7 @@
 // Every check asserts the behavior the grammar/spec/README says is correct.
 // Run the built executable directly, or use compiler/tests/parser_bugs.py.
 // The program exits with status 70 while any known bug is still present.
-using parser: ParseResult, parseTokens;
+using parserDecl: ParseResult, parseTokens;
 using ast: AstNode, AstProgram, empty_program;
 using lexer: LexResult, lexSource;
 using token: Token;

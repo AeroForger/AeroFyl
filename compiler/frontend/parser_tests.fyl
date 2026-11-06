@@ -1,4 +1,4 @@
-using parser: ParseResult, parseTokens;
+using parserDecl: ParseResult, parseTokens;
 using ast: AstImport, AstNode, AstProgram, NodeKind, empty_program;
 using lexer: LexResult, lexSource;
 using token: Token;

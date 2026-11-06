@@ -1,0 +1,265 @@
+using ast: AstImport, AstNode, AstProgram, NodeKind, empty_program;
+using token: Token, TokenKind, Keyword;
+using source: Source, Span, load_file;
+using ErrorType: ErrorType;
+using diagnostics: Diagnostic, error;
+using lexer: LexResult, lexSource;
+using parserState: ParserState, pSpelling, pPeek, pTake, pAt, pAtEof, pAtKeyword,
+                   pAcceptKeyword, pAccept, pExpect, pIdentifier, pAdd, pNode, pJoin,
+                   pLast, pError, pErrorAt, pEnter, pLeave;
+using parserTypes: pType;
+using parserStmt: pBlock, pSynchronizeStatement;
+
+private int pStruct(ref ParserState state) {
+    while (state.value.failed) { return -1; }
+    Span start = pTake(state).span;
+    Token name = pIdentifier(state);
+    pExpect(state, "{");
+    list int fields = [];
+    bool fieldsDone = false;
+    while (!fieldsDone) {
+        if (state.value.failed) {
+            int before = state.value.index;
+            pSynchronizeStatement(state);
+            if (state.value.index == before && !pAt(state, "}") && !pAtEof(state)) {
+                pTake(state);
+            }
+        } else if (pAtEof(state)) {
+            fieldsDone = true;
+        } else if (pAt(state, "}")) {
+            fieldsDone = true;
+        } else {
+            Span fieldStart = pPeek(state).span;
+            int ty = pType(state);
+            Token field = pIdentifier(state);
+            pExpect(state, ";");
+            if (!state.value.failed) {
+                fields.push(pAdd(state, NodeKind.fieldDeclaration, pJoin(fieldStart, pLast(state)), pSpelling(field), 0, [ty], []));
+            }
+        }
+    }
+    pExpect(state, "}");
+    if (state.value.failed) { return -1; }
+    return pAdd(state, NodeKind.structDeclaration, pJoin(start, pLast(state)), pSpelling(name), 0, fields, []);
+}
+
+private int pEnum(ref ParserState state) {
+    while (state.value.failed) { return -1; }
+    Span start = pTake(state).span;
+    Token name = pIdentifier(state);
+    pExpect(state, "{");
+    list int variants = [];
+    bool variantsDone = false;
+    while (!variantsDone) {
+        if (state.value.failed) {
+            int before = state.value.index;
+            pSynchronizeStatement(state);
+            if (state.value.index == before && !pAt(state, "}") && !pAtEof(state)) {
+                pTake(state);
+            }
+        } else if (pAtEof(state)) {
+            variantsDone = true;
+        } else if (pAt(state, "}")) {
+            variantsDone = true;
+        } else {
+            Token variant = pIdentifier(state);
+            list int payload = [];
+            if (pAccept(state, "(")) {
+                payload.push(pType(state));
+                pExpect(state, ")");
+            }
+            if (!state.value.failed) {
+                variants.push(pAdd(state, NodeKind.variantDeclaration, pJoin(variant.span, pLast(state)), pSpelling(variant), variants.length, payload, []));
+            }
+            pAccept(state, ",");
+        }
+    }
+    pExpect(state, "}");
+    if (state.value.failed) { return -1; }
+    return pAdd(state, NodeKind.enumDeclaration, pJoin(start, pLast(state)), pSpelling(name), 0, variants, []);
+}
+
+private int pFunction(ref ParserState state) {
+    while (state.value.failed) { return -1; }
+    Span start = pPeek(state).span;
+    bool isPublic = pAtKeyword(state, Keyword.Public);
+    bool isPrivate = pAtKeyword(state, Keyword.Private);
+    if (!isPublic && !isPrivate) {
+        pError(state, "expected public or private function visibility");
+        return -1;
+    }
+    pTake(state);
+    int ty = pType(state);
+    Token name = pIdentifier(state);
+    pExpect(state, "(");
+    list int children = [ty];
+    if (!pAt(state, ")")) {
+        while (!state.value.failed) {
+            Span parameterStart = pPeek(state).span;
+            int parameterType = pType(state);
+            Token parameter = pIdentifier(state);
+            if (!state.value.failed) {
+                children.push(pAdd(state, NodeKind.parameter, pJoin(parameterStart, parameter.span), pSpelling(parameter), 0, [parameterType], []));
+            }
+            if (!pAccept(state, ",")) { break; }
+        }
+    }
+    pExpect(state, ")");
+    children.push(pBlock(state));
+    if (state.value.failed) { return -1; }
+    int visible = 0;
+    if (isPublic) { visible = 1; }
+    return pAdd(state, NodeKind.function, pJoin(start, pLast(state)), pSpelling(name), visible, children, []);
+}
+
+private void pImport(ref ParserState state) {
+    while (state.value.failed) { return; }
+    Span start = pPeek(state).span;
+    bool selective = pAtKeyword(state, Keyword.Using);
+    pTake(state);
+    Token moduleName = pIdentifier(state);
+    string name = pSpelling(moduleName);
+    while (pAccept(state, ".")) { name = name + "." + pSpelling(pIdentifier(state)); }
+    list string selected = [];
+    if (selective) {
+        pExpect(state, ":");
+        while (!state.value.failed) {
+            Token token = pIdentifier(state);
+            string selection = pSpelling(token);
+            int i = 0;
+            while (i < selected.length) {
+                if (selected[i] == selection) { pErrorAt(state, token.span, "duplicate selected name"); }
+                i += 1;
+            }
+            selected.push(selection);
+            if (!pAccept(state, ",")) { break; }
+        }
+    }
+    pExpect(state, ";");
+    ParserState s = state.value;
+    AstProgram program = s.program;
+    int i = 0;
+    while (i < program.imports.length) {
+        if (program.imports[i].name == name) { pErrorAt(state, moduleName.span, "duplicate import"); }
+        i += 1;
+    }
+    if (!state.value.failed) {
+        program.imports.push(AstImport {
+            name: name, target: "", selective: selective,
+            selected: selected, span: pJoin(start, pLast(state))
+        });
+        s.program = program;
+        state.value = s;
+    }
+}
+
+private void pSynchronizeTopLevel(ref ParserState state) {
+    while (!pAtEof(state) && !pAt(state, ";") && !pAt(state, "}")) {
+        if (pAtKeyword(state, Keyword.Public) || pAtKeyword(state, Keyword.Private)
+            || pAtKeyword(state, Keyword.Struct) || pAtKeyword(state, Keyword.Enum)
+            || pAtKeyword(state, Keyword.Use) || pAtKeyword(state, Keyword.Using)) {
+            break;
+        }
+        pTake(state);
+    }
+    if (pAt(state, ";")) {
+        pTake(state);
+    } else if (pAt(state, "}")) {
+        pTake(state);
+    }
+    ParserState clear = state.value;
+    clear.failed = false;
+    state.value = clear;
+}
+
+struct ParseResult {
+    AstProgram program;
+    list Diagnostic diagnostics;
+    list Diagnostic warnings;
+}
+
+public ParseResult parseTokens(Source source, list Token inputTokens) {
+    while (inputTokens.length == 0) {
+        AstProgram empty = empty_program();
+        empty.rootPath = source.path;
+        return ParseResult { program: empty, diagnostics: [], warnings: [] };
+    }
+    list Token tokens = [];
+    int copyIndex = 0;
+    while (copyIndex < inputTokens.length) {
+        Token token = inputTokens[copyIndex];
+        if (token.kind.is(TokenKind.Eof) && copyIndex + 1 < inputTokens.length) {
+            AstProgram empty = empty_program();
+            empty.rootPath = source.path;
+            return ParseResult { program: empty, diagnostics: [error(ErrorType.SyntaxError, "unexpected tokens after EOF", token.span)], warnings: [] };
+        }
+        tokens.push(token);
+        copyIndex += 1;
+    }
+    if (tokens.length == 0 || !tokens[tokens.length - 1].kind.is(TokenKind.Eof)) {
+        tokens.push(Token {
+            kind: TokenKind.Eof,
+            span: Span { source: source.path, start: source.text.length, end: source.text.length }
+        });
+    }
+    AstProgram program = empty_program();
+    program.rootPath = source.path;
+    ref ParserState state = reference(ParserState {
+        source: source, tokens: tokens, index: 0, depth: 0,
+        program: program, diagnostics: [], failed: false
+    });
+    while (!pAtEof(state)) {
+        if (state.value.failed) {
+            int before = state.value.index;
+            pSynchronizeTopLevel(state);
+            if (state.value.index == before && !pAtEof(state)) {
+                pTake(state);
+            }
+        } else if (pAtKeyword(state, Keyword.Use) || pAtKeyword(state, Keyword.Using)) {
+            pImport(state);
+        } else {
+            int root = -1;
+            if (pAtKeyword(state, Keyword.Struct)) { root = pStruct(state); }
+            else if (pAtKeyword(state, Keyword.Enum)) { root = pEnum(state); }
+            else { root = pFunction(state); }
+            if (!state.value.failed) {
+                ParserState s = state.value;
+                AstProgram parsed = s.program;
+                parsed.roots.push(root);
+                s.program = parsed;
+                state.value = s;
+            }
+        }
+    }
+    program = state.value.program;
+    return ParseResult { program: program, diagnostics: state.value.diagnostics, warnings: [] };
+}
+
+public ParseResult parse(string path) {
+    Source source = load_file(path);
+    LexResult lexed = lexSource(source);
+    list Diagnostic errors = [];
+    list Diagnostic warnings = [];
+    int i = 0;
+    while (i < lexed.diagnostics.length) {
+        errors.push(lexed.diagnostics[i]);
+        i += 1;
+    }
+    i = 0;
+    while (i < lexed.warnings.length) {
+        warnings.push(lexed.warnings[i]);
+        i += 1;
+    }
+    if (errors.length > 0) {
+        AstProgram program = empty_program();
+        program.rootPath = path;
+        return ParseResult { program: program, diagnostics: errors, warnings: warnings };
+    }
+    ParseResult parsed = parseTokens(source, lexed.tokens);
+    i = 0;
+    while (i < parsed.warnings.length) {
+        warnings.push(parsed.warnings[i]);
+        i += 1;
+    }
+    return ParseResult { program: parsed.program, diagnostics: parsed.diagnostics, warnings: warnings };
+}

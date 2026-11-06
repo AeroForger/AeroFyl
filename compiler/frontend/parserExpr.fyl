@@ -1,0 +1,235 @@
+using ast: AstNode, AstProgram, NodeKind;
+using token: Token, TokenKind, Interpolation, InterpolationPart;
+using source: Source, Span;
+using ErrorType: ErrorType;
+using diagnostics: error;
+using lexer: LexResult, lexSource;
+using parserState: ParserState, pSpelling, pPeek, pTake, pAt, pAccept, pIdentifier,
+                   pAdd, pNode, pJoin, pLast, pError, pErrorAt, pEnter, pLeave,
+                   pExpect;
+using parserTypes: pBasic;
+
+private int pKindPrecedence(Token token) {
+    if (token.kind.is(TokenKind.PipePipe)) { return 1; }
+    if (token.kind.is(TokenKind.AmpersandAmpersand)) { return 2; }
+    if (token.kind.is(TokenKind.EqualEqual) || token.kind.is(TokenKind.BangEqual)) { return 3; }
+    if (token.kind.is(TokenKind.Less) || token.kind.is(TokenKind.LessEqual) || token.kind.is(TokenKind.Greater) || token.kind.is(TokenKind.GreaterEqual)) { return 4; }
+    if (token.kind.is(TokenKind.Plus) || token.kind.is(TokenKind.Minus)) { return 5; }
+    if (token.kind.is(TokenKind.Star) || token.kind.is(TokenKind.Slash)) { return 6; }
+    return 0;
+}
+
+public string pKindOperator(Token token) {
+    if (token.kind.is(TokenKind.PipePipe)) { return "||"; }
+    if (token.kind.is(TokenKind.AmpersandAmpersand)) { return "&&"; }
+    if (token.kind.is(TokenKind.EqualEqual)) { return "=="; }
+    if (token.kind.is(TokenKind.BangEqual)) { return "!="; }
+    if (token.kind.is(TokenKind.Less)) { return "<"; }
+    if (token.kind.is(TokenKind.LessEqual)) { return "<="; }
+    if (token.kind.is(TokenKind.Greater)) { return ">"; }
+    if (token.kind.is(TokenKind.GreaterEqual)) { return ">="; }
+    if (token.kind.is(TokenKind.Bang)) { return "!"; }
+    if (token.kind.is(TokenKind.Plus)) { return "+"; }
+    if (token.kind.is(TokenKind.Minus)) { return "-"; }
+    if (token.kind.is(TokenKind.Star)) { return "*"; }
+    if (token.kind.is(TokenKind.Slash)) { return "/"; }
+    if (token.kind.is(TokenKind.Equal)) { return "="; }
+    if (token.kind.is(TokenKind.PlusEqual)) { return "+="; }
+    if (token.kind.is(TokenKind.MinusEqual)) { return "-="; }
+    if (token.kind.is(TokenKind.StarEqual)) { return "*="; }
+    if (token.kind.is(TokenKind.SlashEqual)) { return "/="; }
+    return "";
+}
+
+public int pExpression(ref ParserState state, int minimum) {
+    while (state.value.failed) { return -1; }
+    if (!pEnter(state)) { return -1; }
+    int left = pUnary(state);
+    while (!state.value.failed) {
+        Token operator = pPeek(state);
+        int precedence = pKindPrecedence(operator);
+        if (precedence < minimum) { break; }
+        string spelling = pKindOperator(operator);
+        pTake(state);
+        int right = pExpression(state, precedence + 1);
+        if (!state.value.failed) {
+            left = pAdd(state, NodeKind.binary, pJoin(pNode(state, left).span, pNode(state, right).span), spelling, 0, [left, right], []);
+        }
+    }
+    pLeave(state);
+    return left;
+}
+
+private int pUnary(ref ParserState state) {
+    if (!pEnter(state)) { return -1; }
+    Token token = pPeek(state);
+    bool isUnary = token.kind.is(TokenKind.Minus) || token.kind.is(TokenKind.Bang);
+    int result = -1;
+    if (isUnary) {
+        string operator = pKindOperator(token);
+        pTake(state);
+        int operand = pUnary(state);
+        if (!state.value.failed) {
+            result = pAdd(state, NodeKind.unary, pJoin(token.span, pNode(state, operand).span), operator, 0, [operand], []);
+        }
+    } else {
+        result = pPrimary(state);
+    }
+    pLeave(state);
+    return result;
+}
+
+private int pInterpolatedPart(ref ParserState state, string raw, Span outer) {
+    Source inner = Source { path: state.value.source.path, text: raw };
+    LexResult lexed = lexSource(inner);
+    if (lexed.diagnostics.length > 0) {
+        pErrorAt(state, outer, "invalid interpolated expression");
+        return -1;
+    }
+    // Inner placeholder warnings (such as a nested deprecated prefix) are
+    // intentionally dropped: the outer literal already spans the placeholder
+    // and re-reporting here would duplicate diagnostics.
+    ParserState saved = state.value;
+    ref ParserState sub = reference(ParserState {
+        source: inner, tokens: lexed.tokens, index: 0, depth: saved.depth,
+        program: saved.program, diagnostics: [], failed: false
+    });
+    int root = pExpression(sub, 1);
+    if (sub.value.failed || pSpelling(sub.value.tokens[sub.value.index]) != "<eof>") {
+        pErrorAt(state, outer, "invalid interpolated expression");
+        return -1;
+    }
+    if (!sub.value.failed) {
+        AstProgram program = sub.value.program;
+        AstNode node = program.nodes[root];
+        node.span = outer;
+        program.nodes[root] = node;
+        ParserState outerState = state.value;
+        outerState.program = program;
+        state.value = outerState;
+    }
+    ParserState done = state.value;
+    int d = 0;
+    while (d < sub.value.diagnostics.length) {
+        done.diagnostics.push(sub.value.diagnostics[d]);
+        d += 1;
+    }
+    done.depth = sub.value.depth;
+    if (sub.value.failed && !done.failed) {
+        done.failed = true;
+    }
+    state.value = done;
+    return root;
+}
+
+private int pPrimary(ref ParserState state) {
+    while (state.value.failed) { return -1; }
+    Token token = pTake(state);
+    string text = pSpelling(token);
+    int result = -1;
+    if (token.kind.is(TokenKind.Integer)) {
+        result = pAdd(state, NodeKind.integer, token.span, token.kind.payload(TokenKind.Integer), 0, [], []);
+    } else if (token.kind.is(TokenKind.Float)) {
+        result = pAdd(state, NodeKind.floatValue, token.span, token.kind.payload(TokenKind.Float), 0, [], []);
+    } else if (token.kind.is(TokenKind.String)) {
+        result = pAdd(state, NodeKind.stringValue, token.span, token.kind.payload(TokenKind.String), 0, [], []);
+    } else if (token.kind.is(TokenKind.InterpolatedString)) {
+        Interpolation interpolation = token.kind.payload(TokenKind.InterpolatedString);
+        list int parts = [];
+        int i = 0;
+        while (i < interpolation.parts.length) {
+            InterpolationPart part = interpolation.parts[i];
+            if (part.variable) {
+                parts.push(pInterpolatedPart(state, part.text, part.span));
+            } else {
+                parts.push(pAdd(state, NodeKind.stringValue, part.span, part.text, 0, [], []));
+            }
+            i += 1;
+        }
+        result = pAdd(state, NodeKind.interpolated, token.span, "", 0, parts, []);
+    } else if (token.kind.is(TokenKind.Char)) {
+        result = pAdd(state, NodeKind.character, token.span, "", int(token.kind.payload(TokenKind.Char)), [], []);
+    } else if (text == "true" || text == "false") {
+        int value = 0;
+        if (text == "true") { value = 1; }
+        result = pAdd(state, NodeKind.boolean, token.span, text, value, [], []);
+    } else if (pBasic(text) && text != "void" && text != "dynamic") {
+        if (!pAt(state, "(")) {
+            pErrorAt(state, token.span, "expected expression");
+        } else {
+            result = pAdd(state, NodeKind.name, token.span, text, 0, [], []);
+        }
+    } else if (token.kind.is(TokenKind.Identifier) || text == "print" || text == "input") {
+        result = pAdd(state, NodeKind.name, token.span, text, 0, [], []);
+    } else if (text == "(") {
+        result = pExpression(state, 1);
+        pExpect(state, ")");
+        if (!state.value.failed) {
+            ParserState s = state.value;
+            AstProgram program = s.program;
+            AstNode node = program.nodes[result];
+            node.span = pJoin(token.span, pLast(state));
+            program.nodes[result] = node;
+            s.program = program;
+            state.value = s;
+        }
+    } else if (text == "[") {
+        list int values = [];
+        if (!pAt(state, "]")) {
+            values.push(pExpression(state, 1));
+            while (pAccept(state, ",")) { values.push(pExpression(state, 1)); }
+        }
+        pExpect(state, "]");
+        if (!state.value.failed) {
+            result = pAdd(state, NodeKind.collection, pJoin(token.span, pLast(state)), "", 0, values, []);
+        }
+    } else {
+        ParserState s = state.value;
+        s.diagnostics.push(error(ErrorType.SyntaxError, "expected expression", token.span));
+        s.failed = true;
+        state.value = s;
+    }
+    while (!state.value.failed) {
+        AstNode base = pNode(state, result);
+        if (pAt(state, "{") && base.kind == NodeKind.name) {
+            pTake(state);
+            list int values = [];
+            list string names = [];
+            if (!pAt(state, "}")) {
+                while (!state.value.failed && !pAt(state, "}")) {
+                    names.push(pSpelling(pIdentifier(state)));
+                    pExpect(state, ":");
+                    values.push(pExpression(state, 1));
+                    if (!pAccept(state, ",")) { break; }
+                }
+            }
+            pExpect(state, "}");
+            if (!state.value.failed) {
+                result = pAdd(state, NodeKind.structValue, pJoin(base.span, pLast(state)), base.text, 0, values, names);
+            }
+        } else if (pAccept(state, "(")) {
+            if (base.kind != NodeKind.name && base.kind != NodeKind.member) {
+                pError(state, "only a named function or member can be called");
+            }
+            list int arguments = [result];
+            if (!pAt(state, ")")) {
+                arguments.push(pExpression(state, 1));
+                while (pAccept(state, ",")) { arguments.push(pExpression(state, 1)); }
+            }
+            pExpect(state, ")");
+            if (!state.value.failed) {
+                result = pAdd(state, NodeKind.call, pJoin(base.span, pLast(state)), "", 0, arguments, []);
+            }
+        } else if (pAccept(state, ".")) {
+            Token member = pIdentifier(state);
+            result = pAdd(state, NodeKind.member, pJoin(base.span, member.span), pSpelling(member), 0, [result], []);
+        } else if (pAccept(state, "[")) {
+            int index = pExpression(state, 1);
+            pExpect(state, "]");
+            if (!state.value.failed) {
+                result = pAdd(state, NodeKind.index, pJoin(base.span, pLast(state)), "", 0, [result, index], []);
+            }
+        } else { break; }
+    }
+    return result;
+}

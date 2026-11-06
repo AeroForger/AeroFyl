@@ -1,0 +1,198 @@
+using ast: AstNode, AstProgram, NodeKind;
+using token: Token, TokenKind, Keyword;
+using source: Span;
+using parserState: ParserState, pSpelling, pPeek, pTake, pAt, pAtEof, pAtKeyword,
+                   pAcceptKeyword, pAccept, pExpect, pIdentifier, pAdd, pNode, pJoin,
+                   pLast, pError, pErrorAt, pEnter, pLeave;
+using parserTypes: pBasic, pType;
+using parserExpr: pExpression, pKindOperator;
+
+private bool pVariableStart(ref ParserState state) {
+    while (state.value.failed) { return false; }
+    Token first = pPeek(state);
+    string text = pSpelling(first);
+    if (text == "list" || text == "optional" || text == "ref" || text == "dynamic" || text == "void") { return true; }
+    if (!pBasic(text) && !first.kind.is(TokenKind.Identifier) && text != "(") { return false; }
+    int cursor = state.value.index;
+    if (text == "(") {
+        int depth = 1;
+        cursor += 1;
+        while (cursor < state.value.tokens.length && depth > 0) {
+            string next = pSpelling(state.value.tokens[cursor]);
+            if (next == "(") { depth += 1; }
+            if (next == ")") { depth -= 1; }
+            cursor += 1;
+        }
+        if (depth != 0) { return false; }
+    } else { cursor += 1; }
+    while (cursor < state.value.tokens.length && pSpelling(state.value.tokens[cursor]) == "[") {
+        cursor += 1;
+        if (cursor < state.value.tokens.length && state.value.tokens[cursor].kind.is(TokenKind.Integer)) { cursor += 1; }
+        if (cursor >= state.value.tokens.length || pSpelling(state.value.tokens[cursor]) != "]") { return false; }
+        cursor += 1;
+    }
+    if (cursor >= state.value.tokens.length) { return false; }
+    return state.value.tokens[cursor].kind.is(TokenKind.Identifier)
+        || pSpelling(state.value.tokens[cursor]) == "byte";
+}
+
+private bool pAssignable(ref ParserState state, int id) {
+    while (state.value.failed) { return false; }
+    int cursor = id;
+    while (true) {
+        AstNode node = pNode(state, cursor);
+        if (node.kind == NodeKind.member) { cursor = node.children[0]; }
+        else if (node.kind == NodeKind.index) { cursor = node.children[0]; }
+        else { return node.kind == NodeKind.name; }
+    }
+    return false;
+}
+
+private int pClause(ref ParserState state, bool assignmentRequired) {
+    while (state.value.failed) { return -1; }
+    Span start = pPeek(state).span;
+    if (pVariableStart(state)) {
+        int ty = pType(state);
+        Token name = pIdentifier(state);
+        pExpect(state, "=");
+        int value = pExpression(state, 1);
+        if (state.value.failed) { return -1; }
+        return pAdd(state, NodeKind.variable, pJoin(start, pNode(state, value).span), pSpelling(name), 0, [ty, value], []);
+    }
+    int target = pExpression(state, 1);
+    if (state.value.failed) { return -1; }
+    Token operator = pPeek(state);
+    bool isAssignment = operator.kind.is(TokenKind.Equal) || operator.kind.is(TokenKind.PlusEqual) || operator.kind.is(TokenKind.MinusEqual) || operator.kind.is(TokenKind.StarEqual) || operator.kind.is(TokenKind.SlashEqual);
+    if (isAssignment) {
+        if (!pAssignable(state, target)) {
+            pErrorAt(state, pNode(state, target).span, "expected assignable name, member, or index");
+            return -1;
+        }
+        string spelling = pKindOperator(operator);
+        pTake(state);
+        int value = pExpression(state, 1);
+        if (state.value.failed) { return -1; }
+        return pAdd(state, NodeKind.assignment, pJoin(start, pNode(state, value).span), spelling, 0, [target, value], []);
+    }
+    if (assignmentRequired) {
+        pError(state, "for clause requires a declaration or assignment");
+        return -1;
+    }
+    return pAdd(state, NodeKind.expressionStatement, pNode(state, target).span, "", 0, [target], []);
+}
+
+public int pBlock(ref ParserState state) {
+    while (state.value.failed) { return -1; }
+    if (!pEnter(state)) { return -1; }
+    Span start = pPeek(state).span;
+    pExpect(state, "{");
+    list int statements = [];
+    bool finished = false;
+    while (!finished) {
+        if (state.value.failed) {
+            int before = state.value.index;
+            pSynchronizeStatement(state);
+            if (state.value.index == before && !pAt(state, "}") && !pAtEof(state)) {
+                pTake(state);
+            }
+        } else if (pAtEof(state)) {
+            finished = true;
+        } else if (pAt(state, "}")) {
+            finished = true;
+        } else {
+            int statement = pStatement(state);
+            if (!state.value.failed) {
+                statements.push(statement);
+            }
+        }
+    }
+    pExpect(state, "}");
+    int result = -1;
+    if (!state.value.failed) {
+        result = pAdd(state, NodeKind.block, pJoin(start, pLast(state)), "", 0, statements, []);
+    }
+    pLeave(state);
+    return result;
+}
+
+private int pIf(ref ParserState state) {
+    while (state.value.failed) { return -1; }
+    if (!pEnter(state)) { return -1; }
+    Span start = pPeek(state).span;
+    pExpect(state, "if");
+    pExpect(state, "(");
+    int condition = pExpression(state, 1);
+    pExpect(state, ")");
+    int body = pBlock(state);
+    list int children = [condition, body];
+    if (pAcceptKeyword(state, Keyword.Else)) {
+        if (pAtKeyword(state, Keyword.If)) { children.push(pIf(state)); }
+        else { children.push(pBlock(state)); }
+    }
+    int result = -1;
+    if (!state.value.failed) {
+        result = pAdd(state, NodeKind.ifStatement, pJoin(start, pLast(state)), "", 0, children, []);
+    }
+    pLeave(state);
+    return result;
+}
+
+private int pStatement(ref ParserState state) {
+    while (state.value.failed) { return -1; }
+    if (pAtKeyword(state, Keyword.If)) { return pIf(state); }
+    Span start = pPeek(state).span;
+    list int children = [];
+    NodeKind kind = NodeKind.expressionStatement;
+    if (pAcceptKeyword(state, Keyword.While)) {
+        kind = NodeKind.whileStatement;
+        pExpect(state, "(");
+        children.push(pExpression(state, 1));
+        pExpect(state, ")");
+        children.push(pBlock(state));
+    } else if (pAcceptKeyword(state, Keyword.For)) {
+        kind = NodeKind.forStatement;
+        pExpect(state, "(");
+        children.push(pClause(state, true));
+        pExpect(state, ";");
+        children.push(pExpression(state, 1));
+        pExpect(state, ";");
+        children.push(pClause(state, true));
+        pExpect(state, ")");
+        children.push(pBlock(state));
+    } else if (pAcceptKeyword(state, Keyword.Return)) {
+        kind = NodeKind.returnValue;
+        if (!pAt(state, ";")) { children.push(pExpression(state, 1)); }
+        pExpect(state, ";");
+    } else if (pAtKeyword(state, Keyword.Break) || pAtKeyword(state, Keyword.Continue)) {
+        Token word = pTake(state);
+        kind = NodeKind.breakStatement;
+        if (word.kind.is(TokenKind.Keyword) && word.kind.payload(TokenKind.Keyword) == Keyword.Continue) { kind = NodeKind.continueStatement; }
+        pExpect(state, ";");
+    } else {
+        int clause = pClause(state, false);
+        pExpect(state, ";");
+        if (state.value.failed) { return -1; }
+        ParserState s = state.value;
+        AstProgram program = s.program;
+        AstNode node = program.nodes[clause];
+        node.span = pJoin(start, pLast(state));
+        program.nodes[clause] = node;
+        s.program = program;
+        state.value = s;
+        return clause;
+    }
+    if (state.value.failed) { return -1; }
+    return pAdd(state, kind, pJoin(start, pLast(state)), "", 0, children, []);
+}
+
+public void pSynchronizeStatement(ref ParserState state) {
+    while (!pAtEof(state) && !pAt(state, ";") && !pAt(state, "}")) {
+        pTake(state);
+    }
+    if (pAt(state, ";")) {
+        pTake(state);
+    }
+    ParserState clear = state.value;
+    clear.failed = false;
+    state.value = clear;
+}

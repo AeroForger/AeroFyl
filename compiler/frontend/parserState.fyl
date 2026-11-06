@@ -1,0 +1,215 @@
+using ast: AstNode, AstProgram, NodeKind;
+using token: Token, TokenKind, Keyword;
+using source: Source, Span, load_file;
+using ErrorType: ErrorType;
+using diagnostics: Diagnostic, error;
+
+struct ParserState {
+    Source source;
+    list Token tokens;
+    int index;
+    int depth;
+    AstProgram program;
+    list Diagnostic diagnostics;
+    bool failed;
+}
+
+private string pKeyword(Keyword keyword) {
+    if (keyword == Keyword.Public) { return "public"; }
+    if (keyword == Keyword.Private) { return "private"; }
+    if (keyword == Keyword.Use) { return "use"; }
+    if (keyword == Keyword.Using) { return "using"; }
+    if (keyword == Keyword.Return) { return "return"; }
+    if (keyword == Keyword.If) { return "if"; }
+    if (keyword == Keyword.Else) { return "else"; }
+    if (keyword == Keyword.While) { return "while"; }
+    if (keyword == Keyword.For) { return "for"; }
+    if (keyword == Keyword.Break) { return "break"; }
+    if (keyword == Keyword.Continue) { return "continue"; }
+    if (keyword == Keyword.True) { return "true"; }
+    if (keyword == Keyword.False) { return "false"; }
+    if (keyword == Keyword.Print) { return "print"; }
+    if (keyword == Keyword.Input) { return "input"; }
+    if (keyword == Keyword.List) { return "list"; }
+    if (keyword == Keyword.Optional) { return "optional"; }
+    if (keyword == Keyword.Ref) { return "ref"; }
+    if (keyword == Keyword.Int) { return "int"; }
+    if (keyword == Keyword.Byte) { return "byte"; }
+    if (keyword == Keyword.Float) { return "float"; }
+    if (keyword == Keyword.Bool) { return "bool"; }
+    if (keyword == Keyword.Char) { return "char"; }
+    if (keyword == Keyword.String) { return "string"; }
+    if (keyword == Keyword.Void) { return "void"; }
+    if (keyword == Keyword.Dynamic) { return "dynamic"; }
+    if (keyword == Keyword.Struct) { return "struct"; }
+    return "enum";
+}
+
+public string pSpelling(Token token){
+    if (token.kind.is(TokenKind.Identifier)){
+        return token.kind.payload(TokenKind.Identifier);
+    }
+    if (token.kind.is(TokenKind.Keyword)){
+        return pKeyword(token.kind.payload(TokenKind.Keyword));
+    }
+    if (token.kind.is(TokenKind.LeftParen)) { return "("; }
+    if (token.kind.is(TokenKind.RightParen)) { return ")"; }
+    if (token.kind.is(TokenKind.LeftBrace)) { return "{"; }
+    if (token.kind.is(TokenKind.RightBrace)) { return "}"; }
+    if (token.kind.is(TokenKind.LeftBracket)) { return "["; }
+    if (token.kind.is(TokenKind.RightBracket)) { return "]"; }
+    if (token.kind.is(TokenKind.Comma)) { return ","; }
+    if (token.kind.is(TokenKind.Semicolon)) { return ";"; }
+    if (token.kind.is(TokenKind.Colon)) { return ":"; }
+    if (token.kind.is(TokenKind.Dot)) { return "."; }
+    if (token.kind.is(TokenKind.Equal)) { return "="; }
+    if (token.kind.is(TokenKind.EqualEqual)) { return "=="; }
+    if (token.kind.is(TokenKind.BangEqual)) { return "!="; }
+    if (token.kind.is(TokenKind.Less)) { return "<"; }
+    if (token.kind.is(TokenKind.LessEqual)) { return "<="; }
+    if (token.kind.is(TokenKind.Greater)) { return ">"; }
+    if (token.kind.is(TokenKind.GreaterEqual)) { return ">="; }
+    if (token.kind.is(TokenKind.Bang)) { return "!"; }
+    if (token.kind.is(TokenKind.AmpersandAmpersand)) { return "&&"; }
+    if (token.kind.is(TokenKind.PipePipe)) { return "||"; }
+    if (token.kind.is(TokenKind.Plus)) { return "+"; }
+    if (token.kind.is(TokenKind.PlusEqual)) { return "+="; }
+    if (token.kind.is(TokenKind.Minus)) { return "-"; }
+    if (token.kind.is(TokenKind.MinusEqual)) { return "-="; }
+    if (token.kind.is(TokenKind.Star)) { return "*"; }
+    if (token.kind.is(TokenKind.StarEqual)) { return "*="; }
+    if (token.kind.is(TokenKind.Slash)) { return "/"; }
+    if (token.kind.is(TokenKind.SlashEqual)) { return "/="; }
+    if (token.kind.is(TokenKind.Eof)) { return "<eof>"; }
+    return "<literal>";
+}
+
+public Token pPeek(ref ParserState state) {
+    return state.value.tokens[state.value.index];
+}
+
+public Token pTake(ref ParserState state){
+    ParserState s = state.value; //w naming
+    Token token = s.tokens[s.index];
+    if (!token.kind.is(TokenKind.Eof)){
+        s.index += 1;
+    }
+    state.value = s;
+    return token;
+}
+
+public bool pAt(ref ParserState state, string spelling){
+    return pSpelling(pPeek(state)) == spelling;
+}
+
+public bool pAccept(ref ParserState state, string spelling){
+    if (!state.value.failed && pAt(state, spelling)){
+        pTake(state);
+        return true;
+    }
+    return false;
+}
+
+public bool pAtEof(ref ParserState state) {
+    return pPeek(state).kind.is(TokenKind.Eof);
+}
+
+public bool pAtKeyword(ref ParserState state, Keyword keyword) {
+    Token token = pPeek(state);
+    return token.kind.is(TokenKind.Keyword)
+        && token.kind.payload(TokenKind.Keyword) == keyword;
+}
+
+public bool pAcceptKeyword(ref ParserState state, Keyword keyword) {
+    if (!state.value.failed && pAtKeyword(state, keyword)) {
+        pTake(state);
+        return true;
+    }
+    return false;
+}
+
+public void pExpect(ref ParserState state, string spelling){
+    while (state.value.failed) { return; }
+    if (!pAccept(state, spelling)){
+        Token token = pPeek(state);
+        string message = "Expected '" + spelling + "', but found '" + pSpelling(token) + "'";
+        pError(state, message);
+    }
+}
+
+public bool pIsNameToken(Token token) {
+    if (token.kind.is(TokenKind.Identifier)){
+        return true;
+    }
+    return token.kind.is(TokenKind.Keyword)
+        && (token.kind.payload(TokenKind.Keyword) == Keyword.Byte
+            || token.kind.payload(TokenKind.Keyword) == Keyword.Print
+            || token.kind.payload(TokenKind.Keyword) == Keyword.Input);
+}
+
+public Token pIdentifier(ref ParserState state){
+    while (state.value.failed) { return pPeek(state); }
+    Token token = pPeek(state);
+    if (pIsNameToken(token)){
+        return pTake(state);
+    }
+    pError(state, "expected identifier");
+    return token;
+}
+
+public Span pJoin(Span first, Span last) {
+    return Span { source: first.source, start: first.start, end: last.end };
+}
+
+public void pError(ref ParserState state, string message) {
+    while (state.value.failed) { return; }
+    pErrorAt(state, pPeek(state).span, message);
+}
+
+public void pErrorAt(ref ParserState state, Span span, string message) {
+    ParserState s = state.value;
+    s.diagnostics.push(error(ErrorType.SyntaxError, message, span));
+    s.failed = true;
+    state.value = s;
+}
+
+public bool pEnter(ref ParserState state) {
+    if (state.value.failed) { return false; }
+    ParserState s = state.value;
+    if (s.depth >= 96) { //who even reaches 96
+        pError(state, "source nesting exceeds parser limit (96)");
+        return false;
+    }
+    s.depth += 1;
+    state.value = s;
+    return true;
+}
+
+public void pLeave(ref ParserState state) {
+    ParserState s = state.value;
+    s.depth -= 1;
+    state.value = s;
+}
+
+public int pAdd(ref ParserState state, NodeKind kind, Span span,
+                string text, int number, list int children, list string names) {
+    if (state.value.failed) { return -1; }
+    ParserState s = state.value;
+    AstProgram program = s.program;
+    int id = program.nodes.length;
+    program.nodes.push(AstNode {
+        kind: kind, span: span, text: text, number: number,
+        children: children, names: names
+    });
+    s.program = program;
+    state.value = s;
+    return id;
+}
+
+public AstNode pNode(ref ParserState state, int id) {
+    return state.value.program.nodes[id];
+}
+
+public Span pLast(ref ParserState state) {
+    return state.value.tokens[state.value.index - 1].span;
+}

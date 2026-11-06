@@ -1,4 +1,4 @@
-using parser: ParseResult, parse;
+using parserDecl: ParseResult, parse;
 using diagnostics: Diagnostic;
 use std.io;
 
