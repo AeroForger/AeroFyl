@@ -427,8 +427,13 @@ private int pPrimary(ref ParserState state) {
         int value = 0;
         if (text == "true") { value = 1; }
         result = pAdd(state, NodeKind.boolean, token.span, text, value, [], []);
-    } else if (token.kind.is(TokenKind.Identifier) || text == "print" || text == "input"
-               || (pBasic(text) && text != "void" && text != "dynamic")) {
+    } else if (pBasic(text) && text != "void" && text != "dynamic") {
+        if (!pAt(state, "(")) {
+            pErrorAt(state, token.span, "expected expression");
+        } else {
+            result = pAdd(state, NodeKind.name, token.span, text, 0, [], []);
+        }
+    } else if (token.kind.is(TokenKind.Identifier) || text == "print" || text == "input") {
         result = pAdd(state, NodeKind.name, token.span, text, 0, [], []);
     } else if (text == "(") {
         result = pExpression(state, 1);
