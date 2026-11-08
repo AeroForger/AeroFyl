@@ -70,6 +70,11 @@ Compile and run an example:
 cargo run -p aerofyl-bootstrap -- compile examples/functions.fyl -o /tmp/aerofyl-functions
 /tmp/aerofyl-functions
 ```
+Try the dev kit for AeroFyl:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AeroForger/AeroFyl/main/install-dev.sh | bash
+```
 
 ## Where to read next
 
