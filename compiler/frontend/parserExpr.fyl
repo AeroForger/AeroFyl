@@ -82,6 +82,7 @@ private int pUnary(ref ParserState state) {
 private int pInterpolatedPart(ref ParserState state, string raw, Span outer) {
     Source inner = Source { path: state.value.source.path, text: raw };
     LexResult lexed = lexSource(inner);
+    
     if (lexed.diagnostics.length > 0) {
         pErrorAt(state, outer, "invalid interpolated expression");
         return -1;
@@ -90,17 +91,28 @@ private int pInterpolatedPart(ref ParserState state, string raw, Span outer) {
     // intentionally dropped: the outer literal already spans the placeholder
     // and re-reporting here would duplicate diagnostics.
     ParserState saved = state.value;
+    int firstNew = saved.program.nodes.length;
     ref ParserState sub = reference(ParserState {
         source: inner, tokens: lexed.tokens, index: 0, depth: saved.depth,
         program: saved.program, diagnostics: [], failed: false
     });
     int root = pExpression(sub, 1);
+
     if (sub.value.failed || pSpelling(sub.value.tokens[sub.value.index]) != "<eof>") {
-        pErrorAt(state, outer, "invalid interpolated expression");
+        pErrorAt(state, outer, "invalid interpolated expression"); 
         return -1;
     }
     if (!sub.value.failed) {
         AstProgram program = sub.value.program;
+        int base = outer.start;
+        int n = firstNew;
+        while (n < program.nodes.length) {
+            AstNode shiftedNode = program.nodes[n];
+            Span localSpan = shiftedNode.span;
+            shiftedNode.span = Span { source: localSpan.source, start: localSpan.start + base, end: localSpan.end + base };
+            program.nodes[n] = shiftedNode;
+            n += 1;
+        }
         AstNode node = program.nodes[root];
         node.span = outer;
         program.nodes[root] = node;
