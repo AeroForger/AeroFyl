@@ -104,7 +104,7 @@ private int pInterpolatedPart(ref ParserState state, string raw, Span outer) {
     }
     if (!sub.value.failed) {
         AstProgram program = sub.value.program;
-        int base = outer.start + 1;
+        int base = outer.start;
         int n = firstNew;
         while (n < program.nodes.length) {
             AstNode shiftedNode = program.nodes[n];
