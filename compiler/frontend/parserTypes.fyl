@@ -1,7 +1,7 @@
 using ast: NodeKind;
 using token: Token, TokenKind;
 using parserState: ParserState, pSpelling, pPeek, pTake, pAt, pAccept, pExpect,
-                   pAdd, pNode, pJoin, pLast, pError, pEnter, pLeave;
+                   pAdd, pNode, pJoin, pLast, pError, pEnter, pLeave, pIdentifier;
 
 public bool pBasic(string text) {
     return text == "int" || text == "byte" || text == "float"
@@ -49,7 +49,10 @@ public int pType(ref ParserState state) {
         }
     } else if (pBasic(text) || token.kind.is(TokenKind.Identifier)) {
         pTake(state);
-        result = pAdd(state, NodeKind.typeSyntax, token.span, text, 0, [], []);
+        while (pAccept(state, ".")) {
+            text = text + "." + pSpelling(pIdentifier(state));
+        }
+        result = pAdd(state, NodeKind.typeSyntax, pJoin(token.span, pLast(state)), text, 0, [], []);
         while (pAccept(state, "[")) {
             list int arrayChildren = [result];
             string length = "";
