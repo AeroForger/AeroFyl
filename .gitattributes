@@ -3,3 +3,4 @@
 *.svg text diff
 *.png binary
 *.zip binary
+*.fyl linguist-language=C

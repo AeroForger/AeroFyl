@@ -43,6 +43,8 @@ Linux x86-64 is the only target. There's no package management, no qualified use
 - `stress-tests/`: bounded stress fixtures for the compiler
 - `cli/`: status of the command-line interface work
 
+C = AeroFyl (`.fyl` files are counted as C in GitHub's language stats)
+
 ## Try it
 
 Build everything:
